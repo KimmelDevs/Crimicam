@@ -31,9 +31,9 @@ fun KnownPeopleScreen() {
     var knownPeople by remember {
         mutableStateOf(
             listOf(
-                KnownPerson(1, "John Doe", "Family", "Added 2 weeks ago"),
-                KnownPerson(2, "Jane Smith", "Friend", "Added 1 month ago"),
-                KnownPerson(3, "Robert Johnson", "Neighbor", "Added 3 days ago")
+                KnownPerson(1, "Scooby doo", "Family", "Added 2 weeks ago"),
+                KnownPerson(2, "Robert Downy jr", "Friend", "Added 1 month ago"),
+                KnownPerson(3, "Hulk", "Neighbor", "Added 3 days ago")
             )
         )
     }
