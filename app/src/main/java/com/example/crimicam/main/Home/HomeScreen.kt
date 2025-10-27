@@ -93,7 +93,10 @@ fun HomeScreen(navController: NavController) {
                     RecentActivityCard(
                         title = title,
                         subtitle = subtitle,
-                        showDivider = index < recentActivities.lastIndex
+                        showDivider = index < recentActivities.lastIndex,
+                        onClick = {
+                            navController.navigate("activity_detail")
+                        }
                     )
                 }
             }
@@ -179,11 +182,17 @@ fun FeatureCard(
 
 
 @Composable
-fun RecentActivityCard(title: String, subtitle: String, showDivider: Boolean) {
+fun RecentActivityCard(
+    title: String,
+    subtitle: String,
+    showDivider: Boolean,
+    onClick: () -> Unit
+) {
     Column {
         Row(
             modifier = Modifier
-                .fillMaxWidth(),
+                .fillMaxWidth()
+                .clickable(onClick = onClick),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Image(
