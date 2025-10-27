@@ -1,4 +1,4 @@
-package com.example.crimicam.main
+package com.example.crimicam.main.BottomNav
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home

@@ -9,7 +9,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -23,7 +22,12 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.crimicam.login.LoginScreen
-import com.example.crimicam.main.*
+import com.example.crimicam.main.BottomNav.BottomNavItem
+import com.example.crimicam.main.BottomNav.BottomNavigationBar
+import com.example.crimicam.main.Home.HomeScreen
+import com.example.crimicam.main.KnownPeople.KnownPeopleScreen
+import com.example.crimicam.main.Map.MapScreen
+import com.example.crimicam.main.Profile.ProfileScreen
 import com.example.crimicam.signup.SignupScreen
 import com.example.crimicam.ui.theme.CrimicamTheme
 

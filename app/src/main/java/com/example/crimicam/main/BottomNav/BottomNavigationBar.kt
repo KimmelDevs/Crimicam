@@ -1,4 +1,4 @@
-package com.example.crimicam.main
+package com.example.crimicam.main.BottomNav
 
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -8,6 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.currentBackStackEntryAsState
+import com.example.crimicam.main.BottomNav.BottomNavItem
 
 @Composable
 fun BottomNavigationBar(
