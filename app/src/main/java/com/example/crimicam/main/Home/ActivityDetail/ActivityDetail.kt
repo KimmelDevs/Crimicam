@@ -1,6 +1,5 @@
-package com.example.crimicam.main.ActivityDetail
+package com.example.crimicam.main.Home.ActivityDetail
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape

@@ -22,7 +22,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.crimicam.login.LoginScreen
-import com.example.crimicam.main.ActivityDetail.ActivityDetailScreen
+import com.example.crimicam.main.Home.ActivityDetail.ActivityDetailScreen
 import com.example.crimicam.main.BottomNav.BottomNavItem
 import com.example.crimicam.main.BottomNav.BottomNavigationBar
 import com.example.crimicam.main.Home.HomeScreen
