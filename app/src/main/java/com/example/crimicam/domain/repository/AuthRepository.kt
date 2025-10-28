@@ -1,4 +1,4 @@
-package com.example.crimicam.domain.repository
+package com.example.crimicam.data.repository
 
 import com.example.crimicam.data.model.User
 import com.example.crimicam.util.Result
@@ -17,7 +17,6 @@ class AuthRepository {
             val firebaseUser = result.user
 
             if (firebaseUser != null) {
-                // Save user data to Firestore
                 val user = User(
                     uid = firebaseUser.uid,
                     email = email,
@@ -54,6 +53,10 @@ class AuthRepository {
 
     fun getCurrentUser(): FirebaseUser? {
         return auth.currentUser
+    }
+
+    fun isUserLoggedIn(): Boolean {
+        return auth.currentUser != null
     }
 
     private suspend fun saveUserToFirestore(user: User) {
