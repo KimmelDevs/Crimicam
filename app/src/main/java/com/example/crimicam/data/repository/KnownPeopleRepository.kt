@@ -1,6 +1,5 @@
 package com.example.crimicam.data.repository
 
-
 import android.graphics.Bitmap
 import com.example.crimicam.data.model.KnownPerson
 import com.example.crimicam.util.ImageCompressor
@@ -14,6 +13,12 @@ class KnownPeopleRepository {
     private val auth = FirebaseAuth.getInstance()
     private val firestore = FirebaseFirestore.getInstance()
 
+    private fun getUserKnownPeopleCollection() = auth.currentUser?.uid?.let { userId ->
+        firestore.collection("users")
+            .document(userId)
+            .collection("known_people")
+    }
+
     suspend fun addKnownPerson(
         name: String,
         description: String,
@@ -25,6 +30,9 @@ class KnownPeopleRepository {
             val userId = auth.currentUser?.uid
                 ?: return Result.Error(Exception("User not logged in"))
 
+            val collection = getUserKnownPeopleCollection()
+                ?: return Result.Error(Exception("Unable to access user collection"))
+
             // Compress original image
             val compressedOriginal = ImageCompressor.compressBitmap(originalBitmap)
             val originalBase64 = ImageCompressor.bitmapToBase64(compressedOriginal, quality = 60)
@@ -33,8 +41,11 @@ class KnownPeopleRepository {
             val compressedFace = ImageCompressor.compressFaceCrop(croppedFaceBitmap)
             val faceBase64 = ImageCompressor.bitmapToBase64(compressedFace, quality = 80)
 
+            // Generate new document ID
+            val docId = collection.document().id
+
             val knownPerson = KnownPerson(
-                id = firestore.collection("known_people").document().id,
+                id = docId,
                 userId = userId,
                 name = name,
                 description = description,
@@ -44,9 +55,8 @@ class KnownPeopleRepository {
                 imageCount = 1
             )
 
-            // Save to Firestore
-            firestore.collection("known_people")
-                .document(knownPerson.id)
+            // Save to Firestore under users/{userId}/known_people/{docId}
+            collection.document(docId)
                 .set(knownPerson)
                 .await()
 
@@ -58,11 +68,10 @@ class KnownPeopleRepository {
 
     suspend fun getKnownPeople(): Result<List<KnownPerson>> {
         return try {
-            val userId = auth.currentUser?.uid
+            val collection = getUserKnownPeopleCollection()
                 ?: return Result.Error(Exception("User not logged in"))
 
-            val snapshot = firestore.collection("known_people")
-                .whereEqualTo("userId", userId)
+            val snapshot = collection
                 .orderBy("createdAt", Query.Direction.DESCENDING)
                 .get()
                 .await()
@@ -78,8 +87,10 @@ class KnownPeopleRepository {
 
     suspend fun deleteKnownPerson(personId: String): Result<Unit> {
         return try {
-            firestore.collection("known_people")
-                .document(personId)
+            val collection = getUserKnownPeopleCollection()
+                ?: return Result.Error(Exception("User not logged in"))
+
+            collection.document(personId)
                 .delete()
                 .await()
 
@@ -91,14 +102,34 @@ class KnownPeopleRepository {
 
     suspend fun updateKnownPerson(person: KnownPerson): Result<KnownPerson> {
         return try {
+            val collection = getUserKnownPeopleCollection()
+                ?: return Result.Error(Exception("User not logged in"))
+
             val updatedPerson = person.copy(updatedAt = System.currentTimeMillis())
 
-            firestore.collection("known_people")
-                .document(person.id)
+            collection.document(person.id)
                 .set(updatedPerson)
                 .await()
 
             Result.Success(updatedPerson)
+        } catch (e: Exception) {
+            Result.Error(e)
+        }
+    }
+
+    suspend fun getKnownPersonById(personId: String): Result<KnownPerson> {
+        return try {
+            val collection = getUserKnownPeopleCollection()
+                ?: return Result.Error(Exception("User not logged in"))
+
+            val snapshot = collection.document(personId)
+                .get()
+                .await()
+
+            val person = snapshot.toObject(KnownPerson::class.java)
+                ?: return Result.Error(Exception("Person not found"))
+
+            Result.Success(person)
         } catch (e: Exception) {
             Result.Error(e)
         }
