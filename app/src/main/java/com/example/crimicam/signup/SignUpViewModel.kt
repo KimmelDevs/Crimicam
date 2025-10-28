@@ -2,7 +2,7 @@ package com.example.crimicam.signup
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.crimicam.domain.repository.AuthRepository
+import com.example.crimicam.data.repository.AuthRepository
 import com.example.crimicam.util.Result
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
