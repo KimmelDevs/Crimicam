@@ -1,26 +1,26 @@
 package com.example.crimicam.data.repository
 
 import com.example.crimicam.data.model.User
-import com.example.crimicam.domain.repository.IAuthRepository
 import com.example.crimicam.util.Result
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.tasks.await
-import javax.inject.Inject
 
-class AuthRepository @Inject constructor() : IAuthRepository {
+class AuthRepository {
     private val auth = FirebaseAuth.getInstance()
     private val firestore = FirebaseFirestore.getInstance()
 
-    override suspend fun signUp(email: String, password: String): Result<FirebaseUser> {
+    suspend fun signUp(name: String, email: String, password: String): Result<FirebaseUser> {
         return try {
             val result = auth.createUserWithEmailAndPassword(email, password).await()
             val firebaseUser = result.user
 
             if (firebaseUser != null) {
+                // Save user data to Firestore with name
                 val user = User(
                     uid = firebaseUser.uid,
+                    name = name,
                     email = email,
                     createdAt = System.currentTimeMillis()
                 )
@@ -34,7 +34,7 @@ class AuthRepository @Inject constructor() : IAuthRepository {
         }
     }
 
-    override suspend fun login(email: String, password: String): Result<FirebaseUser> {
+    suspend fun login(email: String, password: String): Result<FirebaseUser> {
         return try {
             val result = auth.signInWithEmailAndPassword(email, password).await()
             val firebaseUser = result.user
@@ -49,15 +49,15 @@ class AuthRepository @Inject constructor() : IAuthRepository {
         }
     }
 
-    override fun logout() {
+    fun logout() {
         auth.signOut()
     }
 
-    override fun getCurrentUser(): FirebaseUser? {
+    fun getCurrentUser(): FirebaseUser? {
         return auth.currentUser
     }
 
-    override fun isUserLoggedIn(): Boolean {
+    fun isUserLoggedIn(): Boolean {
         return auth.currentUser != null
     }
 
@@ -69,6 +69,7 @@ class AuthRepository @Inject constructor() : IAuthRepository {
                 .await()
         } catch (e: Exception) {
             // Handle error
+            throw e
         }
     }
 }

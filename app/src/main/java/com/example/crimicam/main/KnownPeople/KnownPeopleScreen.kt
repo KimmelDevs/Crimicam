@@ -1,5 +1,9 @@
 package com.example.crimicam.main.KnownPeople
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -9,6 +13,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.*
@@ -17,127 +22,155 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.crimicam.util.ImageCompressor
 
 @Composable
-fun KnownPeopleScreen() {
+fun KnownPeopleScreen(
+    viewModel: KnownPeopleViewModel = viewModel()
+) {
+    val state by viewModel.state.collectAsState()
+    val context = LocalContext.current
     var showAddDialog by remember { mutableStateOf(false) }
-    var knownPeople by remember {
-        mutableStateOf(
-            listOf(
-                KnownPerson(1, "Scooby doo", "Family", "Added 2 weeks ago"),
-                KnownPerson(2, "Robert Downy jr", "Friend", "Added 1 month ago"),
-                KnownPerson(3, "Hulk", "Neighbor", "Added 3 days ago")
-            )
-        )
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Show error messages
+    LaunchedEffect(state.errorMessage) {
+        state.errorMessage?.let { error ->
+            snackbarHostState.showSnackbar(error)
+            viewModel.clearError()
+        }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(
+    Scaffold(
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = { showAddDialog = true },
+                containerColor = MaterialTheme.colorScheme.primary
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = "Add Person",
+                    tint = Color.White
+                )
+            }
+        }
+    ) { padding ->
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp)
+                .padding(padding)
         ) {
-            // Header
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
             ) {
-                Column {
-                    Text(
-                        text = "Known People",
-                        fontSize = 28.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "${knownPeople.size} people won't trigger alerts",
-                        fontSize = 14.sp,
-                        color = Color.Gray
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // Info Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                ),
-                shape = RoundedCornerShape(12.dp)
-            ) {
+                // Header
                 Row(
-                    modifier = Modifier.padding(16.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Person,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text(
-                        text = "Add trusted people to prevent false alerts from Crimicam",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(20.dp))
-
-            // List of Known People
-            if (knownPeople.isEmpty()) {
-                EmptyStateView()
-            } else {
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(knownPeople) { person ->
-                        KnownPersonCard(
-                            person = person,
-                            onDelete = {
-                                knownPeople = knownPeople.filter { it.id != person.id }
-                            }
+                    Column {
+                        Text(
+                            text = "Known People",
+                            fontSize = 28.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "${state.people.size} people won't trigger alerts",
+                            fontSize = 14.sp,
+                            color = Color.Gray
                         )
                     }
                 }
-            }
-        }
 
-        // Floating Add Button
-        FloatingActionButton(
-            onClick = { showAddDialog = true },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(24.dp),
-            containerColor = MaterialTheme.colorScheme.primary
-        ) {
-            Icon(
-                imageVector = Icons.Default.Add,
-                contentDescription = "Add Person",
-                tint = Color.White
-            )
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Info Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Person,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Add trusted people to prevent false alerts",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "💡 Tip: More photos = Better accuracy",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // List of Known People
+                if (state.isLoading) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                } else if (state.people.isEmpty()) {
+                    EmptyStateView()
+                } else {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(state.people, key = { it.id }) { person ->
+                            KnownPersonCard(
+                                person = person,
+                                onDelete = { viewModel.deletePerson(person.id) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Processing Overlay
+            if (state.isProcessing) {
+                ProcessingOverlay(progress = state.processingProgress)
+            }
         }
 
         // Add Person Dialog
         if (showAddDialog) {
             AddPersonDialog(
                 onDismiss = { showAddDialog = false },
-                onAdd = { name, relationship ->
-                    val newPerson = KnownPerson(
-                        id = knownPeople.size + 1,
-                        name = name,
-                        relationship = relationship,
-                        addedDate = "Added just now"
-                    )
-                    knownPeople = knownPeople + newPerson
+                onAdd = { imageUri, name, description ->
+                    viewModel.processAndAddPerson(context, imageUri, name, description)
                     showAddDialog = false
                 }
             )
@@ -147,15 +180,16 @@ fun KnownPeopleScreen() {
 
 @Composable
 fun KnownPersonCard(
-    person: KnownPerson,
+    person: com.example.crimicam.data.model.KnownPerson,
     onDelete: () -> Unit
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    val bitmap = remember(person.croppedFaceBase64) {
+        ImageCompressor.base64ToBitmap(person.croppedFaceBase64)
+    }
 
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { /* View details */ },
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
@@ -165,7 +199,7 @@ fun KnownPersonCard(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Avatar
+            // Avatar with actual face image
             Box(
                 modifier = Modifier
                     .size(56.dp)
@@ -173,12 +207,21 @@ fun KnownPersonCard(
                     .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = person.name.first().toString(),
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = person.name,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Text(
+                        text = person.name.first().uppercase(),
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.width(16.dp))
@@ -192,22 +235,20 @@ fun KnownPersonCard(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = person.relationship,
+                    text = person.description,
                     fontSize = 14.sp,
                     color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = person.addedDate,
+                    text = "Added ${formatDate(person.createdAt)}",
                     fontSize = 12.sp,
                     color = Color.Gray
                 )
             }
 
             // Delete Button
-            IconButton(
-                onClick = { showDeleteConfirm = true }
-            ) {
+            IconButton(onClick = { showDeleteConfirm = true }) {
                 Icon(
                     imageVector = Icons.Default.Delete,
                     contentDescription = "Delete",
@@ -222,7 +263,9 @@ fun KnownPersonCard(
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
             title = { Text("Remove Person") },
-            text = { Text("Are you sure you want to remove ${person.name} from known people? They will trigger alerts again.") },
+            text = {
+                Text("Are you sure you want to remove ${person.name}? They will trigger alerts again.")
+            },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -245,14 +288,18 @@ fun KnownPersonCard(
 @Composable
 fun AddPersonDialog(
     onDismiss: () -> Unit,
-    onAdd: (String, String) -> Unit
+    onAdd: (Uri, String, String) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
-    var relationship by remember { mutableStateOf("") }
-    var selectedRelationship by remember { mutableStateOf("Family") }
-    var showRelationshipMenu by remember { mutableStateOf(false) }
+    var description by remember { mutableStateOf("") }
+    var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
+    val context = LocalContext.current
 
-    val relationshipOptions = listOf("Family", "Friend", "Neighbor", "Colleague", "Other")
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        selectedImageUri = uri
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -274,6 +321,38 @@ fun AddPersonDialog(
 
                 Spacer(modifier = Modifier.height(20.dp))
 
+                // Image Picker Button
+                OutlinedButton(
+                    onClick = { imagePickerLauncher.launch("image/*") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CameraAlt,
+                            contentDescription = null,
+                            modifier = Modifier.size(40.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = if (selectedImageUri != null) "Image Selected ✓" else "Select Photo",
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            text = "Face will be detected automatically",
+                            fontSize = 11.sp,
+                            color = Color.Gray
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
                 // Name Input
                 OutlinedTextField(
                     value = name,
@@ -287,39 +366,16 @@ fun AddPersonDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Relationship Dropdown
-                Box {
-                    OutlinedTextField(
-                        value = selectedRelationship,
-                        onValueChange = { },
-                        label = { Text("Relationship") },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showRelationshipMenu = true },
-                        enabled = false,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            disabledTextColor = MaterialTheme.colorScheme.onSurface,
-                            disabledBorderColor = MaterialTheme.colorScheme.outline,
-                            disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    )
-
-                    DropdownMenu(
-                        expanded = showRelationshipMenu,
-                        onDismissRequest = { showRelationshipMenu = false }
-                    ) {
-                        relationshipOptions.forEach { option ->
-                            DropdownMenuItem(
-                                text = { Text(option) },
-                                onClick = {
-                                    selectedRelationship = option
-                                    showRelationshipMenu = false
-                                }
-                            )
-                        }
-                    }
-                }
+                // Description Input
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Description") },
+                    placeholder = { Text("e.g., Family, Friend, Neighbor") },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    singleLine = true
+                )
 
                 Spacer(modifier = Modifier.height(24.dp))
 
@@ -338,17 +394,89 @@ fun AddPersonDialog(
 
                     Button(
                         onClick = {
-                            if (name.isNotBlank()) {
-                                onAdd(name, selectedRelationship)
+                            selectedImageUri?.let { uri ->
+                                onAdd(uri, name, description)
                             }
                         },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(12.dp),
-                        enabled = name.isNotBlank()
+                        enabled = name.isNotBlank() && selectedImageUri != null
                     ) {
                         Text("Add Person")
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun ProcessingOverlay(progress: ProcessingProgress?) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.7f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.85f)
+                .padding(24.dp),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                CircularProgressIndicator(
+                    progress = { progress?.progress ?: 0f },
+                    modifier = Modifier.size(60.dp),
+                    strokeWidth = 6.dp
+                )
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                Text(
+                    text = when (progress?.stage) {
+                        ProcessingStage.LOADING_IMAGE -> "Loading Image..."
+                        ProcessingStage.DETECTING_FACE -> "Detecting Face..."
+                        ProcessingStage.CROPPING_FACE -> "Cropping Face..."
+                        ProcessingStage.COMPRESSING -> "Compressing Image..."
+                        ProcessingStage.EXTRACTING_FEATURES -> "Extracting Features..."
+                        ProcessingStage.UPLOADING -> "Uploading to Cloud..."
+                        ProcessingStage.COMPLETE -> "Complete!"
+                        null -> "Processing..."
+                    },
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "${((progress?.progress ?: 0f) * 100).toInt()}%",
+                    fontSize = 14.sp,
+                    color = Color.Gray
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                LinearProgressIndicator(
+                    progress = { progress?.progress ?: 0f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .clip(RoundedCornerShape(4.dp)),
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = "💡 More photos = Better accuracy",
+                    fontSize = 12.sp,
+                    color = Color.Gray,
+                    textAlign = TextAlign.Center
+                )
             }
         }
     }
@@ -385,16 +513,29 @@ fun EmptyStateView() {
             Text(
                 text = "Add trusted people to prevent false alerts",
                 fontSize = 14.sp,
-                color = Color.Gray
+                color = Color.Gray,
+                textAlign = TextAlign.Center
             )
         }
     }
 }
 
-// Data class
-data class KnownPerson(
-    val id: Int,
-    val name: String,
-    val relationship: String,
-    val addedDate: String
-)
+private fun formatDate(timestamp: Long): String {
+    val now = System.currentTimeMillis()
+    val diff = now - timestamp
+    val seconds = diff / 1000
+    val minutes = seconds / 60
+    val hours = minutes / 60
+    val days = hours / 24
+    val weeks = days / 7
+    val months = days / 30
+
+    return when {
+        seconds < 60 -> "just now"
+        minutes < 60 -> "$minutes minute${if (minutes != 1L) "s" else ""} ago"
+        hours < 24 -> "$hours hour${if (hours != 1L) "s" else ""} ago"
+        days < 7 -> "$days day${if (days != 1L) "s" else ""} ago"
+        weeks < 4 -> "$weeks week${if (weeks != 1L) "s" else ""} ago"
+        else -> "$months month${if (months != 1L) "s" else ""} ago"
+    }
+}

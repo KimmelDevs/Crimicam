@@ -3,9 +3,11 @@ package com.example.crimicam.signup
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -33,12 +35,14 @@ fun SignupScreen(
     navController: NavController,
     viewModel: SignupViewModel = viewModel()
 ) {
+    var name by rememberSaveable { mutableStateOf("") }
     var email by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
     var confirmPassword by rememberSaveable { mutableStateOf("") }
 
     val signupState by viewModel.signupState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val scrollState = rememberScrollState()
 
     // Handle navigation on success - redirect to login
     LaunchedEffect(signupState.isSuccess) {
@@ -75,7 +79,10 @@ fun SignupScreen(
                 .padding(paddingValues)
         ) {
             Column(
-                modifier = Modifier.padding(horizontal = 24.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scrollState)
+                    .padding(horizontal = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
@@ -94,7 +101,7 @@ fun SignupScreen(
                     contentScale = ContentScale.Fit,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(200.dp)
+                        .height(180.dp)
                 )
 
                 Text(
@@ -106,6 +113,14 @@ fun SignupScreen(
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))
+
+                NameTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    enabled = !signupState.isLoading
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
 
                 EmailTextField(
                     value = email,
@@ -139,7 +154,7 @@ fun SignupScreen(
                     cornerRadius = 16.dp,
                     enabled = !signupState.isLoading
                 ) {
-                    viewModel.signUp(email, password, confirmPassword)
+                    viewModel.signUp(name, email, password, confirmPassword)
                 }
 
                 Spacer(modifier = Modifier.height(20.dp))
@@ -154,6 +169,8 @@ fun SignupScreen(
                         letterSpacing = 1.sp,
                     )
                 }
+
+                Spacer(modifier = Modifier.height(24.dp))
             }
 
             // Loading indicator
@@ -164,6 +181,37 @@ fun SignupScreen(
             }
         }
     }
+}
+
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+fun NameTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    enabled: Boolean = true
+) {
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(text = "Full Name") },
+        placeholder = { Text("Enter your full name") },
+        shape = RoundedCornerShape(topEnd = 12.dp, bottomStart = 12.dp),
+        singleLine = true,
+        enabled = enabled,
+        keyboardOptions = KeyboardOptions(
+            imeAction = ImeAction.Next,
+            keyboardType = KeyboardType.Text,
+            capitalization = KeyboardCapitalization.Words
+        ),
+        keyboardActions = KeyboardActions(onNext = { keyboardController?.hide() }),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = MaterialTheme.colorScheme.primary
+        ),
+        modifier = Modifier.fillMaxWidth()
+    )
 }
 
 @OptIn(ExperimentalComposeUiApi::class)

@@ -16,8 +16,13 @@ class SignupViewModel(
     private val _signupState = MutableStateFlow(SignupState())
     val signupState: StateFlow<SignupState> = _signupState.asStateFlow()
 
-    fun signUp(email: String, password: String, confirmPassword: String) {
+    fun signUp(name: String, email: String, password: String, confirmPassword: String) {
         // Validation
+        if (name.isBlank()) {
+            _signupState.value = SignupState(errorMessage = "Name cannot be empty")
+            return
+        }
+
         if (email.isBlank()) {
             _signupState.value = SignupState(errorMessage = "Email cannot be empty")
             return
@@ -41,7 +46,7 @@ class SignupViewModel(
         viewModelScope.launch {
             _signupState.value = SignupState(isLoading = true)
 
-            when (val result = authRepository.signUp(email, password)) {
+            when (val result = authRepository.signUp(name, email, password)) {
                 is Result.Success -> {
                     _signupState.value = SignupState(isSuccess = true)
                 }

@@ -91,4 +91,16 @@ dependencies {
     implementation("androidx.camera:camera-extensions:1.3.4")
     implementation("androidx.concurrent:concurrent-futures:1.2.0")
     implementation("com.google.guava:guava:31.1-android")
+
+    // ML Kit for Face Detection (FREE)
+    implementation("com.google.mlkit:face-detection:16.1.5")
+
+    // Image processing
+    implementation("io.coil-kt:coil-compose:2.5.0")
+
+    // Coroutines
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // For image picking
+    implementation("androidx.activity:activity-compose:1.8.2")
 }
