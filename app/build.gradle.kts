@@ -82,6 +82,7 @@ dependencies {
     implementation(libs.firebase.firestore.ktx.v24103)
 
     implementation (libs.androidx.datastore.preferences)
+    implementation("com.google.accompanist:accompanist-permissions:0.32.0")
 
     //ine na 7 ayaw ig update ira version
     implementation("androidx.camera:camera-core:1.3.4")
