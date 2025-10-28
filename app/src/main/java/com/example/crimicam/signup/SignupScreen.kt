@@ -24,74 +24,142 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.example.crimicam.R
 
 @Composable
-fun SignupScreen(navController: NavController) {
-    Box(
-        modifier = Modifier.fillMaxSize()
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+fun SignupScreen(
+    navController: NavController,
+    viewModel: SignupViewModel = viewModel()
+) {
+    var email by rememberSaveable { mutableStateOf("") }
+    var password by rememberSaveable { mutableStateOf("") }
+    var confirmPassword by rememberSaveable { mutableStateOf("") }
+
+    val signupState by viewModel.signupState.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Handle navigation on success - redirect to login
+    LaunchedEffect(signupState.isSuccess) {
+        if (signupState.isSuccess) {
+            snackbarHostState.showSnackbar(
+                message = "Account created successfully! Please login.",
+                duration = SnackbarDuration.Short
+            )
+            // Navigate back to login screen
+            navController.navigate("login") {
+                popUpTo("signup") { inclusive = true }
+            }
+            viewModel.resetState()
+        }
+    }
+
+    // Show error message
+    LaunchedEffect(signupState.errorMessage) {
+        signupState.errorMessage?.let { error ->
+            snackbarHostState.showSnackbar(
+                message = error,
+                duration = SnackbarDuration.Short
+            )
+            viewModel.resetState()
+        }
+    }
+
+    Scaffold(
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
+    ) { paddingValues ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
         ) {
-            Text(
-                text = "Crimicam",
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 12.dp),
-                fontSize = 32.sp
-            )
-
-            Image(
-                painter = painterResource(id = R.drawable.img),
-                contentDescription = "Signup illustration",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(200.dp)
-            )
-
-            Text(
-                text = "Create an Account",
-                style = MaterialTheme.typography.headlineMedium,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth(),
-                fontSize = 24.sp
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            EmailTextField()
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            PasswordTextField(label = "Password")
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            PasswordTextField(label = "Confirm Password")
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            GradientButton(
-                text = "Sign Up",
-                gradientColors = listOf(Color(0xFF484BF1), Color(0xFF673AB7)),
-                cornerRadius = 16.dp
+            Column(
+                modifier = Modifier.padding(horizontal = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // signup logic didi
+                Text(
+                    text = "Crimicam",
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp),
+                    fontSize = 32.sp
+                )
+
+                Image(
+                    painter = painterResource(id = R.drawable.img),
+                    contentDescription = "Signup illustration",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(200.dp)
+                )
+
+                Text(
+                    text = "Create an Account",
+                    style = MaterialTheme.typography.headlineMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                    fontSize = 24.sp
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                EmailTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    enabled = !signupState.isLoading
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                PasswordTextField(
+                    label = "Password",
+                    value = password,
+                    onValueChange = { password = it },
+                    enabled = !signupState.isLoading
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                PasswordTextField(
+                    label = "Confirm Password",
+                    value = confirmPassword,
+                    onValueChange = { confirmPassword = it },
+                    enabled = !signupState.isLoading
+                )
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                GradientButton(
+                    text = if (signupState.isLoading) "Creating Account..." else "Sign Up",
+                    gradientColors = listOf(Color(0xFF484BF1), Color(0xFF673AB7)),
+                    cornerRadius = 16.dp,
+                    enabled = !signupState.isLoading
+                ) {
+                    viewModel.signUp(email, password, confirmPassword)
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                TextButton(
+                    onClick = { navController.popBackStack() },
+                    enabled = !signupState.isLoading
+                ) {
+                    Text(
+                        text = "Already have an account? Login",
+                        style = MaterialTheme.typography.labelLarge,
+                        letterSpacing = 1.sp,
+                    )
+                }
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
-
-            TextButton(onClick = { navController.popBackStack() }) {
-                Text(
-                    text = "Already have an account? Login",
-                    style = MaterialTheme.typography.labelLarge,
-                    letterSpacing = 1.sp,
+            // Loading indicator
+            if (signupState.isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.align(Alignment.Center)
                 )
             }
         }
@@ -100,21 +168,21 @@ fun SignupScreen(navController: NavController) {
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-fun EmailTextField() {
+fun EmailTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    enabled: Boolean = true
+) {
     val keyboardController = LocalSoftwareKeyboardController.current
-    var email by rememberSaveable { mutableStateOf("") }
 
     OutlinedTextField(
-        value = email,
-        onValueChange = { email = it },
-        label = {
-            Text(
-                text = "Email Address"
-            )
-        },
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(text = "Email Address") },
         placeholder = { Text("Email Address") },
         shape = RoundedCornerShape(topEnd = 12.dp, bottomStart = 12.dp),
         singleLine = true,
+        enabled = enabled,
         keyboardOptions = KeyboardOptions(
             imeAction = ImeAction.Next,
             keyboardType = KeyboardType.Email
@@ -130,20 +198,21 @@ fun EmailTextField() {
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-fun PasswordTextField(label: String) {
+fun PasswordTextField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    enabled: Boolean = true
+) {
     val keyboardController = LocalSoftwareKeyboardController.current
-    var password by rememberSaveable { mutableStateOf("") }
     var hidden by rememberSaveable { mutableStateOf(true) }
 
     OutlinedTextField(
-        value = password,
-        onValueChange = { password = it },
-        label = {
-            Text(
-                text = label
-            )
-        },
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(text = label) },
         placeholder = { Text(label) },
+        enabled = enabled,
         visualTransformation = if (hidden) PasswordVisualTransformation() else VisualTransformation.None,
         trailingIcon = {
             IconButton(onClick = { hidden = !hidden }) {
@@ -177,10 +246,12 @@ fun GradientButton(
     text: String,
     gradientColors: List<Color>,
     cornerRadius: Dp,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     Button(
         onClick = onClick,
+        enabled = enabled,
         modifier = Modifier
             .fillMaxWidth()
             .height(55.dp),
@@ -192,7 +263,14 @@ fun GradientButton(
             modifier = Modifier
                 .fillMaxSize()
                 .clip(RoundedCornerShape(cornerRadius))
-                .background(brush = Brush.horizontalGradient(gradientColors)),
+                .background(
+                    brush = Brush.horizontalGradient(
+                        colors = if (enabled) gradientColors else listOf(
+                            Color.Gray,
+                            Color.DarkGray
+                        )
+                    )
+                ),
             contentAlignment = Alignment.Center
         ) {
             Text(

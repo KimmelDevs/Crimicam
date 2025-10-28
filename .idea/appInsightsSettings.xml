@@ -8,10 +8,10 @@
             <InsightsFilterSettings>
               <option name="connection">
                 <ConnectionSetting>
-                  <option name="appId" value="PLACEHOLDER" />
-                  <option name="mobileSdkAppId" value="" />
-                  <option name="projectId" value="" />
-                  <option name="projectNumber" value="" />
+                  <option name="appId" value="com.example.crimicam" />
+                  <option name="mobileSdkAppId" value="1:715474303979:android:28b3b3b068cbdb6467b7ae" />
+                  <option name="projectId" value="crimicam-ce15d" />
+                  <option name="projectNumber" value="715474303979" />
                 </ConnectionSetting>
               </option>
               <option name="signal" value="SIGNAL_UNSPECIFIED" />
