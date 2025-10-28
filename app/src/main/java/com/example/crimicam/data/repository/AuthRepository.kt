@@ -1,17 +1,19 @@
 package com.example.crimicam.data.repository
 
 import com.example.crimicam.data.model.User
+import com.example.crimicam.domain.repository.IAuthRepository
 import com.example.crimicam.util.Result
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.tasks.await
+import javax.inject.Inject
 
-class AuthRepository {
+class AuthRepository @Inject constructor() : IAuthRepository {
     private val auth = FirebaseAuth.getInstance()
     private val firestore = FirebaseFirestore.getInstance()
 
-    suspend fun signUp(email: String, password: String): Result<FirebaseUser> {
+    override suspend fun signUp(email: String, password: String): Result<FirebaseUser> {
         return try {
             val result = auth.createUserWithEmailAndPassword(email, password).await()
             val firebaseUser = result.user
@@ -32,7 +34,7 @@ class AuthRepository {
         }
     }
 
-    suspend fun login(email: String, password: String): Result<FirebaseUser> {
+    override suspend fun login(email: String, password: String): Result<FirebaseUser> {
         return try {
             val result = auth.signInWithEmailAndPassword(email, password).await()
             val firebaseUser = result.user
@@ -47,15 +49,15 @@ class AuthRepository {
         }
     }
 
-    fun logout() {
+    override fun logout() {
         auth.signOut()
     }
 
-    fun getCurrentUser(): FirebaseUser? {
+    override fun getCurrentUser(): FirebaseUser? {
         return auth.currentUser
     }
 
-    fun isUserLoggedIn(): Boolean {
+    override fun isUserLoggedIn(): Boolean {
         return auth.currentUser != null
     }
 

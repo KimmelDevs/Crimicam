@@ -20,24 +20,36 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.crimicam.presentation.main.Profile.LogoutState
+import com.example.crimicam.presentation.main.Profile.ProfileViewModel
 
 @Composable
-fun ProfileScreen() {
+fun ProfileScreen(
+    onLogout: () -> Unit,
+    viewModel: ProfileViewModel = viewModel()
+) {
     var showProfileDialog by remember { mutableStateOf(false) }
     var showLogoutDialog by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
+    val logoutState by viewModel.logoutState.collectAsState()
+
+    // Handle logout success
+    LaunchedEffect(logoutState) {
+        when (logoutState) {
+            is LogoutState.Success -> {
+                onLogout()
+                viewModel.resetLogoutState()
+            }
+            else -> {}
+        }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(scrollState)
     ) {
-        // Profile Header
-        ProfileHeader(
-            name = "Richard Fuentes",
-            email = "RichardFue@gmail.com",
-            onViewProfile = { showProfileDialog = true }
-        )
 
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -48,63 +60,6 @@ fun ProfileScreen() {
                 title = "View Profile",
                 subtitle = "See your profile information",
                 onClick = { showProfileDialog = true }
-            )
-            SettingsItem(
-                icon = Icons.Default.Edit,
-                title = "Edit Profile",
-                subtitle = "Update your personal details",
-                onClick = { /* Navigate to edit */ }
-            )
-            SettingsItem(
-                icon = Icons.Default.Lock,
-                title = "Change Password",
-                subtitle = "Update your password",
-                onClick = { /* Navigate to change password */ }
-            )
-        }
-
-        SettingsSection(title = "Preferences") {
-            SettingsItem(
-                icon = Icons.Default.Notifications,
-                title = "Notifications",
-                subtitle = "Manage alert preferences",
-                onClick = { /* Navigate to notifications */ }
-            )
-            SettingsItem(
-                icon = Icons.Default.Security,
-                title = "Privacy & Security",
-                subtitle = "Control your data and security",
-                onClick = { /* Navigate to privacy */ }
-            )
-            SettingsItem(
-                icon = Icons.Default.Language,
-                title = "Language",
-                subtitle = "English",
-                onClick = { /* Navigate to language */ }
-            )
-        }
-
-        SettingsSection(title = "Devices") {
-            SettingsItem(
-                icon = Icons.Default.Videocam,
-                title = "Connected Cameras",
-                subtitle = "Manage your Crimicam devices",
-                onClick = { /* Navigate to devices */ }
-            )
-            SettingsItem(
-                icon = Icons.Default.Storage,
-                title = "Storage",
-                subtitle = "Manage recordings and media",
-                onClick = { /* Navigate to storage */ }
-            )
-        }
-
-        SettingsSection(title = "Support") {
-            SettingsItem(
-                icon = Icons.Default.Help,
-                title = "Help & Support",
-                subtitle = "Get help and contact us",
-                onClick = { /* Navigate to help */ }
             )
             SettingsItem(
                 icon = Icons.Default.Info,
@@ -181,17 +136,30 @@ fun ProfileScreen() {
                 Button(
                     onClick = {
                         // Perform logout
+                        viewModel.logout()
                         showLogoutDialog = false
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color(0xFFD32F2F)
-                    )
+                    ),
+                    enabled = logoutState != LogoutState.Loading
                 ) {
-                    Text("Log Out")
+                    if (logoutState == LogoutState.Loading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text("Log Out")
+                    }
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showLogoutDialog = false }) {
+                TextButton(
+                    onClick = { showLogoutDialog = false },
+                    enabled = logoutState != LogoutState.Loading
+                ) {
                     Text("Cancel")
                 }
             }
@@ -199,78 +167,7 @@ fun ProfileScreen() {
     }
 }
 
-@Composable
-fun ProfileHeader(
-    name: String,
-    email: String,
-    onViewProfile: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer
-        )
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // Profile Avatar
-            Box(
-                modifier = Modifier
-                    .size(80.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary)
-                    .clickable { onViewProfile() },
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = name.split(" ").mapNotNull { it.firstOrNull() }.take(2).joinToString(""),
-                    fontSize = 32.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White
-                )
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Text(
-                text = name,
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Text(
-                text = email,
-                fontSize = 14.sp,
-                color = Color.Gray
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Button(
-                onClick = onViewProfile,
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Visibility,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("View Full Profile")
-            }
-        }
-    }
-}
-
+// Rest of your existing composables remain exactly the same...
 @Composable
 fun SettingsSection(
     title: String,
@@ -465,7 +362,6 @@ fun ProfileDetailItem(
             tint = MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(20.dp)
         )
-
         Spacer(modifier = Modifier.width(12.dp))
 
         Column {

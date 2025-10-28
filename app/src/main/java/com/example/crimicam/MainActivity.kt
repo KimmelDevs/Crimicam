@@ -6,6 +6,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.annotation.RequiresApi
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -35,6 +36,7 @@ import com.example.crimicam.signup.SignupScreen
 import com.example.crimicam.ui.theme.CrimicamTheme
 
 class MainActivity : ComponentActivity() {
+    @RequiresApi(Build.VERSION_CODES.O)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -81,6 +83,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@RequiresApi(Build.VERSION_CODES.O)
 @Composable
 fun AppNavigation() {
     val navController = rememberNavController()
@@ -110,14 +113,19 @@ fun AppNavigation() {
 
         // Main screen with bottom navigation
         composable("main") {
-            MainScreen()
+            MainScreen(
+                mainNavController = navController // Pass the main navController
+            )
         }
     }
 }
 
+@RequiresApi(Build.VERSION_CODES.O)
 @Composable
-fun MainScreen() {
-    val navController = rememberNavController()
+fun MainScreen(
+    mainNavController: androidx.navigation.NavHostController // Add this parameter
+) {
+    val bottomNavController = rememberNavController()
     val items = listOf(
         BottomNavItem.Home,
         BottomNavItem.Map,
@@ -127,18 +135,18 @@ fun MainScreen() {
 
     Scaffold(
         bottomBar = {
-            BottomNavigationBar(navController = navController, items = items)
+            BottomNavigationBar(navController = bottomNavController, items = items)
         }
     ) { paddingValues ->
         NavHost(
-            navController = navController,
+            navController = bottomNavController,
             startDestination = BottomNavItem.Home.route,
             modifier = Modifier.padding(paddingValues),
             enterTransition = { fadeIn(animationSpec = tween(50)) },
             exitTransition = { fadeOut(animationSpec = tween(50)) }
         ) {
             composable(BottomNavItem.Home.route) {
-                HomeScreen(navController = navController)
+                HomeScreen(navController = bottomNavController)
             }
             composable(BottomNavItem.Map.route) {
                 MapScreen()
@@ -147,21 +155,26 @@ fun MainScreen() {
                 KnownPeopleScreen()
             }
             composable(BottomNavItem.Profile.route) {
-                ProfileScreen()
+                ProfileScreen(
+                    onLogout = {
+                        // Use the main navController to navigate to login
+                        mainNavController.navigate("login") {
+                            popUpTo("main") { inclusive = true }
+                        }
+                    }
+                )
             }
 
             //home
             composable("camera") {
-                CameraScreen(navController = navController)
+                CameraScreen(navController = bottomNavController)
             }
             composable("monitor") {
-                MonitorScreen(navController = navController)
+                MonitorScreen(navController = bottomNavController)
             }
             composable("activity_detail") {
-                ActivityDetailScreen(navController = navController)
+                ActivityDetailScreen(navController = bottomNavController)
             }
-
-
         }
     }
 }
