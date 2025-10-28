@@ -67,7 +67,9 @@ fun HomeScreen(navController: NavController) {
                     description = "Access camera to capture intruders!",
                     gradientColors = listOf(Color(0xFF4A00E0), Color(0xFF8E2DE2)),
                     imageRes = R.drawable.camera,
-                    onClick = { }
+                    onClick = {
+                        navController.navigate("camera")
+                    }
                 )
 
                 FeatureCard(
@@ -75,7 +77,9 @@ fun HomeScreen(navController: NavController) {
                     description = "Monitor captured media and surveillance",
                     gradientColors = listOf(Color(0xFF0083B0), Color(0xFF00B4DB)),
                     imageRes = R.drawable.monitor,
-                    onClick = { }
+                    onClick = {
+                        navController.navigate("monitor")
+                    }
                 )
 
 

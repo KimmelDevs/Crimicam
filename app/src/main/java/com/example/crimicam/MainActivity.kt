@@ -25,7 +25,9 @@ import com.example.crimicam.login.LoginScreen
 import com.example.crimicam.main.Home.ActivityDetail.ActivityDetailScreen
 import com.example.crimicam.main.BottomNav.BottomNavItem
 import com.example.crimicam.main.BottomNav.BottomNavigationBar
+import com.example.crimicam.main.Home.Camera.MonitorScreen
 import com.example.crimicam.main.Home.HomeScreen
+import com.example.crimicam.main.Home.Monitor.CameraScreen
 import com.example.crimicam.main.KnownPeople.KnownPeopleScreen
 import com.example.crimicam.main.Map.MapScreen
 import com.example.crimicam.main.Profile.ProfileScreen
@@ -35,7 +37,6 @@ import com.example.crimicam.ui.theme.CrimicamTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
         setContent {
             CrimicamTheme {
                 val view = LocalView.current
@@ -132,7 +133,9 @@ fun MainScreen() {
         NavHost(
             navController = navController,
             startDestination = BottomNavItem.Home.route,
-            modifier = Modifier.padding(paddingValues)
+            modifier = Modifier.padding(paddingValues),
+            enterTransition = { fadeIn(animationSpec = tween(50)) },
+            exitTransition = { fadeOut(animationSpec = tween(50)) }
         ) {
             composable(BottomNavItem.Home.route) {
                 HomeScreen(navController = navController)
@@ -146,9 +149,19 @@ fun MainScreen() {
             composable(BottomNavItem.Profile.route) {
                 ProfileScreen()
             }
+
+            //home
+            composable("camera") {
+                CameraScreen(navController = navController)
+            }
+            composable("monitor") {
+                MonitorScreen(navController = navController)
+            }
             composable("activity_detail") {
                 ActivityDetailScreen(navController = navController)
             }
+
+
         }
     }
 }
