@@ -1,6 +1,5 @@
 package com.example.crimicam.data.repository
 
-
 import android.graphics.Bitmap
 import com.example.crimicam.data.model.CapturedFace
 import com.example.crimicam.util.ImageCompressor
@@ -27,7 +26,11 @@ class CapturedFacesRepository {
         isRecognized: Boolean = false,
         matchedPersonId: String? = null,
         matchedPersonName: String? = null,
-        confidence: Float = 0f
+        confidence: Float = 0f,
+        latitude: Double? = null,
+        longitude: Double? = null,
+        locationAccuracy: Float? = null,
+        address: String? = null
     ): Result<CapturedFace> {
         return try {
             val userId = auth.currentUser?.uid
@@ -36,11 +39,15 @@ class CapturedFacesRepository {
             val collection = getUserCapturedFacesCollection()
                 ?: return Result.Error(Exception("Unable to access user collection"))
 
-            // Compress original image
-            val compressedOriginal = ImageCompressor.compressBitmap(originalBitmap, maxWidth = 640, maxHeight = 640)
+            // Compress original image (smaller for storage)
+            val compressedOriginal = ImageCompressor.compressBitmap(
+                originalBitmap,
+                maxWidth = 640,
+                maxHeight = 640
+            )
             val originalBase64 = ImageCompressor.bitmapToBase64(compressedOriginal, quality = 50)
 
-            // Compress face crop
+            // Compress face crop (higher quality for recognition)
             val compressedFace = ImageCompressor.compressFaceCrop(croppedFaceBitmap)
             val faceBase64 = ImageCompressor.bitmapToBase64(compressedFace, quality = 70)
 
@@ -57,7 +64,11 @@ class CapturedFacesRepository {
                 isRecognized = isRecognized,
                 matchedPersonId = matchedPersonId,
                 matchedPersonName = matchedPersonName,
-                confidence = confidence
+                confidence = confidence,
+                latitude = latitude,
+                longitude = longitude,
+                locationAccuracy = locationAccuracy,
+                address = address
             )
 
             // Save to Firestore under users/{userId}/captured_faces/{docId}
@@ -91,6 +102,69 @@ class CapturedFacesRepository {
         }
     }
 
+    suspend fun getUnrecognizedFaces(limit: Int = 50): Result<List<CapturedFace>> {
+        return try {
+            val collection = getUserCapturedFacesCollection()
+                ?: return Result.Error(Exception("User not logged in"))
+
+            val snapshot = collection
+                .whereEqualTo("isRecognized", false)
+                .orderBy("timestamp", Query.Direction.DESCENDING)
+                .limit(limit.toLong())
+                .get()
+                .await()
+
+            val faces = snapshot.documents.mapNotNull {
+                it.toObject(CapturedFace::class.java)
+            }
+            Result.Success(faces)
+        } catch (e: Exception) {
+            Result.Error(e)
+        }
+    }
+
+    suspend fun getRecognizedFaces(limit: Int = 50): Result<List<CapturedFace>> {
+        return try {
+            val collection = getUserCapturedFacesCollection()
+                ?: return Result.Error(Exception("User not logged in"))
+
+            val snapshot = collection
+                .whereEqualTo("isRecognized", true)
+                .orderBy("timestamp", Query.Direction.DESCENDING)
+                .limit(limit.toLong())
+                .get()
+                .await()
+
+            val faces = snapshot.documents.mapNotNull {
+                it.toObject(CapturedFace::class.java)
+            }
+            Result.Success(faces)
+        } catch (e: Exception) {
+            Result.Error(e)
+        }
+    }
+
+    suspend fun getFacesByPerson(personId: String, limit: Int = 50): Result<List<CapturedFace>> {
+        return try {
+            val collection = getUserCapturedFacesCollection()
+                ?: return Result.Error(Exception("User not logged in"))
+
+            val snapshot = collection
+                .whereEqualTo("matchedPersonId", personId)
+                .orderBy("timestamp", Query.Direction.DESCENDING)
+                .limit(limit.toLong())
+                .get()
+                .await()
+
+            val faces = snapshot.documents.mapNotNull {
+                it.toObject(CapturedFace::class.java)
+            }
+            Result.Success(faces)
+        } catch (e: Exception) {
+            Result.Error(e)
+        }
+    }
+
     suspend fun deleteCapturedFace(faceId: String): Result<Unit> {
         return try {
             val collection = getUserCapturedFacesCollection()
@@ -101,6 +175,25 @@ class CapturedFacesRepository {
                 .await()
 
             Result.Success(Unit)
+        } catch (e: Exception) {
+            Result.Error(e)
+        }
+    }
+
+    suspend fun deleteAllCapturedFaces(): Result<Int> {
+        return try {
+            val collection = getUserCapturedFacesCollection()
+                ?: return Result.Error(Exception("User not logged in"))
+
+            val snapshot = collection.get().await()
+
+            var deletedCount = 0
+            snapshot.documents.forEach { doc ->
+                doc.reference.delete().await()
+                deletedCount++
+            }
+
+            Result.Success(deletedCount)
         } catch (e: Exception) {
             Result.Error(e)
         }
@@ -125,6 +218,34 @@ class CapturedFacesRepository {
             }
 
             Result.Success(deletedCount)
+        } catch (e: Exception) {
+            Result.Error(e)
+        }
+    }
+
+    suspend fun getCapturedFacesCount(): Result<Int> {
+        return try {
+            val collection = getUserCapturedFacesCollection()
+                ?: return Result.Error(Exception("User not logged in"))
+
+            val snapshot = collection.get().await()
+            Result.Success(snapshot.size())
+        } catch (e: Exception) {
+            Result.Error(e)
+        }
+    }
+
+    suspend fun getUnrecognizedFacesCount(): Result<Int> {
+        return try {
+            val collection = getUserCapturedFacesCollection()
+                ?: return Result.Error(Exception("User not logged in"))
+
+            val snapshot = collection
+                .whereEqualTo("isRecognized", false)
+                .get()
+                .await()
+
+            Result.Success(snapshot.size())
         } catch (e: Exception) {
             Result.Error(e)
         }

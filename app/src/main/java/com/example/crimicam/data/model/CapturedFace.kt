@@ -10,5 +10,10 @@ data class CapturedFace(
     val isRecognized: Boolean = false,
     val matchedPersonId: String? = null,
     val matchedPersonName: String? = null,
-    val confidence: Float = 0f
+    val confidence: Float = 0f,
+    // NEW: Location data
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val locationAccuracy: Float? = null,
+    val address: String? = null
 )

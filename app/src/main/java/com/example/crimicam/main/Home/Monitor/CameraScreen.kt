@@ -11,7 +11,6 @@ import androidx.annotation.RequiresApi
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -34,7 +33,6 @@ import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import java.io.ByteArrayOutputStream
-import java.nio.ByteBuffer
 
 @RequiresApi(Build.VERSION_CODES.O)
 @OptIn(ExperimentalPermissionsApi::class)
@@ -43,11 +41,19 @@ fun CameraScreen(
     navController: NavController,
     viewModel: CameraViewModel = viewModel()
 ) {
+    val context = LocalContext.current
     val cameraPermissionState = rememberPermissionState(Manifest.permission.CAMERA)
+    val locationPermissionState = rememberPermissionState(Manifest.permission.ACCESS_FINE_LOCATION)
 
     LaunchedEffect(Unit) {
+        viewModel.initLocationManager(context)
+
         if (!cameraPermissionState.status.isGranted) {
             cameraPermissionState.launchPermissionRequest()
+        }
+
+        if (!locationPermissionState.status.isGranted) {
+            locationPermissionState.launchPermissionRequest()
         }
     }
 
@@ -213,7 +219,7 @@ fun CameraPreviewView(viewModel: CameraViewModel) {
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Automatically capturing and analyzing faces",
+                    text = "Capturing faces with GPS location 📍",
                     fontSize = 12.sp,
                     color = Color.Gray
                 )

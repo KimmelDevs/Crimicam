@@ -1,6 +1,6 @@
 package com.example.crimicam.main.Home.Monitor
 
-
+import android.content.Context
 import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -9,6 +9,7 @@ import com.example.crimicam.data.repository.CapturedFacesRepository
 import com.example.crimicam.data.repository.KnownPeopleRepository
 import com.example.crimicam.ml.FaceDetector
 import com.example.crimicam.ml.FaceRecognizer
+import com.example.crimicam.util.LocationManager
 import com.example.crimicam.util.Result
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,8 +21,9 @@ data class CameraState(
     val isProcessing: Boolean = false,
     val knownPeople: List<KnownPerson> = emptyList(),
     val lastDetectionTime: Long = 0,
-    val detectionCooldown: Long = 3000, // 3 seconds between captures
-    val statusMessage: String = "Ready"
+    val detectionCooldown: Long = 3000,
+    val statusMessage: String = "Ready",
+    val hasLocationPermission: Boolean = false
 )
 
 class CameraViewModel(
@@ -33,8 +35,17 @@ class CameraViewModel(
     private val _state = MutableStateFlow(CameraState())
     val state: StateFlow<CameraState> = _state.asStateFlow()
 
+    private var locationManager: LocationManager? = null
+
     init {
         loadKnownPeople()
+    }
+
+    fun initLocationManager(context: Context) {
+        locationManager = LocationManager(context)
+        _state.value = _state.value.copy(
+            hasLocationPermission = locationManager?.hasLocationPermission() ?: false
+        )
     }
 
     private fun loadKnownPeople() {
@@ -72,6 +83,9 @@ class CameraViewModel(
             )
 
             try {
+                // Get current location
+                val locationData = locationManager?.getCurrentLocation()
+
                 // Detect faces
                 val faces = faceDetector.detectFaces(bitmap)
 
@@ -105,13 +119,18 @@ class CameraViewModel(
                 )
 
                 val isRecognized = matchedPerson != null
-                val statusMessage = if (isRecognized) {
+                var statusMessage = if (isRecognized) {
                     "Recognized: ${matchedPerson?.name} (${(confidence * 100).toInt()}%)"
                 } else {
                     "Unknown person detected!"
                 }
 
-                // Save to Firestore
+                // Add location info to status
+                if (locationData != null) {
+                    statusMessage += " 📍"
+                }
+
+                // Save to Firestore with location
                 when (capturedFacesRepository.saveCapturedFace(
                     originalBitmap = bitmap,
                     croppedFaceBitmap = croppedFace,
@@ -119,7 +138,11 @@ class CameraViewModel(
                     isRecognized = isRecognized,
                     matchedPersonId = matchedPerson?.id,
                     matchedPersonName = matchedPerson?.name,
-                    confidence = confidence
+                    confidence = confidence,
+                    latitude = locationData?.latitude,
+                    longitude = locationData?.longitude,
+                    locationAccuracy = locationData?.accuracy,
+                    address = locationData?.address
                 )) {
                     is Result.Success -> {
                         _state.value = _state.value.copy(
