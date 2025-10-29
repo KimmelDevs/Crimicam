@@ -1,7 +1,6 @@
-package com.example.crimicam.signup
+package com.example.crimicam.presentation.login
 
-
-data class SignupState(
+data class LoginState(
     val isLoading: Boolean = false,
     val isSuccess: Boolean = false,
     val errorMessage: String? = null

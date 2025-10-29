@@ -1,13 +1,11 @@
-package com.example.crimicam.signup
+package com.example.crimicam.presentation.login
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -27,41 +25,31 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.NavController
 import com.example.crimicam.R
 
 @Composable
-fun SignupScreen(
-    navController: NavController,
-    viewModel: SignupViewModel = viewModel()
+fun LoginScreen(
+    homeClick: () -> Unit,
+    signupClick: () -> Unit,
+    viewModel: LoginViewModel = viewModel()
 ) {
-    var name by rememberSaveable { mutableStateOf("") }
     var email by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
-    var confirmPassword by rememberSaveable { mutableStateOf("") }
 
-    val signupState by viewModel.signupState.collectAsState()
+    val loginState by viewModel.loginState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
-    val scrollState = rememberScrollState()
 
-    // Handle navigation on success - redirect to login
-    LaunchedEffect(signupState.isSuccess) {
-        if (signupState.isSuccess) {
-            snackbarHostState.showSnackbar(
-                message = "Account created successfully! Please login.",
-                duration = SnackbarDuration.Short
-            )
-            // Navigate back to login screen
-            navController.navigate("login") {
-                popUpTo("signup") { inclusive = true }
-            }
+    // Handle navigation on success
+    LaunchedEffect(loginState.isSuccess) {
+        if (loginState.isSuccess) {
+            homeClick()
             viewModel.resetState()
         }
     }
 
     // Show error message
-    LaunchedEffect(signupState.errorMessage) {
-        signupState.errorMessage?.let { error ->
+    LaunchedEffect(loginState.errorMessage) {
+        loginState.errorMessage?.let { error ->
             snackbarHostState.showSnackbar(
                 message = error,
                 duration = SnackbarDuration.Short
@@ -79,10 +67,7 @@ fun SignupScreen(
                 .padding(paddingValues)
         ) {
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(scrollState)
-                    .padding(horizontal = 24.dp),
+                modifier = Modifier.padding(horizontal = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
@@ -97,15 +82,15 @@ fun SignupScreen(
 
                 Image(
                     painter = painterResource(id = R.drawable.img),
-                    contentDescription = "Signup illustration",
+                    contentDescription = "Login illustration",
                     contentScale = ContentScale.Fit,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(180.dp)
+                        .height(200.dp)
                 )
 
                 Text(
-                    text = "Create an Account",
+                    text = "Login to Continue",
                     style = MaterialTheme.typography.headlineMedium,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth(),
@@ -114,104 +99,53 @@ fun SignupScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                NameTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    enabled = !signupState.isLoading
-                )
-
-                Spacer(modifier = Modifier.height(10.dp))
-
                 EmailTextField(
                     value = email,
                     onValueChange = { email = it },
-                    enabled = !signupState.isLoading
+                    enabled = !loginState.isLoading
                 )
 
                 Spacer(modifier = Modifier.height(10.dp))
 
                 PasswordTextField(
-                    label = "Password",
                     value = password,
                     onValueChange = { password = it },
-                    enabled = !signupState.isLoading
-                )
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                PasswordTextField(
-                    label = "Confirm Password",
-                    value = confirmPassword,
-                    onValueChange = { confirmPassword = it },
-                    enabled = !signupState.isLoading
+                    enabled = !loginState.isLoading
                 )
 
                 Spacer(modifier = Modifier.height(24.dp))
 
                 GradientButton(
-                    text = if (signupState.isLoading) "Creating Account..." else "Sign Up",
+                    text = if (loginState.isLoading) "Logging in..." else "Login",
                     gradientColors = listOf(Color(0xFF484BF1), Color(0xFF673AB7)),
                     cornerRadius = 16.dp,
-                    enabled = !signupState.isLoading
+                    enabled = !loginState.isLoading
                 ) {
-                    viewModel.signUp(name, email, password, confirmPassword)
+                    viewModel.login(email, password)
                 }
 
                 Spacer(modifier = Modifier.height(20.dp))
 
                 TextButton(
-                    onClick = { navController.popBackStack() },
-                    enabled = !signupState.isLoading
+                    onClick = signupClick,
+                    enabled = !loginState.isLoading
                 ) {
                     Text(
-                        text = "Already have an account? Login",
+                        text = "Create an Account",
                         style = MaterialTheme.typography.labelLarge,
                         letterSpacing = 1.sp,
                     )
                 }
-
-                Spacer(modifier = Modifier.height(24.dp))
             }
 
             // Loading indicator
-            if (signupState.isLoading) {
+            if (loginState.isLoading) {
                 CircularProgressIndicator(
                     modifier = Modifier.align(Alignment.Center)
                 )
             }
         }
     }
-}
-
-@OptIn(ExperimentalComposeUiApi::class)
-@Composable
-fun NameTextField(
-    value: String,
-    onValueChange: (String) -> Unit,
-    enabled: Boolean = true
-) {
-    val keyboardController = LocalSoftwareKeyboardController.current
-
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        label = { Text(text = "Full Name") },
-        placeholder = { Text("Enter your full name") },
-        shape = RoundedCornerShape(topEnd = 12.dp, bottomStart = 12.dp),
-        singleLine = true,
-        enabled = enabled,
-        keyboardOptions = KeyboardOptions(
-            imeAction = ImeAction.Next,
-            keyboardType = KeyboardType.Text,
-            capitalization = KeyboardCapitalization.Words
-        ),
-        keyboardActions = KeyboardActions(onNext = { keyboardController?.hide() }),
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = MaterialTheme.colorScheme.primary,
-            unfocusedBorderColor = MaterialTheme.colorScheme.primary
-        ),
-        modifier = Modifier.fillMaxWidth()
-    )
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
@@ -226,7 +160,11 @@ fun EmailTextField(
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
-        label = { Text(text = "Email Address") },
+        label = {
+            Text(
+                text = "Email Address"
+            )
+        },
         placeholder = { Text("Email Address") },
         shape = RoundedCornerShape(topEnd = 12.dp, bottomStart = 12.dp),
         singleLine = true,
@@ -247,7 +185,6 @@ fun EmailTextField(
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun PasswordTextField(
-    label: String,
     value: String,
     onValueChange: (String) -> Unit,
     enabled: Boolean = true
@@ -258,8 +195,12 @@ fun PasswordTextField(
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
-        label = { Text(text = label) },
-        placeholder = { Text(label) },
+        label = {
+            Text(
+                text = "Password"
+            )
+        },
+        placeholder = { Text("Enter your password") },
         enabled = enabled,
         visualTransformation = if (hidden) PasswordVisualTransformation() else VisualTransformation.None,
         trailingIcon = {
@@ -277,7 +218,7 @@ fun PasswordTextField(
         shape = RoundedCornerShape(topEnd = 12.dp, bottomStart = 12.dp),
         singleLine = true,
         keyboardOptions = KeyboardOptions(
-            imeAction = if (label == "Confirm Password") ImeAction.Done else ImeAction.Next,
+            imeAction = ImeAction.Done,
             keyboardType = KeyboardType.Password
         ),
         keyboardActions = KeyboardActions(onDone = { keyboardController?.hide() }),

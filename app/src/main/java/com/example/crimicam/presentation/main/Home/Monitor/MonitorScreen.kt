@@ -1,4 +1,4 @@
-package com.example.crimicam.main.Home.Camera
+package com.example.crimicam.presentation.main.Home.Monitor
 
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavController

@@ -1,4 +1,4 @@
-package com.example.crimicam.main.KnownPeople
+package com.example.crimicam.presentation.main.KnownPeople
 
 
 import android.content.Context

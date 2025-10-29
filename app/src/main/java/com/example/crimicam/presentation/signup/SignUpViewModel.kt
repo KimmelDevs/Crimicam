@@ -1,4 +1,4 @@
-package com.example.crimicam.signup
+package com.example.crimicam.presentation.signup
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope

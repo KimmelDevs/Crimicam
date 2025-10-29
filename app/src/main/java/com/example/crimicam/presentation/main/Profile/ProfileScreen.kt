@@ -1,4 +1,4 @@
-package com.example.crimicam.main.Profile
+package com.example.crimicam.presentation.main.Profile
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable

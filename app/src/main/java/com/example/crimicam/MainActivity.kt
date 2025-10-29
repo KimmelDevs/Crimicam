@@ -5,7 +5,6 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -22,17 +21,17 @@ import androidx.compose.ui.platform.LocalView
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.example.crimicam.login.LoginScreen
-import com.example.crimicam.main.Home.ActivityDetail.ActivityDetailScreen
-import com.example.crimicam.main.BottomNav.BottomNavItem
-import com.example.crimicam.main.BottomNav.BottomNavigationBar
-import com.example.crimicam.main.Home.Camera.MonitorScreen
-import com.example.crimicam.main.Home.HomeScreen
-import com.example.crimicam.main.Home.Monitor.CameraScreen
-import com.example.crimicam.main.KnownPeople.KnownPeopleScreen
-import com.example.crimicam.main.Map.MapScreen
-import com.example.crimicam.main.Profile.ProfileScreen
-import com.example.crimicam.signup.SignupScreen
+import com.example.crimicam.presentation.login.LoginScreen
+import com.example.crimicam.presentation.main.BottomNav.BottomNavItem
+import com.example.crimicam.presentation.main.BottomNav.BottomNavigationBar
+import com.example.crimicam.presentation.main.Home.ActivityDetail.ActivityDetailScreen
+import com.example.crimicam.presentation.main.Home.Camera.CameraScreen
+import com.example.crimicam.presentation.main.Home.HomeScreen
+import com.example.crimicam.presentation.main.Home.Monitor.MonitorScreen
+import com.example.crimicam.presentation.main.KnownPeople.KnownPeopleScreen
+import com.example.crimicam.presentation.main.Map.MapScreen
+import com.example.crimicam.presentation.main.Profile.ProfileScreen
+import com.example.crimicam.presentation.signup.SignupScreen
 import com.example.crimicam.ui.theme.CrimicamTheme
 
 class MainActivity : ComponentActivity() {

@@ -1,4 +1,4 @@
-package com.example.crimicam.main.Home
+package com.example.crimicam.presentation.main.Home
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background

@@ -1,4 +1,4 @@
-package com.example.crimicam.main.BottomNav
+package com.example.crimicam.presentation.main.BottomNav
 
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar

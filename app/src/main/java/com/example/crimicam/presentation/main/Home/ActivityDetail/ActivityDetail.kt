@@ -1,4 +1,4 @@
-package com.example.crimicam.main.Home.ActivityDetail
+package com.example.crimicam.presentation.main.Home.ActivityDetail
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState

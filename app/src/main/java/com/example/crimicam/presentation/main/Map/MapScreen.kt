@@ -1,4 +1,4 @@
-package com.example.crimicam.main.Map
+package com.example.crimicam.presentation.main.Map
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border

@@ -1,4 +1,4 @@
-package com.example.crimicam.main.Home.Monitor
+package com.example.crimicam.presentation.main.Home.Camera
 
 import android.content.Context
 import android.graphics.Bitmap
