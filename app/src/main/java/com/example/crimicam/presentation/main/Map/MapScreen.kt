@@ -1,5 +1,6 @@
 package com.example.crimicam.presentation.main.Map
 
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -18,35 +19,90 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import org.osmdroid.config.Configuration
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.util.GeoPoint
+import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.compass.CompassOverlay
+import org.osmdroid.views.overlay.compass.InternalCompassOrientationProvider
+import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
+import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 
 @Composable
 fun MapScreen() {
+    val context = LocalContext.current
     var selectedMarker by remember { mutableStateOf<MapMarker?>(null) }
+    var mapView by remember { mutableStateOf<MapView?>(null) }
 
-    // Sample markers for demonstration
+    // Philippines center coordinates (Manila)
+    val philippinesCenter = remember { GeoPoint(12.8797, 121.7740) }
+
+    // Sample markers for demonstration in the Philippines
     val markers = remember {
         listOf(
-            MapMarker(1, "Camera 1", "Active", 0.3f, 0.4f, MarkerType.CAMERA),
-            MapMarker(2, "Alert Zone", "Recent Activity", 0.6f, 0.3f, MarkerType.ALERT),
-            MapMarker(3, "Camera 2", "Offline", 0.5f, 0.7f, MarkerType.CAMERA),
-            MapMarker(4, "Known Person", "John Doe spotted", 0.7f, 0.6f, MarkerType.PERSON)
+            MapMarker(
+                id = 1,
+                name = "Manila Camera",
+                status = "Active",
+                latitude = 14.5995,
+                longitude = 120.9842,
+                type = MarkerType.CAMERA
+            ),
+            MapMarker(
+                id = 2,
+                name = "Cebu Alert Zone",
+                status = "Recent Activity",
+                latitude = 10.3157,
+                longitude = 123.8854,
+                type = MarkerType.ALERT
+            ),
+            MapMarker(
+                id = 3,
+                name = "Davao Camera",
+                status = "Offline",
+                latitude = 7.1907,
+                longitude = 125.4553,
+                type = MarkerType.CAMERA
+            ),
+            MapMarker(
+                id = 4,
+                name = "Known Person - Baguio",
+                status = "John Doe spotted",
+                latitude = 16.4023,
+                longitude = 120.5960,
+                type = MarkerType.PERSON
+            )
         )
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        // Map Background
-        MapBackground()
+    // Initialize OpenStreetMap configuration
+    LaunchedEffect(Unit) {
+        Configuration.getInstance().load(
+            context,
+            context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE)
+        )
+        Configuration.getInstance().userAgentValue = context.packageName
+    }
 
-        // Map Markers
-        markers.forEach { marker ->
-            MapMarkerPin(
-                marker = marker,
-                onClick = { selectedMarker = marker }
-            )
-        }
+    Box(modifier = Modifier.fillMaxSize()) {
+        // OpenStreetMap View
+        OpenStreetMapView(
+            center = philippinesCenter,
+            zoomLevel = 6.0,
+            markers = markers,
+            onMarkerClick = { marker ->
+                selectedMarker = marker
+            },
+            onMapReady = { map ->
+                mapView = map
+            }
+        )
 
         // Map Controls
         Column(
@@ -58,15 +114,21 @@ fun MapScreen() {
         ) {
             MapControlButton(
                 icon = Icons.Default.Add,
-                onClick = { /* Zoom in */ }
+                onClick = {
+                    mapView?.controller?.zoomIn()
+                }
             )
             MapControlButton(
                 icon = Icons.Default.Remove,
-                onClick = { /* Zoom out */ }
+                onClick = {
+                    mapView?.controller?.zoomOut()
+                }
             )
             MapControlButton(
                 icon = Icons.Default.MyLocation,
-                onClick = { /* Center on location */ }
+                onClick = {
+                    mapView?.controller?.animateTo(philippinesCenter)
+                }
             )
         }
 
@@ -93,107 +155,69 @@ fun MapScreen() {
 }
 
 @Composable
-fun MapBackground() {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFFE8F5E9))
-    ) {
-        // Grid pattern to simulate map
-        Column(modifier = Modifier.fillMaxSize()) {
-            repeat(20) {
-                Row(modifier = Modifier.weight(1f)) {
-                    repeat(20) { index ->
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                                .border(
-                                    width = 0.5.dp,
-                                    color = Color(0xFFBDBDBD).copy(alpha = 0.2f)
-                                )
-                        )
+fun OpenStreetMapView(
+    center: GeoPoint,
+    zoomLevel: Double,
+    markers: List<MapMarker>,
+    onMarkerClick: (MapMarker) -> Unit,
+    onMapReady: (MapView) -> Unit
+) {
+    val context = LocalContext.current
+
+    AndroidView(
+        factory = { context ->
+            MapView(context).apply {
+                setTileSource(TileSourceFactory.MAPNIK)
+                setMultiTouchControls(true)
+
+                // Set initial position and zoom (Philippines)
+                controller.setZoom(zoomLevel)
+                controller.setCenter(center)
+
+                // Add compass
+                val compassOverlay = CompassOverlay(
+                    context,
+                    InternalCompassOrientationProvider(context),
+                    this
+                ).apply {
+                    enableCompass()
+                }
+                overlays.add(compassOverlay)
+
+                // Add location overlay
+                val locationOverlay = MyLocationNewOverlay(GpsMyLocationProvider(context), this)
+                locationOverlay.enableMyLocation()
+                overlays.add(locationOverlay)
+
+                // Add markers
+                markers.forEach { mapMarker ->
+                    val marker = Marker(this).apply {
+                        position = GeoPoint(mapMarker.latitude, mapMarker.longitude)
+                        title = mapMarker.name
+                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+
+                        // Set different icons based on marker type
+                        icon = when (mapMarker.type) {
+                            MarkerType.CAMERA -> context.getDrawable(android.R.drawable.ic_menu_camera)
+                            MarkerType.ALERT -> context.getDrawable(android.R.drawable.ic_dialog_alert)
+                            MarkerType.PERSON -> context.getDrawable(android.R.drawable.ic_menu_myplaces)
+                        }
+
+                        setOnMarkerClickListener { _, _ ->
+                            onMarkerClick(mapMarker)
+                            true
+                        }
                     }
+                    overlays.add(marker)
                 }
             }
-        }
-
-        // Simulated roads/paths
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(0.1f)
-                .fillMaxHeight()
-                .offset(x = 120.dp)
-                .background(Color(0xFFBDBDBD).copy(alpha = 0.3f))
-        )
-
-        Box(
-            modifier = Modifier
-                .fillMaxHeight(0.1f)
-                .fillMaxWidth()
-                .offset(y = 180.dp)
-                .background(Color(0xFFBDBDBD).copy(alpha = 0.3f))
-        )
-    }
-}
-
-@Composable
-fun MapMarkerPin(
-    marker: MapMarker,
-    onClick: () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier
-                .offset(
-                    x = (marker.x * 350).dp,
-                    y = (marker.y * 650).dp
-                )
-                .clickable(onClick = onClick)
-        ) {
-            // Marker pin
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(
-                        when (marker.type) {
-                            MarkerType.CAMERA -> Color(0xFF2196F3)
-                            MarkerType.ALERT -> Color(0xFFF44336)
-                            MarkerType.PERSON -> Color(0xFFFF9800)
-                        }
-                    )
-                    .border(3.dp, Color.White, CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.LocationOn,
-                    contentDescription = marker.name,
-                    tint = Color.White,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-
-            // Pulse effect
-            Box(
-                modifier = Modifier
-                    .size(50.dp)
-                    .offset(y = (-45).dp)
-                    .clip(CircleShape)
-                    .background(
-                        when (marker.type) {
-                            MarkerType.CAMERA -> Color(0xFF2196F3).copy(alpha = 0.2f)
-                            MarkerType.ALERT -> Color(0xFFF44336).copy(alpha = 0.2f)
-                            MarkerType.PERSON -> Color(0xFFFF9800).copy(alpha = 0.2f)
-                        }
-                    )
-            )
-        }
-    }
+        },
+        update = { mapView ->
+            // Update map if needed
+            mapView.invalidate()
+        },
+        modifier = Modifier.fillMaxSize()
+    )
 }
 
 @Composable
@@ -220,7 +244,8 @@ fun MarkerInfoCard(
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White)
     ) {
         Column(
             modifier = Modifier
@@ -232,14 +257,22 @@ fun MarkerInfoCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = marker.name,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Column {
+                    Text(
+                        text = marker.name,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.Black
+                    )
+                    Text(
+                        text = "Lat: ${"%.4f".format(marker.latitude)}, Lng: ${"%.4f".format(marker.longitude)}",
+                        fontSize = 12.sp,
+                        color = Color.Gray
+                    )
+                }
 
                 TextButton(onClick = onDismiss) {
-                    Text("Close")
+                    Text("Close", color = MaterialTheme.colorScheme.primary)
                 }
             }
 
@@ -259,9 +292,16 @@ fun MarkerInfoCard(
             ) {
                 Button(
                     onClick = { /* View details */ },
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = when (marker.type) {
+                            MarkerType.CAMERA -> Color(0xFF2196F3)
+                            MarkerType.ALERT -> Color(0xFFF44336)
+                            MarkerType.PERSON -> Color(0xFFFF9800)
+                        }
+                    )
                 ) {
-                    Text("View Details")
+                    Text("View Details", color = Color.White)
                 }
 
                 OutlinedButton(
@@ -284,7 +324,8 @@ fun MapStatsBar(
     Card(
         modifier = modifier,
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
     ) {
         Row(
             modifier = Modifier.padding(12.dp),
@@ -326,7 +367,8 @@ fun StatItem(
             Text(
                 text = value,
                 fontSize = 16.sp,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                color = Color.Black
             )
             Text(
                 text = label,
@@ -337,13 +379,13 @@ fun StatItem(
     }
 }
 
-// Data classes
+// Updated Data classes with actual coordinates
 data class MapMarker(
     val id: Int,
     val name: String,
     val status: String,
-    val x: Float,
-    val y: Float,
+    val latitude: Double,
+    val longitude: Double,
     val type: MarkerType
 )
 

@@ -8,7 +8,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.currentBackStackEntryAsState
-import com.example.crimicam.main.BottomNav.BottomNavItem
 
 @Composable
 fun BottomNavigationBar(

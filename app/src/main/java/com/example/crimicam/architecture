@@ -86,11 +86,6 @@ app/
 │       │   ├── Theme.kt
 │       │   └── Type.kt
 │       │
-│       ├── di/ (Dependency Injection - if using Hilt/Koin)
-│       │   ├── AppModule.kt
-│       │   ├── FirebaseModule.kt
-│       │   └── RepositoryModule.kt
-│       │
 │       ├── util/
 │       │   ├── Constants.kt
 │       │   ├── Result.kt (for handling success/error states)

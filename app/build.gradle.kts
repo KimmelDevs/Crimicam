@@ -107,4 +107,9 @@ dependencies {
 
     //kanan location
     implementation("com.google.android.gms:play-services-location:21.1.0")
+
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
+    implementation("com.github.MKergall:osmbonuspack:6.9.0")
+    implementation("androidx.preference:preference-ktx:1.2.1")
+
 }
