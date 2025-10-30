@@ -21,11 +21,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavController
 import com.example.crimicam.presentation.main.Profile.LogoutState
 import com.example.crimicam.presentation.main.Profile.ProfileViewModel
 
 @Composable
 fun ProfileScreen(
+    navController: NavController,
     onLogout: () -> Unit,
     viewModel: ProfileViewModel = viewModel()
 ) {
@@ -59,7 +61,7 @@ fun ProfileScreen(
                 icon = Icons.Default.Person,
                 title = "View Profile",
                 subtitle = "See your profile information",
-                onClick = { showProfileDialog = true }
+                onClick = { navController.navigate("view_profile") }
             )
             SettingsItem(
                 icon = Icons.Default.Info,

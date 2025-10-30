@@ -31,6 +31,7 @@ import com.example.crimicam.presentation.main.Home.Monitor.MonitorScreen
 import com.example.crimicam.presentation.main.KnownPeople.KnownPeopleScreen
 import com.example.crimicam.presentation.main.Map.MapScreen
 import com.example.crimicam.presentation.main.Profile.ProfileScreen
+import com.example.crimicam.presentation.main.Profile.ViewProfile.ViewProfileScreen
 import com.example.crimicam.presentation.signup.SignupScreen
 import com.example.crimicam.ui.theme.CrimicamTheme
 
@@ -155,6 +156,7 @@ fun MainScreen(
             }
             composable(BottomNavItem.Profile.route) {
                 ProfileScreen(
+                    navController = bottomNavController,
                     onLogout = {
                         // Use the main navController to navigate to login
                         mainNavController.navigate("login") {
@@ -173,6 +175,11 @@ fun MainScreen(
             }
             composable("activity_detail") {
                 ActivityDetailScreen(navController = bottomNavController)
+            }
+
+            //profile
+            composable("view_profile") {
+                ViewProfileScreen(navController = bottomNavController)
             }
         }
     }
