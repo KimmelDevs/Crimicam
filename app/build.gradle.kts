@@ -92,7 +92,13 @@ dependencies {
     implementation("androidx.camera:camera-extensions:1.3.4")
     implementation("androidx.concurrent:concurrent-futures:1.2.0")
     implementation("com.google.guava:guava:31.1-android")
+    implementation("io.getstream:stream-webrtc-android:1.1.3")
 
+    // Or use Google's WebRTC
+    implementation("org.webrtc:google-webrtc:1.0.32006")
+
+    // Coroutines for WebRTC
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     // ML Kit for Face Detection (FREE)
     implementation("com.google.mlkit:face-detection:16.1.5")
 
