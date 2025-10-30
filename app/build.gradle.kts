@@ -38,6 +38,9 @@ android {
     buildFeatures {
         compose = true
     }
+    buildFeatures {
+        viewBinding = true
+    }
 }
 
 dependencies {
@@ -51,7 +54,7 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     implementation("com.google.firebase:firebase-firestore-ktx:25.1.1")
-
+    implementation("androidx.compose.ui:ui")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -117,5 +120,10 @@ dependencies {
     implementation("org.osmdroid:osmdroid-android:6.1.20")
     implementation("com.github.MKergall:osmbonuspack:6.9.0")
     implementation("androidx.preference:preference-ktx:1.2.1")
+
+    //jetpackcompose lacking dependenciasodasiodjasd
+    implementation(platform("androidx.compose:compose-bom:2025.01.00"))
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.ui:ui-tooling-preview")
 
 }

@@ -28,6 +28,7 @@ import com.example.crimicam.presentation.main.Home.ActivityDetail.ActivityDetail
 import com.example.crimicam.presentation.main.Home.Camera.CameraScreen
 import com.example.crimicam.presentation.main.Home.HomeScreen
 import com.example.crimicam.presentation.main.Home.Monitor.MonitorScreen
+import com.example.crimicam.presentation.main.Home.Monitor.StreamViewerScreen
 import com.example.crimicam.presentation.main.KnownPeople.KnownPeopleScreen
 import com.example.crimicam.presentation.main.Map.MapScreen
 import com.example.crimicam.presentation.main.Profile.ProfileScreen
@@ -114,7 +115,7 @@ fun AppNavigation() {
         // Main screen with bottom navigation
         composable("main") {
             MainScreen(
-                mainNavController = navController // Pass the main navController
+                mainNavController = navController
             )
         }
     }
@@ -123,7 +124,7 @@ fun AppNavigation() {
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
 fun MainScreen(
-    mainNavController: androidx.navigation.NavHostController // Add this parameter
+    mainNavController: androidx.navigation.NavHostController
 ) {
     val bottomNavController = rememberNavController()
     val items = listOf(
@@ -158,7 +159,6 @@ fun MainScreen(
                 ProfileScreen(
                     navController = bottomNavController,
                     onLogout = {
-                        // Use the main navController to navigate to login
                         mainNavController.navigate("login") {
                             popUpTo("main") { inclusive = true }
                         }
@@ -166,7 +166,7 @@ fun MainScreen(
                 )
             }
 
-            //home
+            // Home nested routes
             composable("camera") {
                 CameraScreen(navController = bottomNavController)
             }
@@ -177,9 +177,18 @@ fun MainScreen(
                 ActivityDetailScreen(navController = bottomNavController)
             }
 
-            //profile
+            // Profile nested routes
             composable("view_profile") {
                 ViewProfileScreen(navController = bottomNavController)
+            }
+
+            // Stream viewer route - FIXED
+            composable("stream_viewer/{sessionId}") { backStackEntry ->
+                val sessionId = backStackEntry.arguments?.getString("sessionId") ?: ""
+                StreamViewerScreen(
+                    sessionId = sessionId,
+                    navController = bottomNavController // Fixed: use bottomNavController
+                )
             }
         }
     }
