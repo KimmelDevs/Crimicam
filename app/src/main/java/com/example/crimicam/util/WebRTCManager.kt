@@ -1,9 +1,11 @@
 package com.example.crimicam.util
 
 import android.content.Context
+import kotlinx.coroutines.suspendCancellableCoroutine
 import org.webrtc.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlin.coroutines.resume
 
 class WebRTCManager(private val context: Context) {
 
@@ -36,6 +38,10 @@ class WebRTCManager(private val context: Context) {
             mediaStream?.let {
                 onRemoteStreamCallback?.invoke(it)
             }
+        }
+
+        override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {
+            // Handle ICE candidates removal
         }
 
         override fun onSignalingChange(newState: PeerConnection.SignalingState?) {}
@@ -131,8 +137,8 @@ class WebRTCManager(private val context: Context) {
                 mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
             }
 
-            val offer = peerConnection?.createOffer(constraints)?.await()
-            peerConnection?.setLocalDescription(offer)?.await()
+            val offer = peerConnection?.createOfferAsync(constraints)
+            peerConnection?.setLocalDescriptionAsync(offer)
 
             offer?.description
         } catch (e: Exception) {
@@ -143,8 +149,8 @@ class WebRTCManager(private val context: Context) {
     suspend fun createAnswer(): String? {
         return try {
             val constraints = MediaConstraints()
-            val answer = peerConnection?.createAnswer(constraints)?.await()
-            peerConnection?.setLocalDescription(answer)?.await()
+            val answer = peerConnection?.createAnswerAsync(constraints)
+            peerConnection?.setLocalDescriptionAsync(answer)
 
             answer?.description
         } catch (e: Exception) {
@@ -155,7 +161,7 @@ class WebRTCManager(private val context: Context) {
     suspend fun setRemoteDescription(sdp: String, type: SessionDescription.Type) {
         try {
             val sessionDescription = SessionDescription(type, sdp)
-            peerConnection?.setRemoteDescription(sessionDescription)?.await()
+            peerConnection?.setRemoteDescriptionAsync(sessionDescription)
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -187,14 +193,14 @@ class WebRTCManager(private val context: Context) {
 }
 
 // Extension functions for coroutines support
-private suspend fun PeerConnection.createOffer(constraints: MediaConstraints): SessionDescription? {
-    return kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+private suspend fun PeerConnection.createOfferAsync(constraints: MediaConstraints): SessionDescription? {
+    return suspendCancellableCoroutine { continuation ->
         createOffer(object : SdpObserver {
             override fun onCreateSuccess(sessionDescription: SessionDescription?) {
-                continuation.resume(sessionDescription) {}
+                continuation.resume(sessionDescription)
             }
             override fun onCreateFailure(error: String?) {
-                continuation.resume(null) {}
+                continuation.resume(null)
             }
             override fun onSetSuccess() {}
             override fun onSetFailure(error: String?) {}
@@ -202,14 +208,14 @@ private suspend fun PeerConnection.createOffer(constraints: MediaConstraints): S
     }
 }
 
-private suspend fun PeerConnection.createAnswer(constraints: MediaConstraints): SessionDescription? {
-    return kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+private suspend fun PeerConnection.createAnswerAsync(constraints: MediaConstraints): SessionDescription? {
+    return suspendCancellableCoroutine { continuation ->
         createAnswer(object : SdpObserver {
             override fun onCreateSuccess(sessionDescription: SessionDescription?) {
-                continuation.resume(sessionDescription) {}
+                continuation.resume(sessionDescription)
             }
             override fun onCreateFailure(error: String?) {
-                continuation.resume(null) {}
+                continuation.resume(null)
             }
             override fun onSetSuccess() {}
             override fun onSetFailure(error: String?) {}
@@ -217,14 +223,14 @@ private suspend fun PeerConnection.createAnswer(constraints: MediaConstraints): 
     }
 }
 
-private suspend fun PeerConnection.setLocalDescription(sessionDescription: SessionDescription?): Unit {
-    return kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+private suspend fun PeerConnection.setLocalDescriptionAsync(sessionDescription: SessionDescription?) {
+    return suspendCancellableCoroutine { continuation ->
         setLocalDescription(object : SdpObserver {
             override fun onSetSuccess() {
-                continuation.resume(Unit) {}
+                continuation.resume(Unit)
             }
             override fun onSetFailure(error: String?) {
-                continuation.resume(Unit) {}
+                continuation.resume(Unit)
             }
             override fun onCreateSuccess(p0: SessionDescription?) {}
             override fun onCreateFailure(p0: String?) {}
@@ -232,14 +238,14 @@ private suspend fun PeerConnection.setLocalDescription(sessionDescription: Sessi
     }
 }
 
-private suspend fun PeerConnection.setRemoteDescription(sessionDescription: SessionDescription): Unit {
-    return kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+private suspend fun PeerConnection.setRemoteDescriptionAsync(sessionDescription: SessionDescription) {
+    return suspendCancellableCoroutine { continuation ->
         setRemoteDescription(object : SdpObserver {
             override fun onSetSuccess() {
-                continuation.resume(Unit) {}
+                continuation.resume(Unit)
             }
             override fun onSetFailure(error: String?) {
-                continuation.resume(Unit) {}
+                continuation.resume(Unit)
             }
             override fun onCreateSuccess(p0: SessionDescription?) {}
             override fun onCreateFailure(p0: String?) {}
