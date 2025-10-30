@@ -95,7 +95,7 @@ dependencies {
     implementation("io.getstream:stream-webrtc-android:1.1.3")
 
     // Or use Google's WebRTC
-    implementation("org.webrtc:google-webrtc:1.0.39079")
+    implementation("io.getstream:stream-webrtc-android:1.1.3")
 
     // Coroutines for WebRTC
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
