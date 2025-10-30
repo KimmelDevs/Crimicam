@@ -7,6 +7,7 @@ import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.YuvImage
 import android.os.Build
+import android.view.ViewGroup
 import androidx.annotation.RequiresApi
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -14,7 +15,7 @@ import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Camera
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,6 +33,8 @@ import androidx.navigation.NavController
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
+import org.webrtc.RendererCommon
+import org.webrtc.SurfaceViewRenderer
 import java.io.ByteArrayOutputStream
 
 @RequiresApi(Build.VERSION_CODES.O)
@@ -58,7 +61,7 @@ fun CameraScreen(
     }
 
     if (cameraPermissionState.status.isGranted) {
-        CameraPreviewView(viewModel = viewModel)
+        CameraPreviewView(viewModel = viewModel, navController = navController)
     } else {
         RequestCameraPermissionContent(
             onRequestPermission = { cameraPermissionState.launchPermissionRequest() }
@@ -68,69 +71,101 @@ fun CameraScreen(
 
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
-fun CameraPreviewView(viewModel: CameraViewModel) {
+fun CameraPreviewView(
+    viewModel: CameraViewModel,
+    navController: NavController
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val state by viewModel.state.collectAsState()
 
-    val previewView = remember {
-        PreviewView(context).apply {
-            scaleType = PreviewView.ScaleType.FILL_CENTER
+    var isStreamingMode by remember { mutableStateOf(false) }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            if (isStreamingMode) {
+                viewModel.stopStreaming()
+            }
         }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // Camera Preview
-        AndroidView(
-            factory = { previewView },
-            modifier = Modifier.fillMaxSize()
-        ) {
-            val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
-            cameraProviderFuture.addListener({
-                val cameraProvider = cameraProviderFuture.get()
-
-                val preview = Preview.Builder().build().also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
+        if (isStreamingMode) {
+            // WebRTC Streaming Mode
+            AndroidView(
+                factory = { ctx ->
+                    SurfaceViewRenderer(ctx).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                        setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+                        setEnableHardwareScaler(true)
+                        setMirror(true)
+                        viewModel.attachLocalVideoRenderer(this)
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            // Face Detection Mode (Original)
+            val previewView = remember {
+                PreviewView(context).apply {
+                    scaleType = PreviewView.ScaleType.FILL_CENTER
                 }
+            }
 
-                // Image Analysis for face detection
-                val imageAnalyzer = ImageAnalysis.Builder()
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build()
-                    .also {
-                        it.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->
-                            processImageProxy(imageProxy, viewModel)
-                        }
+            AndroidView(
+                factory = { previewView },
+                modifier = Modifier.fillMaxSize()
+            ) {
+                val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
+                cameraProviderFuture.addListener({
+                    val cameraProvider = cameraProviderFuture.get()
+
+                    val preview = Preview.Builder().build().also {
+                        it.setSurfaceProvider(previewView.surfaceProvider)
                     }
 
-                val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+                    val imageAnalyzer = ImageAnalysis.Builder()
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .build()
+                        .also {
+                            it.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->
+                                processImageProxy(imageProxy, viewModel)
+                            }
+                        }
 
-                try {
-                    cameraProvider.unbindAll()
-                    cameraProvider.bindToLifecycle(
-                        lifecycleOwner,
-                        cameraSelector,
-                        preview,
-                        imageAnalyzer
-                    )
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }, ContextCompat.getMainExecutor(context))
+                    val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+
+                    try {
+                        cameraProvider.unbindAll()
+                        cameraProvider.bindToLifecycle(
+                            lifecycleOwner,
+                            cameraSelector,
+                            preview,
+                            imageAnalyzer
+                        )
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }, ContextCompat.getMainExecutor(context))
+            }
         }
 
-        // Status Overlay
+        // Top Status Card
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.TopCenter)
                 .padding(16.dp)
         ) {
-            // Status Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
-                    containerColor = if (state.statusMessage.contains("Unknown")) {
+                    containerColor = if (isStreamingMode) {
+                        Color(0xFF4CAF50).copy(alpha = 0.9f)
+                    } else if (state.statusMessage.contains("Unknown")) {
                         Color(0xFFFF5252).copy(alpha = 0.9f)
                     } else if (state.statusMessage.contains("Recognized")) {
                         Color(0xFF4CAF50).copy(alpha = 0.9f)
@@ -149,10 +184,15 @@ fun CameraPreviewView(viewModel: CameraViewModel) {
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = state.statusMessage,
+                            text = if (isStreamingMode) {
+                                "● LIVE STREAMING"
+                            } else {
+                                state.statusMessage
+                            },
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (state.statusMessage.contains("Unknown") ||
+                            color = if (isStreamingMode ||
+                                state.statusMessage.contains("Unknown") ||
                                 state.statusMessage.contains("Recognized")) {
                                 Color.White
                             } else {
@@ -161,9 +201,14 @@ fun CameraPreviewView(viewModel: CameraViewModel) {
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "${state.knownPeople.size} known people loaded",
+                            text = if (isStreamingMode) {
+                                "Stream active - visible on Monitor"
+                            } else {
+                                "${state.knownPeople.size} known people loaded"
+                            },
                             fontSize = 12.sp,
-                            color = if (state.statusMessage.contains("Unknown") ||
+                            color = if (isStreamingMode ||
+                                state.statusMessage.contains("Unknown") ||
                                 state.statusMessage.contains("Recognized")) {
                                 Color.White.copy(alpha = 0.8f)
                             } else {
@@ -172,23 +217,18 @@ fun CameraPreviewView(viewModel: CameraViewModel) {
                         )
                     }
 
-                    if (state.isProcessing) {
+                    if (state.isProcessing && !isStreamingMode) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(24.dp),
                             strokeWidth = 3.dp,
-                            color = if (state.statusMessage.contains("Unknown") ||
-                                state.statusMessage.contains("Recognized")) {
-                                Color.White
-                            } else {
-                                MaterialTheme.colorScheme.primary
-                            }
+                            color = Color.White
                         )
                     }
                 }
             }
         }
 
-        // Bottom Info Card
+        // Bottom Control Card
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -206,23 +246,59 @@ fun CameraPreviewView(viewModel: CameraViewModel) {
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Icon(
-                    imageVector = Icons.Default.Camera,
+                    imageVector = if (isStreamingMode) Icons.Default.Videocam else Icons.Default.Camera,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(32.dp)
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    text = "Face Detection Active",
+                    text = if (isStreamingMode) "Live Streaming Mode" else "Face Detection Mode",
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Capturing faces with GPS location 📍",
+                    text = if (isStreamingMode) {
+                        "Stream is visible on Monitor screen"
+                    } else {
+                        "Capturing faces with GPS location 📍"
+                    },
                     fontSize = 12.sp,
-                    color = Color.Gray
+                    color = Color.Gray,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Toggle Button
+                Button(
+                    onClick = {
+                        if (isStreamingMode) {
+                            viewModel.stopStreaming()
+                            isStreamingMode = false
+                        } else {
+                            viewModel.startStreaming(context)
+                            isStreamingMode = true
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isStreamingMode)
+                            Color(0xFFFF5252) else MaterialTheme.colorScheme.primary
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isStreamingMode) Icons.Default.Stop else Icons.Default.PlayArrow,
+                        contentDescription = null
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (isStreamingMode) "Stop Streaming" else "Start Live Stream",
+                        fontSize = 16.sp
+                    )
+                }
             }
         }
     }
@@ -252,9 +328,10 @@ fun RequestCameraPermissionContent(onRequestPermission: () -> Unit) {
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "We need camera access to detect faces",
+                text = "We need camera access to detect faces and stream video",
                 fontSize = 14.sp,
-                color = Color.Gray
+                color = Color.Gray,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
             Spacer(modifier = Modifier.height(24.dp))
             Button(
