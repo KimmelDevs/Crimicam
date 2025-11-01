@@ -31,6 +31,7 @@ import com.example.crimicam.presentation.main.Home.Monitor.MonitorScreen
 import com.example.crimicam.presentation.main.Home.Monitor.StreamViewerScreen
 import com.example.crimicam.presentation.main.KnownPeople.KnownPeopleScreen
 import com.example.crimicam.presentation.main.Map.MapScreen
+import com.example.crimicam.presentation.main.Profile.LocationLabel.LocationLabelScreen
 import com.example.crimicam.presentation.main.Profile.ProfileScreen
 import com.example.crimicam.presentation.main.Profile.ViewProfile.ViewProfileScreen
 import com.example.crimicam.presentation.signup.SignupScreen
@@ -180,6 +181,9 @@ fun MainScreen(
             // Profile nested routes
             composable("view_profile") {
                 ViewProfileScreen(navController = bottomNavController)
+            }
+            composable("location_label") {
+                LocationLabelScreen(navController = bottomNavController)
             }
 
             // Stream viewer route - FIXED

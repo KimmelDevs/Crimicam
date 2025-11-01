@@ -64,6 +64,12 @@ fun ProfileScreen(
                 onClick = { navController.navigate("view_profile") }
             )
             SettingsItem(
+                icon = Icons.Default.Person,
+                title = "Add a Location Label",
+                subtitle = "Whether it be a residence, a shop, and more!",
+                onClick = { navController.navigate("location_label") }
+            )
+            SettingsItem(
                 icon = Icons.Default.Info,
                 title = "About",
                 subtitle = "App version 1.0.0",
