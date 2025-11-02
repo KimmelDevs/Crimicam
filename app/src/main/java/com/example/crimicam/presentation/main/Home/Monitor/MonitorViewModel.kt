@@ -1,10 +1,12 @@
 package com.example.crimicam.presentation.main.Home.Monitor
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.crimicam.data.model.WebRTCSession
 import com.example.crimicam.data.repository.WebRTCSignalingRepository
 import com.example.crimicam.util.Result
+import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,26 +27,56 @@ class MonitorViewModel(
     val state: StateFlow<MonitorState> = _state.asStateFlow()
 
     init {
+        Log.d("MonitorViewModel", "🎬 ViewModel initialized")
+        val userId = FirebaseAuth.getInstance().currentUser?.uid
+        Log.d("MonitorViewModel", "📱 Current User ID: $userId")
         loadSessions()
         observeSessions()
     }
 
     fun loadSessions() {
+        Log.d("MonitorViewModel", "🔄 Loading sessions...")
         _state.value = _state.value.copy(isLoading = true)
     }
 
     private fun observeSessions() {
         viewModelScope.launch {
-            repository.observeAllSessions().collect { sessions ->
+            Log.d("MonitorViewModel", "👀 Starting to observe sessions...")
+            try {
+                repository.observeAllSessions().collect { sessions ->
+                    Log.d("MonitorViewModel", "📡 Received ${sessions.size} sessions")
+
+                    if (sessions.isEmpty()) {
+                        Log.w("MonitorViewModel", "⚠️ No sessions found")
+                    } else {
+                        sessions.forEachIndexed { index, session ->
+                            Log.d("MonitorViewModel", "[$index] Device: ${session.deviceName}")
+                            Log.d("MonitorViewModel", "     ID: ${session.id}")
+                            Log.d("MonitorViewModel", "     UserID: ${session.userId}")
+                            Log.d("MonitorViewModel", "     DeviceID: ${session.deviceId}")
+                            Log.d("MonitorViewModel", "     Streaming: ${session.isStreaming}")
+                        }
+                    }
+
+                    _state.value = _state.value.copy(
+                        sessions = sessions,
+                        isLoading = false
+                    )
+
+                    Log.d("MonitorViewModel", "✅ UI State updated")
+                }
+            } catch (e: Exception) {
+                Log.e("MonitorViewModel", "❌ Error: ${e.message}", e)
                 _state.value = _state.value.copy(
-                    sessions = sessions,
-                    isLoading = false
+                    isLoading = false,
+                    errorMessage = e.message
                 )
             }
         }
     }
 
     fun selectSession(session: WebRTCSession) {
+        Log.d("MonitorViewModel", "✅ Selected: ${session.deviceName} (${session.id})")
         _state.value = _state.value.copy(selectedSession = session)
     }
 
@@ -54,11 +86,13 @@ class MonitorViewModel(
 
     fun deleteSession(sessionId: String) {
         viewModelScope.launch {
+            Log.d("MonitorViewModel", "🗑️ Deleting session: $sessionId")
             when (repository.deleteSession(sessionId)) {
                 is Result.Success -> {
-                    // Session deleted successfully
+                    Log.d("MonitorViewModel", "✅ Deleted successfully")
                 }
                 is Result.Error -> {
+                    Log.e("MonitorViewModel", "❌ Failed to delete")
                     _state.value = _state.value.copy(
                         errorMessage = "Failed to delete session"
                     )
