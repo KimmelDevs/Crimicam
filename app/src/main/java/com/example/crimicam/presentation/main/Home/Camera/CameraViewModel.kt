@@ -2,25 +2,24 @@ package com.example.crimicam.presentation.main.Home.Camera
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.crimicam.data.model.KnownPerson
 import com.example.crimicam.data.repository.CapturedFacesRepository
 import com.example.crimicam.data.repository.KnownPeopleRepository
-import com.example.crimicam.data.repository.WebRTCSignalingRepository
+import com.example.crimicam.data.repository.SuspiciousActivityRepository
+import com.example.crimicam.ml.ActivityDetectionModel
+import com.example.crimicam.ml.DetectionResult
 import com.example.crimicam.ml.FaceDetector
 import com.example.crimicam.ml.FaceRecognizer
 import com.example.crimicam.util.LocationManager
 import com.example.crimicam.util.Result
-import com.example.crimicam.util.WebRTCManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import org.webrtc.EglBase
-import org.webrtc.PeerConnection
-import org.webrtc.SurfaceViewRenderer
 
 data class CameraState(
     val isProcessing: Boolean = false,
@@ -29,13 +28,13 @@ data class CameraState(
     val detectionCooldown: Long = 3000,
     val statusMessage: String = "Ready",
     val hasLocationPermission: Boolean = false,
-    val isStreaming: Boolean = false
+    val suspiciousActivityDetected: String? = null
 )
 
 class CameraViewModel(
     private val capturedFacesRepository: CapturedFacesRepository = CapturedFacesRepository(),
     private val knownPeopleRepository: KnownPeopleRepository = KnownPeopleRepository(),
-    private val webRTCSignalingRepository: WebRTCSignalingRepository = WebRTCSignalingRepository(),
+    private val suspiciousActivityRepository: SuspiciousActivityRepository = SuspiciousActivityRepository(),
     private val faceDetector: FaceDetector = FaceDetector()
 ) : ViewModel() {
 
@@ -43,8 +42,7 @@ class CameraViewModel(
     val state: StateFlow<CameraState> = _state.asStateFlow()
 
     private var locationManager: LocationManager? = null
-    private var webRTCManager: WebRTCManager? = null
-    private var localRenderer: SurfaceViewRenderer? = null
+    private var activityDetectionModel: ActivityDetectionModel? = null
 
     init {
         loadKnownPeople()
@@ -52,6 +50,8 @@ class CameraViewModel(
 
     fun initLocationManager(context: Context) {
         locationManager = LocationManager(context)
+        activityDetectionModel = ActivityDetectionModel(context)
+
         _state.value = _state.value.copy(
             hasLocationPermission = locationManager?.hasLocationPermission() ?: false
         )
@@ -76,29 +76,75 @@ class CameraViewModel(
         }
     }
 
-    // Face Detection Logic (original)
     fun processFrame(bitmap: Bitmap) {
         val currentTime = System.currentTimeMillis()
         if (currentTime - _state.value.lastDetectionTime < _state.value.detectionCooldown) {
             return
         }
 
-        if (_state.value.isProcessing || _state.value.isStreaming) return
+        if (_state.value.isProcessing) return
 
         viewModelScope.launch {
             _state.value = _state.value.copy(
                 isProcessing = true,
-                statusMessage = "Detecting faces..."
+                statusMessage = "Analyzing..."
             )
 
             try {
                 val locationData = locationManager?.getCurrentLocation()
+
+                // ACTIVITY DETECTION (Primary)
+                val activityResult = activityDetectionModel?.detectSuspiciousActivity(bitmap)
+
+                when (activityResult) {
+                    is DetectionResult.Detected -> {
+                        val activity = activityResult.activities.first()
+
+                        Log.d("CameraViewModel", "🚨 Suspicious Activity: ${activity.type.displayName}")
+                        Log.d("CameraViewModel", "   Confidence: ${(activity.confidence * 100).toInt()}%")
+                        Log.d("CameraViewModel", "   Severity: ${activity.type.severity}")
+
+                        // Save to Firestore
+                        suspiciousActivityRepository.saveActivity(
+                            activityType = activity.type.name,
+                            displayName = activity.type.displayName,
+                            severity = activity.type.severity.name,
+                            confidence = activity.confidence,
+                            duration = activity.duration,
+                            details = activity.details,
+                            frameBitmap = bitmap,
+                            latitude = locationData?.latitude,
+                            longitude = locationData?.longitude,
+                            address = locationData?.address
+                        )
+
+                        _state.value = _state.value.copy(
+                            isProcessing = false,
+                            lastDetectionTime = currentTime,
+                            statusMessage = "🚨 ${activity.type.displayName} detected!",
+                            suspiciousActivityDetected = activity.type.displayName
+                        )
+
+                        // Clear activity alert after 3 seconds
+                        delay(3000)
+                        _state.value = _state.value.copy(
+                            suspiciousActivityDetected = null,
+                            statusMessage = "Monitoring..."
+                        )
+                        return@launch
+                    }
+                    else -> {
+                        // No suspicious activity, continue with face detection
+                    }
+                }
+
+                // FACE DETECTION (Secondary)
                 val faces = faceDetector.detectFaces(bitmap)
 
                 if (faces.isEmpty()) {
                     _state.value = _state.value.copy(
                         isProcessing = false,
-                        statusMessage = "No face detected"
+                        statusMessage = "Normal - Monitoring"
                     )
                     return@launch
                 }
@@ -122,9 +168,9 @@ class CameraViewModel(
 
                 val isRecognized = matchedPerson != null
                 var statusMessage = if (isRecognized) {
-                    "Recognized: ${matchedPerson?.name} (${(confidence * 100).toInt()}%)"
+                    "Known: ${matchedPerson?.name}"
                 } else {
-                    "Unknown person detected!"
+                    "Unknown person"
                 }
 
                 if (locationData != null) {
@@ -148,24 +194,20 @@ class CameraViewModel(
                         _state.value = _state.value.copy(
                             isProcessing = false,
                             lastDetectionTime = currentTime,
-                            statusMessage = "$statusMessage - Saved!"
+                            statusMessage = statusMessage
                         )
                     }
                     is Result.Error -> {
                         _state.value = _state.value.copy(
                             isProcessing = false,
-                            statusMessage = "Error saving face"
+                            statusMessage = "Error saving"
                         )
                     }
                     is Result.Loading -> {}
                 }
 
-                delay(2000)
-                if (_state.value.statusMessage.contains("Saved!")) {
-                    _state.value = _state.value.copy(statusMessage = "Monitoring...")
-                }
-
             } catch (e: Exception) {
+                Log.e("CameraViewModel", "Error: ${e.message}", e)
                 _state.value = _state.value.copy(
                     isProcessing = false,
                     statusMessage = "Error: ${e.message}"
@@ -174,100 +216,9 @@ class CameraViewModel(
         }
     }
 
-    // WebRTC Streaming Logic
-    fun startStreaming(context: Context) {
-        viewModelScope.launch {
-            try {
-                _state.value = _state.value.copy(
-                    isStreaming = true,
-                    statusMessage = "Starting stream..."
-                )
-
-                // Initialize WebRTC
-                webRTCManager = WebRTCManager(context)
-
-                // Create peer connection
-                val iceServers = listOf(
-                    PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
-                )
-                webRTCManager?.createPeerConnection(iceServers)
-
-                // Start local video capture
-                val videoTrack = webRTCManager?.startLocalVideoCapture(isFrontCamera = true)
-                localRenderer?.let { renderer ->
-                    videoTrack?.addSink(renderer)
-                }
-
-                // Create offer
-                val offer = webRTCManager?.createOffer()
-                if (offer != null) {
-                    // Get location
-                    val locationData = locationManager?.getCurrentLocation()
-
-                    // Save session to Firestore
-                    val deviceName = android.os.Build.MODEL
-                    when (webRTCSignalingRepository.createSession(
-                        deviceName = deviceName,
-                        offer = offer,
-                        latitude = locationData?.latitude,
-                        longitude = locationData?.longitude,
-                        address = locationData?.address
-                    )) {
-                        is Result.Success -> {
-                            _state.value = _state.value.copy(
-                                statusMessage = "Streaming..."
-                            )
-
-                            // Setup ICE candidate callback
-                            webRTCManager?.onIceCandidateCallback = { iceCandidate ->
-                                viewModelScope.launch {
-                                    // You would send this to Firestore for the viewer
-                                }
-                            }
-                        }
-                        is Result.Error -> {
-                            stopStreaming()
-                            _state.value = _state.value.copy(
-                                statusMessage = "Failed to start stream"
-                            )
-                        }
-                        is Result.Loading -> {}
-                    }
-                } else {
-                    stopStreaming()
-                    _state.value = _state.value.copy(
-                        statusMessage = "Failed to create offer"
-                    )
-                }
-            } catch (e: Exception) {
-                stopStreaming()
-                _state.value = _state.value.copy(
-                    statusMessage = "Error: ${e.message}"
-                )
-            }
-        }
-    }
-
-    fun stopStreaming() {
-        webRTCManager?.stopCapture()
-        webRTCManager?.release()
-        webRTCManager = null
-
-        _state.value = _state.value.copy(
-            isStreaming = false,
-            statusMessage = "Stream stopped"
-        )
-    }
-
-    fun attachLocalVideoRenderer(renderer: SurfaceViewRenderer) {
-        localRenderer = renderer
-        renderer.init(EglBase.create().eglBaseContext, null)
-        renderer.setMirror(true)
-    }
-
     override fun onCleared() {
         super.onCleared()
         faceDetector.close()
-        stopStreaming()
+        activityDetectionModel?.cleanup()
     }
 }
