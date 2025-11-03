@@ -11,6 +11,7 @@ import androidx.annotation.RequiresApi
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -19,7 +20,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -32,6 +36,7 @@ import androidx.navigation.NavController
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
+import com.example.crimicam.data.repository.YOLODetector
 import java.io.ByteArrayOutputStream
 
 @RequiresApi(Build.VERSION_CODES.O)
@@ -46,6 +51,7 @@ fun CameraScreen(
     val locationPermissionState = rememberPermissionState(Manifest.permission.ACCESS_FINE_LOCATION)
 
     LaunchedEffect(Unit) {
+        viewModel.initDetector(context) // Initialize YOLO detector
         viewModel.initLocationManager(context)
 
         if (!cameraPermissionState.status.isGranted) {
@@ -83,7 +89,7 @@ fun CameraPreviewView(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // Camera Preview with Face & Activity Detection
+        // Camera Preview with YOLO Detection Overlay
         AndroidView(
             factory = { previewView },
             modifier = Modifier.fillMaxSize()
@@ -121,6 +127,12 @@ fun CameraPreviewView(
             }, ContextCompat.getMainExecutor(context))
         }
 
+        // YOLO Detection Overlay
+        YOLODetectionOverlay(
+            detections = state.yoloDetections,
+            modifier = Modifier.fillMaxSize()
+        )
+
         // Top Status Card
         Column(
             modifier = Modifier
@@ -132,6 +144,12 @@ fun CameraPreviewView(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
                     containerColor = when {
+                        state.securityAlert != null -> when (state.securityAlert) {
+                            YOLODetector.SecurityAlert.MULTIPLE_INTRUDERS -> Color(0xFFFF5252).copy(alpha = 0.95f)
+                            YOLODetector.SecurityAlert.VEHICLE_WITH_PERSON -> Color(0xFFFF9800).copy(alpha = 0.95f)
+                            YOLODetector.SecurityAlert.HIGH_CONFIDENCE_PERSON -> Color(0xFFFFC107).copy(alpha = 0.95f)
+                            else -> MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)
+                        }
                         state.suspiciousActivityDetected != null -> Color(0xFFFF5252).copy(alpha = 0.95f)
                         state.statusMessage.contains("Unknown") -> Color(0xFFFF9800).copy(alpha = 0.9f)
                         state.statusMessage.contains("Known") -> Color(0xFF4CAF50).copy(alpha = 0.9f)
@@ -151,21 +169,32 @@ fun CameraPreviewView(
                     Column(modifier = Modifier.weight(1f)) {
                         // Main Status Message
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (state.suspiciousActivityDetected != null) {
-                                Icon(
-                                    imageVector = Icons.Default.Warning,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
+                            when {
+                                state.securityAlert != null -> {
+                                    Icon(
+                                        imageVector = Icons.Default.Warning,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                }
+                                state.suspiciousActivityDetected != null -> {
+                                    Icon(
+                                        imageVector = Icons.Default.Security,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                }
                             }
                             Text(
                                 text = state.statusMessage,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = when {
-                                    state.suspiciousActivityDetected != null -> Color.White
+                                    state.securityAlert != null || state.suspiciousActivityDetected != null -> Color.White
                                     state.statusMessage.contains("Unknown") ||
                                             state.statusMessage.contains("Known") -> Color.White
                                     else -> MaterialTheme.colorScheme.onSurface
@@ -175,19 +204,28 @@ fun CameraPreviewView(
 
                         Spacer(modifier = Modifier.height(4.dp))
 
-                        // Subtitle
+                        // Subtitle with Detection Details
                         Text(
                             text = when {
+                                state.securityAlert != null ->
+                                    "🚨 ${state.yoloDetections.size} objects detected • Alert logged"
                                 state.suspiciousActivityDetected != null ->
                                     "⚠️ Activity detected and logged"
+                                state.yoloDetections.isNotEmpty() -> {
+                                    val objects = state.yoloDetections.distinctBy { it.label }
+                                        .joinToString { it.label }
+                                    "📹 Detected: $objects"
+                                }
                                 else ->
-                                    "${state.knownPeople.size} known people • Monitoring"
+                                    "${state.knownPeople.size} known people • AI Monitoring"
                             },
                             fontSize = 12.sp,
                             color = when {
-                                state.suspiciousActivityDetected != null -> Color.White.copy(alpha = 0.9f)
+                                state.securityAlert != null || state.suspiciousActivityDetected != null ->
+                                    Color.White.copy(alpha = 0.9f)
                                 state.statusMessage.contains("Unknown") ||
-                                        state.statusMessage.contains("Known") -> Color.White.copy(alpha = 0.8f)
+                                        state.statusMessage.contains("Known") ->
+                                    Color.White.copy(alpha = 0.8f)
                                 else -> Color.Gray
                             }
                         )
@@ -198,7 +236,8 @@ fun CameraPreviewView(
                         CircularProgressIndicator(
                             modifier = Modifier.size(24.dp),
                             strokeWidth = 3.dp,
-                            color = if (state.suspiciousActivityDetected != null ||
+                            color = if (state.securityAlert != null ||
+                                state.suspiciousActivityDetected != null ||
                                 state.statusMessage.contains("Unknown") ||
                                 state.statusMessage.contains("Known")) {
                                 Color.White
@@ -229,7 +268,7 @@ fun CameraPreviewView(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Icon(
-                    imageVector = Icons.Default.Security,
+                    imageVector = Icons.Default.Visibility,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(32.dp)
@@ -242,7 +281,7 @@ fun CameraPreviewView(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Detecting suspicious activities & unknown persons 📍",
+                    text = "YOLO Object Detection + Face Recognition + Activity Analysis",
                     fontSize = 12.sp,
                     color = Color.Gray,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -257,18 +296,21 @@ fun CameraPreviewView(
                 ) {
                     DetectionStat(
                         icon = Icons.Default.Person,
-                        label = "Face Detection",
-                        color = MaterialTheme.colorScheme.primary
+                        label = "YOLO Detection",
+                        color = MaterialTheme.colorScheme.primary,
+                        active = state.yoloDetections.any { it.label == "person" }
                     )
                     DetectionStat(
-                        icon = Icons.Default.DirectionsRun,
-                        label = "Activity Detection",
-                        color = MaterialTheme.colorScheme.tertiary
+                        icon = Icons.Default.DirectionsCar,
+                        label = "Vehicle Detection",
+                        color = MaterialTheme.colorScheme.tertiary,
+                        active = state.yoloDetections.any { it.label in listOf("car", "truck", "motorcycle") }
                     )
                     DetectionStat(
-                        icon = Icons.Default.LocationOn,
-                        label = "GPS Tracking",
-                        color = MaterialTheme.colorScheme.secondary
+                        icon = Icons.Default.Security,
+                        label = "AI Analysis",
+                        color = MaterialTheme.colorScheme.secondary,
+                        active = state.securityAlert != null || state.suspiciousActivityDetected != null
                     )
                 }
             }
@@ -277,10 +319,63 @@ fun CameraPreviewView(
 }
 
 @Composable
+fun YOLODetectionOverlay(
+    detections: List<com.example.crimicam.data.repository.DetectionResult>,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        detections.forEach { detection ->
+            val boundingBox = detection.boundingBox
+            val scaleX = size.width / 640f // YOLO input size
+            val scaleY = size.height / 640f
+
+            val left = boundingBox.left * scaleX
+            val top = boundingBox.top * scaleY
+            val right = boundingBox.right * scaleX
+            val bottom = boundingBox.bottom * scaleY
+
+            val boxWidth = right - left
+            val boxHeight = bottom - top
+
+            // Choose color based on object type
+            val color = when (detection.label) {
+                "person" -> Color(0xFFFF5252) // Red for people
+                "car", "truck", "bus" -> Color(0xFFFF9800) // Orange for vehicles
+                "motorcycle", "bicycle" -> Color(0xFFFFC107) // Amber for bikes
+                else -> Color(0xFF4CAF50) // Green for other objects
+            }
+
+            // Draw bounding box
+            drawRect(
+                color = color,
+                topLeft = Offset(left, top),
+                size = Size(boxWidth, boxHeight),
+                style = Stroke(width = 3f)
+            )
+
+            // Draw label background
+            val label = "${detection.label} ${(detection.confidence * 100).toInt()}%"
+            val textWidth = label.length * 8f
+            val textHeight = 20f
+
+            drawRect(
+                color = color,
+                topLeft = Offset(left, top - textHeight),
+                size = Size(textWidth, textHeight)
+            )
+
+            // Draw label text (simplified - for real text you'd use drawText)
+            // In a real implementation, you'd use drawText with proper text measurement
+        }
+    }
+}
+
+@Composable
 fun DetectionStat(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
-    color: Color
+    color: Color,
+    active: Boolean = false
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally
@@ -288,14 +383,15 @@ fun DetectionStat(
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = color,
+            tint = if (active) color else color.copy(alpha = 0.3f),
             modifier = Modifier.size(20.dp)
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
             text = label,
             fontSize = 9.sp,
-            color = Color.Gray
+            color = if (active) color else Color.Gray,
+            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal
         )
     }
 }
@@ -324,7 +420,7 @@ fun RequestCameraPermissionContent(onRequestPermission: () -> Unit) {
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "We need camera access to detect faces and monitor activities",
+                text = "We need camera access for AI-powered security monitoring with YOLO object detection",
                 fontSize = 14.sp,
                 color = Color.Gray,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
