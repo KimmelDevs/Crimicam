@@ -9,7 +9,8 @@ import com.example.crimicam.data.model.KnownPerson
 import com.example.crimicam.data.repository.CapturedFacesRepository
 import com.example.crimicam.data.repository.KnownPeopleRepository
 import com.example.crimicam.data.repository.SuspiciousActivityRepository
-import com.example.crimicam.data.repository.YOLODetector
+import com.example.crimicam.ml.YOLODetector
+import com.example.crimicam.ml.YOLODetectionResult
 import com.example.crimicam.ml.ActivityDetectionModel
 import com.example.crimicam.ml.DetectionResult as ActivityDetectionResult
 import com.example.crimicam.ml.FaceDetector
@@ -31,7 +32,7 @@ data class CameraState(
     val statusMessage: String = "Ready",
     val hasLocationPermission: Boolean = false,
     val suspiciousActivityDetected: String? = null,
-    val yoloDetections: List<com.example.crimicam.data.repository.DetectionResult> = emptyList(),
+    val yoloDetections: List<YOLODetectionResult> = emptyList(),
     val securityAlert: YOLODetector.SecurityAlert? = null
 )
 
@@ -118,21 +119,32 @@ class CameraViewModel(
 
                 // If YOLO detects security threats, prioritize them
                 if (securityAlert != null && securityAlert != YOLODetector.SecurityAlert.NONE) {
-                    Log.d("CameraViewModel", "🚨 YOLO Security Alert: $securityAlert")
+                    Log.d("CameraViewModel", "🚨 YOLO Security Alert: ${securityAlert.displayName}")
 
                     // Save suspicious activity to Firestore
                     suspiciousActivityRepository.saveActivity(
                         activityType = "YOLO_${securityAlert.name}",
-                        displayName = securityAlert.name.replace("_", " "),
+                        displayName = securityAlert.displayName,
                         severity = when (securityAlert) {
+                            YOLODetector.SecurityAlert.WEAPON_DETECTED -> "CRITICAL"
                             YOLODetector.SecurityAlert.MULTIPLE_INTRUDERS -> "HIGH"
                             YOLODetector.SecurityAlert.VEHICLE_WITH_PERSON -> "MEDIUM"
+                            YOLODetector.SecurityAlert.SUSPICIOUS_ITEMS -> "MEDIUM"
                             YOLODetector.SecurityAlert.HIGH_CONFIDENCE_PERSON -> "LOW"
                             else -> "LOW"
                         },
                         confidence = yoloResults.maxOfOrNull { it.confidence } ?: 0.7f,
                         duration = 0L,
-                        details = "Detected objects: ${yoloResults.joinToString(", ") { it.label }}",
+                        details = mapOf(
+                            "objects" to yoloResults.map {
+                                mapOf(
+                                    "label" to it.label,
+                                    "confidence" to (it.confidence * 100).toInt()
+                                )
+                            },
+                            "count" to yoloResults.size,
+                            "summary" to "Detected objects: ${yoloResults.joinToString(", ") { "${it.label} (${(it.confidence * 100).toInt()}%)" }}"
+                        ),
                         frameBitmap = bitmap,
                         latitude = locationData?.latitude,
                         longitude = locationData?.longitude,
@@ -144,8 +156,8 @@ class CameraViewModel(
                         lastDetectionTime = currentTime,
                         yoloDetections = yoloResults,
                         securityAlert = securityAlert,
-                        statusMessage = "🚨 ${securityAlert.name.replace("_", " ")}",
-                        suspiciousActivityDetected = securityAlert.name
+                        statusMessage = "🚨 ${securityAlert.displayName}",
+                        suspiciousActivityDetected = securityAlert.displayName
                     )
 
                     // Clear alert after 3 seconds
@@ -253,7 +265,7 @@ class CameraViewModel(
 
                 // Add YOLO detection info if available
                 if (yoloResults.isNotEmpty()) {
-                    val objects = yoloResults.distinctBy { it.label }.joinToString { it.label }
+                    val objects = yoloResults.take(2).joinToString { it.label }
                     statusMessage += " + $objects"
                 }
 
@@ -309,7 +321,7 @@ class CameraViewModel(
         )
     }
 
-    fun updateYoloDetections(detections: List<com.example.crimicam.data.repository.DetectionResult>) {
+    fun updateYoloDetections(detections: List<YOLODetectionResult>) {
         _state.value = _state.value.copy(
             yoloDetections = detections
         )
@@ -319,6 +331,6 @@ class CameraViewModel(
         super.onCleared()
         faceDetector.close()
         activityDetectionModel?.cleanup()
-        // YOLO detector doesn't need explicit cleanup
+        yoloDetector?.cleanup()
     }
 }

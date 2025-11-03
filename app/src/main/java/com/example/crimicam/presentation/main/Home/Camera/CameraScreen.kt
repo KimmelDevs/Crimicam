@@ -33,10 +33,11 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import com.example.crimicam.ml.YOLODetectionResult
+import com.example.crimicam.ml.YOLODetector
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
-import com.example.crimicam.data.repository.YOLODetector
 import java.io.ByteArrayOutputStream
 
 @RequiresApi(Build.VERSION_CODES.O)
@@ -111,7 +112,7 @@ fun CameraPreviewView(
                         }
                     }
 
-                val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+                val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
                 try {
                     cameraProvider.unbindAll()
@@ -130,6 +131,8 @@ fun CameraPreviewView(
         // YOLO Detection Overlay
         YOLODetectionOverlay(
             detections = state.yoloDetections,
+            previewWidth = previewView.width.toFloat(),
+            previewHeight = previewView.height.toFloat(),
             modifier = Modifier.fillMaxSize()
         )
 
@@ -145,8 +148,10 @@ fun CameraPreviewView(
                 colors = CardDefaults.cardColors(
                     containerColor = when {
                         state.securityAlert != null -> when (state.securityAlert) {
+                            YOLODetector.SecurityAlert.WEAPON_DETECTED -> Color(0xFFD32F2F).copy(alpha = 0.95f)
                             YOLODetector.SecurityAlert.MULTIPLE_INTRUDERS -> Color(0xFFFF5252).copy(alpha = 0.95f)
                             YOLODetector.SecurityAlert.VEHICLE_WITH_PERSON -> Color(0xFFFF9800).copy(alpha = 0.95f)
+                            YOLODetector.SecurityAlert.SUSPICIOUS_ITEMS -> Color(0xFFFFC107).copy(alpha = 0.95f)
                             YOLODetector.SecurityAlert.HIGH_CONFIDENCE_PERSON -> Color(0xFFFFC107).copy(alpha = 0.95f)
                             else -> MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)
                         }
@@ -320,14 +325,20 @@ fun CameraPreviewView(
 
 @Composable
 fun YOLODetectionOverlay(
-    detections: List<com.example.crimicam.data.repository.DetectionResult>,
+    detections: List<YOLODetectionResult>,
+    previewWidth: Float,
+    previewHeight: Float,
     modifier: Modifier = Modifier
 ) {
+    if (previewWidth == 0f || previewHeight == 0f) return
+
     Canvas(modifier = modifier) {
         detections.forEach { detection ->
             val boundingBox = detection.boundingBox
-            val scaleX = size.width / 640f // YOLO input size
-            val scaleY = size.height / 640f
+
+            // Scale bounding box to canvas size
+            val scaleX = size.width / previewWidth
+            val scaleY = size.height / previewHeight
 
             val left = boundingBox.left * scaleX
             val top = boundingBox.top * scaleY
@@ -342,30 +353,36 @@ fun YOLODetectionOverlay(
                 "person" -> Color(0xFFFF5252) // Red for people
                 "car", "truck", "bus" -> Color(0xFFFF9800) // Orange for vehicles
                 "motorcycle", "bicycle" -> Color(0xFFFFC107) // Amber for bikes
+                "knife" -> Color(0xFFD32F2F) // Dark red for weapons
+                "backpack", "handbag" -> Color(0xFFFFEB3B) // Yellow for bags
                 else -> Color(0xFF4CAF50) // Green for other objects
             }
 
-            // Draw bounding box
-            drawRect(
+            // Draw bounding box with rounded corners
+            drawRoundRect(
                 color = color,
                 topLeft = Offset(left, top),
                 size = Size(boxWidth, boxHeight),
-                style = Stroke(width = 3f)
+                style = Stroke(width = 4f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(8f, 8f)
             )
 
             // Draw label background
             val label = "${detection.label} ${(detection.confidence * 100).toInt()}%"
-            val textWidth = label.length * 8f
-            val textHeight = 20f
+            val textPadding = 8f
+            val textWidth = label.length * 7f + textPadding * 2
+            val textHeight = 24f
 
-            drawRect(
+            // Draw rounded rectangle background for label
+            drawRoundRect(
                 color = color,
-                topLeft = Offset(left, top - textHeight),
-                size = Size(textWidth, textHeight)
+                topLeft = Offset(left, (top - textHeight).coerceAtLeast(0f)),
+                size = Size(textWidth, textHeight),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f)
             )
 
-            // Draw label text (simplified - for real text you'd use drawText)
-            // In a real implementation, you'd use drawText with proper text measurement
+            // Note: Actual text rendering would require TextPainter or drawContext
+            // This is a simplified version - in production you'd use proper text drawing
         }
     }
 }
