@@ -169,49 +169,58 @@ class CameraViewModel(
                     return@launch
                 }
 
-                // ACTIVITY DETECTION (Secondary - if no YOLO security alerts)
-                val activityResult = activityDetectionModel?.detectSuspiciousActivity(bitmap)
+                // ACTIVITY DETECTION (Secondary - ONLY if YOLO detects a person)
+                val hasPerson = yoloResults.any { it.label == "person" }
 
-                when (activityResult) {
-                    is ActivityDetectionResult.Detected -> {
-                        val activity = activityResult.activities.first()
+                if (hasPerson) {
+                    val activityResult = activityDetectionModel?.detectSuspiciousActivity(bitmap)
 
-                        Log.d("CameraViewModel", "🚨 Suspicious Activity: ${activity.type.displayName}")
-                        Log.d("CameraViewModel", "   Confidence: ${(activity.confidence * 100).toInt()}%")
-                        Log.d("CameraViewModel", "   Severity: ${activity.type.severity}")
+                    when (activityResult) {
+                        is ActivityDetectionResult.Detected -> {
+                            val activity = activityResult.activities.first()
 
-                        // Save to Firestore
-                        suspiciousActivityRepository.saveActivity(
-                            activityType = activity.type.name,
-                            displayName = activity.type.displayName,
-                            severity = activity.type.severity.name,
-                            confidence = activity.confidence,
-                            duration = activity.duration,
-                            details = activity.details,
-                            frameBitmap = bitmap,
-                            latitude = locationData?.latitude,
-                            longitude = locationData?.longitude,
-                            address = locationData?.address
-                        )
+                            Log.d("CameraViewModel", "🚨 Suspicious Activity: ${activity.type.displayName}")
+                            Log.d("CameraViewModel", "   Confidence: ${(activity.confidence * 100).toInt()}%")
+                            Log.d("CameraViewModel", "   Severity: ${activity.type.severity}")
 
-                        _state.value = _state.value.copy(
-                            isProcessing = false,
-                            lastDetectionTime = currentTime,
-                            yoloDetections = yoloResults,
-                            statusMessage = "🚨 ${activity.type.displayName} detected!",
-                            suspiciousActivityDetected = activity.type.displayName
-                        )
+                            // Save to Firestore
+                            suspiciousActivityRepository.saveActivity(
+                                activityType = activity.type.name,
+                                displayName = activity.type.displayName,
+                                severity = activity.type.severity.name,
+                                confidence = activity.confidence,
+                                duration = activity.duration,
+                                details = mapOf(
+                                    "activity" to activity.type.displayName,
+                                    "confidence" to (activity.confidence * 100).toInt(),
+                                    "duration" to activity.duration,
+                                    "details" to activity.details
+                                ),
+                                frameBitmap = bitmap,
+                                latitude = locationData?.latitude,
+                                longitude = locationData?.longitude,
+                                address = locationData?.address
+                            )
 
-                        // Clear activity alert after 3 seconds
-                        delay(3000)
-                        _state.value = _state.value.copy(
-                            suspiciousActivityDetected = null,
-                            statusMessage = "Monitoring..."
-                        )
-                        return@launch
-                    }
-                    else -> {
-                        // No suspicious activity, continue with face detection
+                            _state.value = _state.value.copy(
+                                isProcessing = false,
+                                lastDetectionTime = currentTime,
+                                yoloDetections = yoloResults,
+                                statusMessage = "🚨 ${activity.type.displayName} detected!",
+                                suspiciousActivityDetected = activity.type.displayName
+                            )
+
+                            // Clear activity alert after 3 seconds
+                            delay(3000)
+                            _state.value = _state.value.copy(
+                                suspiciousActivityDetected = null,
+                                statusMessage = "Monitoring..."
+                            )
+                            return@launch
+                        }
+                        else -> {
+                            // No suspicious activity, continue with face detection
+                        }
                     }
                 }
 
