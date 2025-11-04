@@ -29,8 +29,8 @@ class YOLODetector(context: Context) {
     }
 
     private val inputSize = 640
-    private val confidenceThreshold = 0.5f
-    private val iouThreshold = 0.45f
+    private val confidenceThreshold = 0.6f  // Increased from 0.5 for fewer false positives
+    private val iouThreshold = 0.5f  // Increased from 0.45 for better NMS
 
     // Security-relevant classes for crime detection
     private val securityClasses = listOf(

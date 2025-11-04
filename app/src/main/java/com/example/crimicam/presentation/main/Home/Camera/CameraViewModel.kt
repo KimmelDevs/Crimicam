@@ -28,12 +28,13 @@ data class CameraState(
     val isProcessing: Boolean = false,
     val knownPeople: List<KnownPerson> = emptyList(),
     val lastDetectionTime: Long = 0,
-    val detectionCooldown: Long = 3000,
+    val detectionCooldown: Long = 2000,  // Reduced from 3000ms for more responsive detection
     val statusMessage: String = "Ready",
     val hasLocationPermission: Boolean = false,
     val suspiciousActivityDetected: String? = null,
     val yoloDetections: List<YOLODetectionResult> = emptyList(),
-    val securityAlert: YOLODetector.SecurityAlert? = null
+    val securityAlert: YOLODetector.SecurityAlert? = null,
+    val consecutiveAlertCount: Int = 0  // NEW: Track consecutive alerts for stability
 )
 
 class CameraViewModel(
