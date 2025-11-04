@@ -34,7 +34,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -771,59 +770,148 @@ fun TopStatusCard(
         shape = RoundedCornerShape(12.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .padding(16.dp)
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    when {
-                        state.securityAlert != null -> {
-                            Icon(
-                                imageVector = Icons.Default.Warning,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        when {
+                            state.securityAlert != null -> {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
+                            state.suspiciousActivityDetected != null -> {
+                                Icon(
+                                    imageVector = Icons.Default.Security,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
                         }
-                        state.suspiciousActivityDetected != null -> {
-                            Icon(
-                                imageVector = Icons.Default.Security,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                        }
+                        Text(
+                            text = state.statusMessage,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = getStatusTextColor(state.securityAlert, state.suspiciousActivityDetected, state.statusMessage)
+                        )
                     }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
                     Text(
-                        text = state.statusMessage,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = getStatusTextColor(state.securityAlert, state.suspiciousActivityDetected, state.statusMessage)
+                        text = getSubtitleText(state),
+                        fontSize = 12.sp,
+                        color = getSubtitleColor(state.securityAlert, state.suspiciousActivityDetected, state.statusMessage)
                     )
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                if (state.isProcessing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 3.dp,
+                        color = getProgressIndicatorColor(state.securityAlert, state.suspiciousActivityDetected, state.statusMessage)
+                    )
+                }
+            }
 
+            // Detection Mode Indicator
+            if (state.personDetectionMode != PersonDetectionMode.NONE) {
+                Spacer(modifier = Modifier.height(8.dp))
+                DetectionModeIndicator(mode = state.personDetectionMode)
+            }
+        }
+    }
+}
+
+@Composable
+fun DetectionModeIndicator(mode: PersonDetectionMode) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color.White.copy(alpha = 0.15f))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        when (mode) {
+            PersonDetectionMode.FACE_AND_POSE -> {
+                Icon(
+                    imageVector = Icons.Default.Face,
+                    contentDescription = null,
+                    tint = Color(0xFF4CAF50),
+                    modifier = Modifier.size(14.dp)
+                )
+                Icon(
+                    imageVector = Icons.Default.Accessibility,
+                    contentDescription = null,
+                    tint = Color(0xFF4CAF50),
+                    modifier = Modifier.size(14.dp)
+                )
                 Text(
-                    text = getSubtitleText(state),
-                    fontSize = 12.sp,
-                    color = getSubtitleColor(state.securityAlert, state.suspiciousActivityDetected, state.statusMessage)
+                    text = "Full Detection: Face + Pose",
+                    fontSize = 10.sp,
+                    color = Color.White,
+                    fontWeight = FontWeight.Medium
                 )
             }
-
-            if (state.isProcessing) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(24.dp),
-                    strokeWidth = 3.dp,
-                    color = getProgressIndicatorColor(state.securityAlert, state.suspiciousActivityDetected, state.statusMessage)
+            PersonDetectionMode.FACE_ONLY -> {
+                Icon(
+                    imageVector = Icons.Default.Face,
+                    contentDescription = null,
+                    tint = Color(0xFF4CAF50),
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    text = "Face Detection Active",
+                    fontSize = 10.sp,
+                    color = Color.White,
+                    fontWeight = FontWeight.Medium
                 )
             }
+            PersonDetectionMode.POSE_ONLY -> {
+                Icon(
+                    imageVector = Icons.Default.Accessibility,
+                    contentDescription = null,
+                    tint = Color(0xFFFF9800),
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    text = "Pose Detection (Face Hidden)",
+                    fontSize = 10.sp,
+                    color = Color.White,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            PersonDetectionMode.YOLO_PERSON -> {
+                Icon(
+                    imageVector = Icons.Default.Person,
+                    contentDescription = null,
+                    tint = Color(0xFFFF9800),
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    text = "Object Detection Only",
+                    fontSize = 10.sp,
+                    color = Color.White,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            PersonDetectionMode.NONE -> {}
         }
     }
 }
@@ -860,7 +948,7 @@ fun BottomInfoCard(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Enhanced YOLO + Face Recognition + Activity Analysis",
+                text = "Multi-Modal Detection: YOLO + Face + Pose Analysis",
                 fontSize = 12.sp,
                 color = Color.Gray,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -1024,7 +1112,7 @@ fun RequestCameraPermissionContent(onRequestPermission: () -> Unit) {
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "We need camera access for enhanced AI security monitoring",
+                text = "We need camera access for enhanced AI security monitoring with multi-modal detection",
                 fontSize = 14.sp,
                 color = Color.Gray,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center

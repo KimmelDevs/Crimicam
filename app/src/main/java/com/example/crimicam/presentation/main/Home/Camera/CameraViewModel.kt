@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.util.Locale
+import com.example.crimicam.util.LocationData
 
 data class CameraState(
     val isProcessing: Boolean = false,
@@ -36,8 +37,17 @@ data class CameraState(
     val securityAlert: YOLODetector.SecurityAlert? = null,
     val alertConfidence: Float = 0f,
     val alertReason: String? = null,
-    val detectionStats: YOLODetector.DetectionStats? = null
+    val detectionStats: YOLODetector.DetectionStats? = null,
+    val personDetectionMode: PersonDetectionMode = PersonDetectionMode.NONE
 )
+
+enum class PersonDetectionMode {
+    NONE,              // No person detected
+    FACE_ONLY,         // Face detected, no pose
+    POSE_ONLY,         // Pose detected, no face
+    FACE_AND_POSE,     // Both detected
+    YOLO_PERSON        // YOLO person detection only
+}
 
 class CameraViewModel(
     private val capturedFacesRepository: CapturedFacesRepository = CapturedFacesRepository(),
@@ -111,32 +121,24 @@ class CameraViewModel(
             try {
                 val locationData = locationManager?.getCurrentLocation()
 
-                // YOLO OBJECT DETECTION with Enhanced Alert System
+                // STEP 1: YOLO OBJECT DETECTION (Primary detection method)
                 val yoloResults = yoloDetector?.detect(bitmap) ?: emptyList()
                 val alertResult = yoloDetector?.analyzeSuspiciousBehavior(yoloResults)
                 val stats = yoloDetector?.getDetectionStats()
 
                 Log.d("CameraViewModel", "YOLO Detections: ${yoloResults.size} objects")
 
-                if (alertResult != null) {
-                    Log.d("CameraViewModel", "Alert: ${alertResult.alert.displayName}")
-                    Log.d("CameraViewModel", "Confidence: ${(alertResult.confidence * 100).toInt()}%")
-                    Log.d("CameraViewModel", "Should Trigger: ${alertResult.shouldTrigger}")
-                    Log.d("CameraViewModel", "Reason: ${alertResult.reason}")
-                }
+                // Check for YOLO person detections
+                val yoloPeople = yoloResults.filter { it.label == "person" }
+                val hasYoloPerson = yoloPeople.isNotEmpty()
 
-                yoloResults.forEach { detection ->
-                    Log.d("CameraViewModel", " - ${detection.label}: ${(detection.confidence * 100).toInt()}%")
-                }
-
-                // Check if alert should trigger
+                // Handle security alerts first
                 if (alertResult != null && alertResult.shouldTrigger &&
                     alertResult.alert != YOLODetector.SecurityAlert.NONE) {
 
                     val alert = alertResult.alert
                     Log.d("CameraViewModel", "🚨 CONFIRMED Security Alert: ${alert.displayName}")
 
-                    // Determine severity
                     val severity = when (alert.severity) {
                         5 -> "CRITICAL"
                         4 -> "HIGH"
@@ -144,7 +146,6 @@ class CameraViewModel(
                         else -> "LOW"
                     }
 
-                    // Save to Firestore
                     suspiciousActivityRepository.saveActivity(
                         activityType = "YOLO_${alert.name}",
                         displayName = alert.displayName,
@@ -160,10 +161,7 @@ class CameraViewModel(
                             },
                             "count" to yoloResults.size,
                             "smoothed_confidence" to (alertResult.confidence * 100).toInt(),
-                            "validation_reason" to alertResult.reason,
-                            "summary" to "Detected: ${yoloResults.joinToString(", ") {
-                                "${it.label} (${(it.confidence * 100).toInt()}%)"
-                            }}"
+                            "validation_reason" to alertResult.reason
                         ),
                         frameBitmap = bitmap,
                         latitude = locationData?.latitude,
@@ -189,155 +187,169 @@ class CameraViewModel(
                         statusMessage = "Monitoring..."
                     )
                     return@launch
-                } else if (alertResult != null && !alertResult.shouldTrigger) {
-                    Log.d("CameraViewModel", "⏳ Alert pending: ${alertResult.alert.displayName}")
-                    Log.d("CameraViewModel", "   Reason: ${alertResult.reason}")
-
-                    _state.value = _state.value.copy(
-                        alertReason = alertResult.reason,
-                        detectionStats = stats
-                    )
                 }
 
-                // ACTIVITY DETECTION
-                val hasPerson = yoloResults.any { it.label == "person" }
+                // STEP 2: MULTI-MODAL PERSON DETECTION
+                var detectionMode = PersonDetectionMode.NONE
+                var hasFace = false
+                var hasPose = false
 
-                if (hasPerson) {
-                    val activityResult = activityDetectionModel?.detectSuspiciousActivity(bitmap)
-
-                    when (activityResult) {
-                        is ActivityDetectionResult.Detected -> {
-                            val activity = activityResult.activities.first()
-
-                            Log.d("CameraViewModel", "🚨 Suspicious Activity: ${activity.type.displayName}")
-
-                            suspiciousActivityRepository.saveActivity(
-                                activityType = activity.type.name,
-                                displayName = activity.type.displayName,
-                                severity = activity.type.severity.name,
-                                confidence = activity.confidence,
-                                duration = activity.duration,
-                                details = mapOf(
-                                    "activity" to activity.type.displayName,
-                                    "confidence" to (activity.confidence * 100).toInt(),
-                                    "duration" to activity.duration,
-                                    "details" to activity.details
-                                ),
-                                frameBitmap = bitmap,
-                                latitude = locationData?.latitude,
-                                longitude = locationData?.longitude,
-                                address = locationData?.address
-                            )
-
-                            _state.value = _state.value.copy(
-                                isProcessing = false,
-                                lastDetectionTime = currentTime,
-                                yoloDetections = yoloResults,
-                                detectionStats = stats,
-                                statusMessage = "🚨 ${activity.type.displayName} detected!",
-                                suspiciousActivityDetected = activity.type.displayName
-                            )
-
-                            delay(3000)
-                            _state.value = _state.value.copy(
-                                suspiciousActivityDetected = null,
-                                statusMessage = "Monitoring..."
-                            )
-                            return@launch
-                        }
-                        else -> {}
-                    }
-                }
-
-                // FACE DETECTION
+                // Try face detection (works with or without masks)
                 val faces = faceDetector.detectFaces(bitmap)
+                hasFace = faces.isNotEmpty()
 
-                if (faces.isEmpty()) {
-                    val statusMessage = when {
-                        yoloResults.isNotEmpty() -> {
-                            val mainObject = yoloResults.maxByOrNull { it.confidence }
-                            "📹 ${mainObject?.label?.replaceFirstChar {
-                                if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString()
-                            } ?: "Object"} detected"
-                        }
-                        else -> "🔍 Monitoring area"
+                // Try pose detection if YOLO detected a person
+                if (hasYoloPerson) {
+                    val activityResult = activityDetectionModel?.detectSuspiciousActivity(bitmap)
+                    hasPose = when (activityResult) {
+                        is ActivityDetectionResult.Detected -> true
+                        is ActivityDetectionResult.Normal -> true
+                        else -> false
                     }
 
-                    _state.value = _state.value.copy(
-                        isProcessing = false,
-                        yoloDetections = yoloResults,
-                        detectionStats = stats,
-                        statusMessage = statusMessage
-                    )
-                    return@launch
-                }
+                    // Handle suspicious activity detection
+                    if (activityResult is ActivityDetectionResult.Detected) {
+                        val activity = activityResult.activities.first()
+                        Log.d("CameraViewModel", "🚨 Suspicious Activity: ${activity.type.displayName}")
 
-                val face = faces.first()
-                val croppedFace = faceDetector.cropFace(bitmap, face)
+                        suspiciousActivityRepository.saveActivity(
+                            activityType = activity.type.name,
+                            displayName = activity.type.displayName,
+                            severity = activity.type.severity.name,
+                            confidence = activity.confidence,
+                            duration = activity.duration,
+                            details = mapOf(
+                                "activity" to activity.type.displayName,
+                                "confidence" to (activity.confidence * 100).toInt(),
+                                "duration" to activity.duration,
+                                "details" to activity.details,
+                                "detection_mode" to "pose_based"
+                            ),
+                            frameBitmap = bitmap,
+                            latitude = locationData?.latitude,
+                            longitude = locationData?.longitude,
+                            address = locationData?.address
+                        )
 
-                if (croppedFace == null) {
-                    _state.value = _state.value.copy(
-                        isProcessing = false,
-                        yoloDetections = yoloResults,
-                        detectionStats = stats,
-                        statusMessage = "Failed to crop face"
-                    )
-                    return@launch
-                }
-
-                val faceFeatures = faceDetector.extractFaceFeatures(face)
-                val (matchedPerson, confidence) = FaceRecognizer.findBestMatch(
-                    faceFeatures,
-                    _state.value.knownPeople
-                )
-
-                val isRecognized = matchedPerson != null
-                var statusMessage = if (isRecognized) {
-                    "👤 Known: ${matchedPerson?.name}"
-                } else {
-                    "👤 Unknown person"
-                }
-
-                if (yoloResults.isNotEmpty()) {
-                    val objects = yoloResults.take(2).joinToString { it.label }
-                    statusMessage += " + $objects"
-                }
-
-                if (locationData != null) {
-                    statusMessage += " 📍"
-                }
-
-                when (capturedFacesRepository.saveCapturedFace(
-                    originalBitmap = bitmap,
-                    croppedFaceBitmap = croppedFace,
-                    faceFeatures = faceFeatures,
-                    isRecognized = isRecognized,
-                    matchedPersonId = matchedPerson?.id,
-                    matchedPersonName = matchedPerson?.name,
-                    confidence = confidence,
-                    latitude = locationData?.latitude,
-                    longitude = locationData?.longitude,
-                    locationAccuracy = locationData?.accuracy,
-                    address = locationData?.address
-                )) {
-                    is Result.Success -> {
                         _state.value = _state.value.copy(
                             isProcessing = false,
                             lastDetectionTime = currentTime,
                             yoloDetections = yoloResults,
                             detectionStats = stats,
-                            statusMessage = statusMessage
+                            statusMessage = "🚨 ${activity.type.displayName} detected!",
+                            suspiciousActivityDetected = activity.type.displayName,
+                            personDetectionMode = PersonDetectionMode.POSE_ONLY
+                        )
+
+                        delay(3000)
+                        _state.value = _state.value.copy(
+                            suspiciousActivityDetected = null,
+                            statusMessage = "Monitoring..."
+                        )
+                        return@launch
+                    }
+                }
+
+                // Determine detection mode
+                detectionMode = when {
+                    hasFace && hasPose -> PersonDetectionMode.FACE_AND_POSE
+                    hasFace && !hasPose -> PersonDetectionMode.FACE_ONLY
+                    !hasFace && hasPose -> PersonDetectionMode.POSE_ONLY
+                    hasYoloPerson -> PersonDetectionMode.YOLO_PERSON
+                    else -> PersonDetectionMode.NONE
+                }
+
+                Log.d("CameraViewModel", "Detection Mode: $detectionMode (Face: $hasFace, Pose: $hasPose, YOLO: $hasYoloPerson)")
+
+                // STEP 3: PROCESS BASED ON DETECTION MODE
+                when (detectionMode) {
+                    PersonDetectionMode.FACE_AND_POSE,
+                    PersonDetectionMode.FACE_ONLY -> {
+                        // Process with face recognition
+                        processFaceDetection(
+                            bitmap, faces.first(), yoloResults, stats,
+                            locationData, currentTime, detectionMode
                         )
                     }
-                    is Result.Error -> {
+
+                    PersonDetectionMode.POSE_ONLY -> {
+                        // Person detected via pose but no face
+                        Log.d("CameraViewModel", "👤 Person detected (pose only - face covered/hidden)")
+
+                        capturedFacesRepository.saveCapturedFace(
+                            originalBitmap = bitmap,
+                            croppedFaceBitmap = null, // No face available
+                            faceFeatures = emptyMap(),
+                            isRecognized = false,
+                            matchedPersonId = null,
+                            matchedPersonName = null,
+                            confidence = 0f,
+                            latitude = locationData?.latitude,
+                            longitude = locationData?.longitude,
+                            locationAccuracy = locationData?.accuracy,
+                            address = locationData?.address
+                        )
+
+                        val statusMessage = "👤 Person (face hidden/covered)"
+                        _state.value = _state.value.copy(
+                            isProcessing = false,
+                            lastDetectionTime = currentTime,
+                            yoloDetections = yoloResults,
+                            detectionStats = stats,
+                            statusMessage = statusMessage,
+                            personDetectionMode = detectionMode
+                        )
+                    }
+
+                    PersonDetectionMode.YOLO_PERSON -> {
+                        // YOLO detected person but no pose/face
+                        Log.d("CameraViewModel", "👤 Person detected (YOLO only)")
+
+                        capturedFacesRepository.saveCapturedFace(
+                            originalBitmap = bitmap,
+                            croppedFaceBitmap = null,
+                            faceFeatures = emptyMap(),
+                            isRecognized = false,
+                            matchedPersonId = null,
+                            matchedPersonName = null,
+                            confidence = yoloPeople.maxOfOrNull { it.confidence } ?: 0f,
+                            latitude = locationData?.latitude,
+                            longitude = locationData?.longitude,
+                            locationAccuracy = locationData?.accuracy,
+                            address = locationData?.address
+                        )
+
+                        val statusMessage = "👤 Person detected (${yoloPeople.size})"
+                        _state.value = _state.value.copy(
+                            isProcessing = false,
+                            lastDetectionTime = currentTime,
+                            yoloDetections = yoloResults,
+                            detectionStats = stats,
+                            statusMessage = statusMessage,
+                            personDetectionMode = detectionMode
+                        )
+                    }
+
+                    PersonDetectionMode.NONE -> {
+                        // No person detected
+                        val statusMessage = when {
+                            yoloResults.isNotEmpty() -> {
+                                val mainObject = yoloResults.maxByOrNull { it.confidence }
+                                "📹 ${mainObject?.label?.replaceFirstChar {
+                                    if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString()
+                                } ?: "Object"} detected"
+                            }
+                            else -> "🔍 Monitoring area"
+                        }
+
                         _state.value = _state.value.copy(
                             isProcessing = false,
                             yoloDetections = yoloResults,
                             detectionStats = stats,
-                            statusMessage = "Error saving"
+                            statusMessage = statusMessage,
+                            personDetectionMode = detectionMode
                         )
                     }
-                    is Result.Loading -> {}
                 }
 
             } catch (e: Exception) {
@@ -347,6 +359,86 @@ class CameraViewModel(
                     statusMessage = "Error: ${e.message}"
                 )
             }
+        }
+    }
+
+    private suspend fun processFaceDetection(
+        bitmap: Bitmap,
+        face: com.google.mlkit.vision.face.Face,
+        yoloResults: List<YOLODetectionResult>,
+        stats: YOLODetector.DetectionStats?,
+        locationData: LocationData?,
+        currentTime: Long,
+        detectionMode: PersonDetectionMode
+    ) {
+        val croppedFace = faceDetector.cropFace(bitmap, face)
+
+        if (croppedFace == null) {
+            _state.value = _state.value.copy(
+                isProcessing = false,
+                yoloDetections = yoloResults,
+                detectionStats = stats,
+                statusMessage = "Face detected but couldn't crop"
+            )
+            return
+        }
+
+        val faceFeatures = faceDetector.extractFaceFeatures(face)
+        val (matchedPerson, confidence) = FaceRecognizer.findBestMatch(
+            faceFeatures,
+            _state.value.knownPeople
+        )
+
+        val isRecognized = matchedPerson != null
+        val modeStr = when (detectionMode) {
+            PersonDetectionMode.FACE_AND_POSE -> " (face + pose)"
+            PersonDetectionMode.FACE_ONLY -> " (face only)"
+            else -> ""
+        }
+
+        var statusMessage = if (isRecognized) {
+            "👤 Known: ${matchedPerson?.name}$modeStr"
+        } else {
+            "👤 Unknown person$modeStr"
+        }
+
+        if (yoloResults.isNotEmpty()) {
+            val objects = yoloResults.take(2).joinToString { it.label }
+            statusMessage += " + $objects"
+        }
+
+        when (capturedFacesRepository.saveCapturedFace(
+            originalBitmap = bitmap,
+            croppedFaceBitmap = croppedFace,
+            faceFeatures = faceFeatures,
+            isRecognized = isRecognized,
+            matchedPersonId = matchedPerson?.id,
+            matchedPersonName = matchedPerson?.name,
+            confidence = confidence,
+            latitude = locationData?.latitude,
+            longitude = locationData?.longitude,
+            locationAccuracy = locationData?.accuracy,
+            address = locationData?.address
+        )) {
+            is Result.Success -> {
+                _state.value = _state.value.copy(
+                    isProcessing = false,
+                    lastDetectionTime = currentTime,
+                    yoloDetections = yoloResults,
+                    detectionStats = stats,
+                    statusMessage = statusMessage,
+                    personDetectionMode = detectionMode
+                )
+            }
+            is Result.Error -> {
+                _state.value = _state.value.copy(
+                    isProcessing = false,
+                    yoloDetections = yoloResults,
+                    detectionStats = stats,
+                    statusMessage = "Error saving"
+                )
+            }
+            is Result.Loading -> {}
         }
     }
 
@@ -367,23 +459,17 @@ class CameraViewModel(
     fun getDebugInfo(): String {
         val stats = _state.value.detectionStats ?: return "No stats available"
         return buildString {
+            appendLine("Detection Mode: ${_state.value.personDetectionMode}")
             appendLine("Detection History: ${stats.historySize} frames")
             stats.currentAlertState?.let { alertState ->
                 appendLine("Current Alert: ${alertState.alert.displayName}")
                 appendLine("Consecutive Count: ${alertState.consecutiveCount}")
                 appendLine("Smoothed Confidence: ${(alertState.smoothedConfidence * 100).toInt()}%")
             } ?: appendLine("Current Alert State: None")
-            appendLine("Recent Alerts: ${stats.recentAlerts.joinToString { it.displayName }}")
-            appendLine("\nTracking Info:")
             appendLine("Active Tracks: ${stats.activeTracksCount}")
-            stats.trackedObjects.forEach { track ->
-                val age = (System.currentTimeMillis() - track.firstSeen) / 1000f
-                appendLine("  Track #${track.id}: ${track.label} (${track.frameCount} frames, ${age}s)")
-            }
         }
     }
 
-    // NEW: Get tracking info for display
     fun getTrackingInfo(): Map<Int, String> {
         val stats = _state.value.detectionStats ?: return emptyMap()
         return stats.trackedObjects.associate { track ->
@@ -391,7 +477,6 @@ class CameraViewModel(
         }
     }
 
-    // NEW: Clear all object tracks (useful for debugging or resetting)
     fun clearObjectTracks() {
         yoloDetector?.clearTracks()
         Log.d("CameraViewModel", "Object tracks cleared")
