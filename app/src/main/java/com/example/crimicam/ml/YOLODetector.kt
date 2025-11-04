@@ -11,12 +11,29 @@ import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sqrt
 
 data class YOLODetectionResult(
     val label: String,
     val confidence: Float,
     val boundingBox: RectF,
     val classId: Int
+)
+
+// Detection history for confidence smoothing
+data class DetectionHistory(
+    val timestamp: Long,
+    val detections: List<YOLODetectionResult>,
+    val alert: YOLODetector.SecurityAlert
+)
+
+// Alert state tracking
+data class AlertState(
+    val alert: YOLODetector.SecurityAlert,
+    val firstDetectedTime: Long,
+    val lastDetectedTime: Long,
+    val consecutiveCount: Int,
+    val smoothedConfidence: Float
 )
 
 class YOLODetector(context: Context) {
@@ -29,14 +46,29 @@ class YOLODetector(context: Context) {
     }
 
     private val inputSize = 640
-    private val confidenceThreshold = 0.6f  // Increased from 0.5 for fewer false positives
-    private val iouThreshold = 0.5f  // Increased from 0.45 for better NMS
+    private val confidenceThreshold = 0.6f
+    private val iouThreshold = 0.5f
 
     // Security-relevant classes for crime detection
     private val securityClasses = listOf(
         "person", "car", "truck", "motorcycle", "bus",
         "bicycle", "backpack", "handbag", "knife", "bottle"
     )
+
+    // Alert system improvements
+    private val detectionHistory = mutableListOf<DetectionHistory>()
+    private val maxHistorySize = 10
+    private var currentAlertState: AlertState? = null
+
+    // Alert cooldown settings
+    private val alertCooldownMs = 5000L
+    private val alertStabilityFrames = 3
+    private val confidenceSmoothingWeight = 0.7f
+
+    // Multi-factor scoring weights
+    private val objectPresenceWeight = 0.4f
+    private val objectCountWeight = 0.3f
+    private val interactionWeight = 0.3f
 
     init {
         try {
@@ -62,7 +94,6 @@ class YOLODetector(context: Context) {
 
         val options = Interpreter.Options()
         options.setNumThreads(4)
-        // options.addDelegate(GpuDelegate()) // Enable GPU if needed
 
         return Interpreter(modelBuffer, options)
     }
@@ -81,13 +112,8 @@ class YOLODetector(context: Context) {
 
         try {
             val input = preprocessImage(bitmap)
-
-            // YOLOv8 output shape: [1, 84, 8400]
-            // Dimensions are: [batch, features, anchors]
             val output = Array(1) { Array(84) { FloatArray(8400) } }
-
             interpreter?.run(input, output)
-
             return processOutput(output[0], bitmap.width, bitmap.height)
         } catch (e: Exception) {
             Log.e("YOLODetector", "Error during detection: ${e.message}", e)
@@ -110,11 +136,9 @@ class YOLODetector(context: Context) {
         for (y in 0 until inputSize) {
             for (x in 0 until inputSize) {
                 val value = intValues[pixel++]
-
-                // Normalize to [0,1] - RGB order
-                inputBuffer.putFloat((value shr 16 and 0xFF) / 255.0f) // R
-                inputBuffer.putFloat((value shr 8 and 0xFF) / 255.0f)  // G
-                inputBuffer.putFloat((value and 0xFF) / 255.0f)        // B
+                inputBuffer.putFloat((value shr 16 and 0xFF) / 255.0f)
+                inputBuffer.putFloat((value shr 8 and 0xFF) / 255.0f)
+                inputBuffer.putFloat((value and 0xFF) / 255.0f)
             }
         }
 
@@ -128,15 +152,10 @@ class YOLODetector(context: Context) {
     ): List<YOLODetectionResult> {
         val detections = mutableListOf<YOLODetectionResult>()
 
-        // YOLOv8 output format: [84, 8400]
-        // First 4 rows: x_center, y_center, width, height (in normalized coordinates)
-        // Next 80 rows: class probabilities for 80 COCO classes
-
         for (i in 0 until 8400) {
             var maxClassIdx = -1
             var maxScore = -1f
 
-            // Find class with highest confidence (rows 4-83)
             for (c in 0 until 80) {
                 val score = output[4 + c][i]
                 if (score > maxScore) {
@@ -145,19 +164,15 @@ class YOLODetector(context: Context) {
                 }
             }
 
-            // Check if detection meets threshold
             if (maxClassIdx != -1 && maxScore > confidenceThreshold) {
                 val className = labels.getOrNull(maxClassIdx) ?: "unknown"
 
-                // Only process security-relevant classes
                 if (className in securityClasses) {
-                    // Get bounding box coordinates (normalized 0-1 relative to input size)
                     val xCenter = output[0][i] / inputSize
                     val yCenter = output[1][i] / inputSize
                     val width = output[2][i] / inputSize
                     val height = output[3][i] / inputSize
 
-                    // Convert to pixel coordinates in original image
                     val left = ((xCenter - width / 2) * originalWidth).coerceAtLeast(0f)
                     val top = ((yCenter - height / 2) * originalHeight).coerceAtLeast(0f)
                     val right = ((xCenter + width / 2) * originalWidth).coerceAtMost(originalWidth.toFloat())
@@ -175,7 +190,6 @@ class YOLODetector(context: Context) {
             }
         }
 
-        // Apply Non-Maximum Suppression
         return nonMaxSuppression(detections)
     }
 
@@ -183,8 +197,6 @@ class YOLODetector(context: Context) {
         if (detections.isEmpty()) return emptyList()
 
         val result = mutableListOf<YOLODetectionResult>()
-
-        // Group by class for better NMS
         val groupedByClass = detections.groupBy { it.label }
 
         groupedByClass.forEach { (_, classDetections) ->
@@ -229,8 +241,45 @@ class YOLODetector(context: Context) {
         return if (unionArea > 0) intersectArea / unionArea else 0f
     }
 
-    // NEW: Method called by CameraViewModel with improved logic
-    fun analyzeSuspiciousBehavior(detections: List<YOLODetectionResult>): SecurityAlert {
+    // Enhanced analysis with all improvements
+    fun analyzeSuspiciousBehavior(detections: List<YOLODetectionResult>): SecurityAlertResult {
+        val currentTime = System.currentTimeMillis()
+
+        val preliminaryAlert = getPreliminaryAlert(detections)
+        addToHistory(DetectionHistory(currentTime, detections, preliminaryAlert))
+
+        if (isInCooldown(preliminaryAlert, currentTime)) {
+            return SecurityAlertResult(
+                alert = SecurityAlert.NONE,
+                confidence = 0f,
+                shouldTrigger = false,
+                reason = "Alert cooldown active"
+            )
+        }
+
+        val smoothedConfidence = calculateSmoothedConfidence(detections)
+        val score = calculateMultiFactorScore(detections, smoothedConfidence)
+
+        if (!validateDetection(detections, score)) {
+            return SecurityAlertResult(
+                alert = SecurityAlert.NONE,
+                confidence = score,
+                shouldTrigger = false,
+                reason = "Failed validation checks"
+            )
+        }
+
+        val shouldTrigger = updateAlertState(preliminaryAlert, currentTime, smoothedConfidence)
+
+        return SecurityAlertResult(
+            alert = if (shouldTrigger) preliminaryAlert else SecurityAlert.NONE,
+            confidence = smoothedConfidence,
+            shouldTrigger = shouldTrigger,
+            reason = if (shouldTrigger) "Alert conditions met" else "Waiting for stability"
+        )
+    }
+
+    private fun getPreliminaryAlert(detections: List<YOLODetectionResult>): SecurityAlert {
         if (detections.isEmpty()) return SecurityAlert.NONE
 
         val people = detections.filter { it.label == "person" }
@@ -238,41 +287,198 @@ class YOLODetector(context: Context) {
         val weapons = detections.filter { it.label == "knife" }
         val suspicious = detections.filter { it.label in listOf("backpack", "handbag") }
 
-        // Higher confidence threshold for critical alerts
         val highConfidenceWeapons = weapons.filter { it.confidence > 0.7f }
         val highConfidencePeople = people.filter { it.confidence > 0.7f }
 
         return when {
-            // Critical: Weapons detected with high confidence
             highConfidenceWeapons.isNotEmpty() -> SecurityAlert.WEAPON_DETECTED
-
-            // High: Multiple people with good confidence
             highConfidencePeople.size >= 3 -> SecurityAlert.MULTIPLE_INTRUDERS
-
-            // Medium: Person with vehicle (require both to have decent confidence)
-            people.any { it.confidence > 0.65f } &&
-                    vehicles.any { it.confidence > 0.65f } -> SecurityAlert.VEHICLE_WITH_PERSON
-
-            // Medium: Multiple suspicious items with person
-            suspicious.size >= 2 &&
-                    people.any { it.confidence > 0.65f } -> SecurityAlert.SUSPICIOUS_ITEMS
-
-            // Low: Single high confidence person
+            people.any { it.confidence > 0.65f } && vehicles.any { it.confidence > 0.65f } ->
+                SecurityAlert.VEHICLE_WITH_PERSON
+            suspicious.size >= 2 && people.any { it.confidence > 0.65f } ->
+                SecurityAlert.SUSPICIOUS_ITEMS
             people.any { it.confidence > 0.85f } -> SecurityAlert.HIGH_CONFIDENCE_PERSON
-
             else -> SecurityAlert.NONE
         }
     }
 
-    // Keep the old method for backward compatibility
+    private fun addToHistory(detection: DetectionHistory) {
+        detectionHistory.add(detection)
+        if (detectionHistory.size > maxHistorySize) {
+            detectionHistory.removeAt(0)
+        }
+    }
+
+    private fun isInCooldown(alert: SecurityAlert, currentTime: Long): Boolean {
+        if (alert == SecurityAlert.NONE) return false
+
+        val lastAlert = currentAlertState
+        if (lastAlert != null && lastAlert.alert == alert) {
+            val timeSinceLastAlert = currentTime - lastAlert.lastDetectedTime
+            if (timeSinceLastAlert < alertCooldownMs) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun calculateSmoothedConfidence(detections: List<YOLODetectionResult>): Float {
+        if (detections.isEmpty()) return 0f
+
+        val currentMaxConfidence = detections.maxOfOrNull { it.confidence } ?: 0f
+        val recentDetections = detectionHistory.takeLast(5)
+        if (recentDetections.isEmpty()) return currentMaxConfidence
+
+        var smoothed = currentMaxConfidence
+        recentDetections.reversed().forEachIndexed { index, history ->
+            val historicalConfidence = history.detections.maxOfOrNull { it.confidence } ?: 0f
+            val weight = confidenceSmoothingWeight * floatPow(1 - confidenceSmoothingWeight, index + 1)
+            smoothed = smoothed * (1 - weight) + historicalConfidence * weight
+        }
+
+        return smoothed
+    }
+
+    private fun calculateMultiFactorScore(
+        detections: List<YOLODetectionResult>,
+        smoothedConfidence: Float
+    ): Float {
+        val presenceScore = smoothedConfidence * objectPresenceWeight
+        val countScore = min(detections.size / 5f, 1f) * objectCountWeight
+        val interactionScore = calculateInteractionScore(detections) * interactionWeight
+
+        return presenceScore + countScore + interactionScore
+    }
+
+    private fun calculateInteractionScore(detections: List<YOLODetectionResult>): Float {
+        if (detections.size < 2) return 0f
+
+        var interactions = 0
+        val people = detections.filter { it.label == "person" }
+        val others = detections.filter { it.label != "person" }
+
+        people.forEach { person ->
+            others.forEach { obj ->
+                if (areNearby(person.boundingBox, obj.boundingBox)) {
+                    interactions++
+                }
+            }
+        }
+
+        return min(interactions / 3f, 1f)
+    }
+
+    private fun areNearby(box1: RectF, box2: RectF, threshold: Float = 0.3f): Boolean {
+        val centerX1 = (box1.left + box1.right) / 2
+        val centerY1 = (box1.top + box1.bottom) / 2
+        val centerX2 = (box2.left + box2.right) / 2
+        val centerY2 = (box2.top + box2.bottom) / 2
+
+        val distance = sqrt(
+            (centerX1 - centerX2) * (centerX1 - centerX2) +
+                    (centerY1 - centerY2) * (centerY1 - centerY2)
+        )
+
+        val width1 = box1.right - box1.left
+        val height1 = box1.bottom - box1.top
+        val width2 = box2.right - box2.left
+        val height2 = box2.bottom - box2.top
+        val avgSize = (width1 + height1 + width2 + height2) / 4
+
+        return distance < avgSize * threshold
+    }
+
+    private fun validateDetection(detections: List<YOLODetectionResult>, score: Float): Boolean {
+        if (score < 0.3f) return false
+
+        val hasTinyDetections = detections.any { detection ->
+            val width = detection.boundingBox.right - detection.boundingBox.left
+            val height = detection.boundingBox.bottom - detection.boundingBox.top
+            width < 20 || height < 20
+        }
+        if (hasTinyDetections && detections.size == 1) return false
+
+        val recentAlerts = detectionHistory.takeLast(3).map { it.alert }
+        val hasConsistentAlert = recentAlerts.count { it != SecurityAlert.NONE } >= 2
+
+        val currentAlert = getPreliminaryAlert(detections)
+        if (currentAlert.severity >= 4) return true
+
+        return hasConsistentAlert || recentAlerts.isEmpty()
+    }
+
+    private fun updateAlertState(
+        alert: SecurityAlert,
+        currentTime: Long,
+        confidence: Float
+    ): Boolean {
+        val currentState = currentAlertState
+
+        if (alert == SecurityAlert.NONE) {
+            currentAlertState = null
+            return false
+        }
+
+        if (currentState == null || currentState.alert != alert) {
+            currentAlertState = AlertState(
+                alert = alert,
+                firstDetectedTime = currentTime,
+                lastDetectedTime = currentTime,
+                consecutiveCount = 1,
+                smoothedConfidence = confidence
+            )
+            return false
+        } else {
+            val updatedState = currentState.copy(
+                lastDetectedTime = currentTime,
+                consecutiveCount = currentState.consecutiveCount + 1,
+                smoothedConfidence = confidence
+            )
+            currentAlertState = updatedState
+
+            return updatedState.consecutiveCount >= alertStabilityFrames
+        }
+    }
+
+    fun getDetectionStats(): DetectionStats {
+        return DetectionStats(
+            historySize = detectionHistory.size,
+            currentAlertState = currentAlertState,
+            recentAlerts = detectionHistory.takeLast(5).map { it.alert }
+        )
+    }
+
+    // Backward compatibility
     fun analyzeSecurity(detections: List<YOLODetectionResult>): SecurityAlert {
-        return analyzeSuspiciousBehavior(detections)
+        return analyzeSuspiciousBehavior(detections).alert
     }
 
     fun cleanup() {
         interpreter?.close()
         interpreter = null
+        detectionHistory.clear()
+        currentAlertState = null
     }
+
+    // Helper function for power calculation
+    private fun floatPow(base: Float, exp: Int): Float {
+        var result = 1f
+        repeat(exp) { result *= base }
+        return result
+    }
+
+    data class SecurityAlertResult(
+        val alert: SecurityAlert,
+        val confidence: Float,
+        val shouldTrigger: Boolean,
+        val reason: String
+    )
+
+    data class DetectionStats(
+        val historySize: Int,
+        val currentAlertState: AlertState?,
+        val recentAlerts: List<SecurityAlert>
+    )
 
     enum class SecurityAlert(val displayName: String, val severity: Int) {
         NONE("Normal", 0),
