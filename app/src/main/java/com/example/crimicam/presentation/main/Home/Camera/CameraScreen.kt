@@ -305,24 +305,42 @@ fun YOLODetectionOverlay(
             val boxWidth = right - left
             val boxHeight = bottom - top
 
-            val color = when (detection.label) {
-                "person" -> Color(0xFFFF5252)
-                "car", "truck", "bus" -> Color(0xFFFF9800)
-                "motorcycle", "bicycle" -> Color(0xFFFFC107)
-                "knife" -> Color(0xFFD32F2F)
-                "backpack", "handbag" -> Color(0xFFFFEB3B)
-                else -> Color(0xFF4CAF50)
+            // Color based on tracking stability and object type
+            val color = when {
+                detection.label == "knife" -> Color(0xFFD32F2F)
+                detection.frameCount >= 5 -> Color(0xFF4CAF50)  // Stable track (green)
+                detection.frameCount >= 2 -> when (detection.label) {
+                    "person" -> Color(0xFFFF5252)
+                    "car", "truck", "bus" -> Color(0xFFFF9800)
+                    "motorcycle", "bicycle" -> Color(0xFFFFC107)
+                    "backpack", "handbag" -> Color(0xFFFFEB3B)
+                    else -> Color(0xFF4CAF50)
+                }
+                else -> Color(0xFFBDBDBD)  // New/unstable track (gray)
             }
+
+            // Draw bounding box with thickness based on stability
+            val strokeWidth = if (detection.frameCount >= 3) 5f else 3f
 
             drawRoundRect(
                 color = color,
                 topLeft = Offset(left, top),
                 size = Size(boxWidth, boxHeight),
-                style = Stroke(width = 4f),
+                style = Stroke(width = strokeWidth),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(8f, 8f)
             )
 
-            val label = "${detection.label} ${(detection.confidence * 100).toInt()}%"
+            // Label with tracking info
+            val label = buildString {
+                if (detection.trackingId > 0) {
+                    append("#${detection.trackingId} ")
+                }
+                append("${detection.label} ${(detection.confidence * 100).toInt()}%")
+                if (detection.frameCount > 1) {
+                    append(" (${detection.frameCount})")
+                }
+            }
+
             val textPadding = 8f
             val textWidth = label.length * 7f + textPadding * 2
             val textHeight = 24f
@@ -333,6 +351,21 @@ fun YOLODetectionOverlay(
                 size = Size(textWidth, textHeight),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f)
             )
+
+            // Optional: Draw tracking ID badge for stable tracks
+            if (detection.trackingId > 0 && detection.frameCount >= 3) {
+                val badgeSize = 20f
+                drawCircle(
+                    color = Color.White,
+                    radius = badgeSize / 2,
+                    center = Offset(right - badgeSize, top + badgeSize)
+                )
+                drawCircle(
+                    color = color,
+                    radius = (badgeSize / 2) - 2f,
+                    center = Offset(right - badgeSize, top + badgeSize)
+                )
+            }
         }
     }
 }

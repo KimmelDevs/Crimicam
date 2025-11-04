@@ -12,12 +12,26 @@ import java.nio.channels.FileChannel
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
+import kotlin.math.abs
 
 data class YOLODetectionResult(
     val label: String,
     val confidence: Float,
     val boundingBox: RectF,
-    val classId: Int
+    val classId: Int,
+    val trackingId: Int = -1,  // NEW: Unique ID for tracking across frames
+    val frameCount: Int = 0    // NEW: Number of consecutive frames detected
+)
+
+// NEW: Tracked object for maintaining state across frames
+data class TrackedObject(
+    val id: Int,
+    val label: String,
+    val lastBoundingBox: RectF,
+    val lastSeen: Long,
+    val confidence: Float,
+    val frameCount: Int,
+    val firstSeen: Long
 )
 
 // Detection history for confidence smoothing
@@ -70,6 +84,32 @@ class YOLODetector(context: Context) {
     private val objectCountWeight = 0.3f
     private val interactionWeight = 0.3f
 
+    // NEW: Object tracking
+    private val trackedObjects = mutableMapOf<Int, TrackedObject>()
+    private var nextTrackingId = 1
+    private val trackingIouThreshold = 0.3f  // Lower threshold for tracking (objects can move)
+    private val maxTrackingAge = 1000L  // Remove tracks after 1 second of not being seen
+
+    // NEW: Size and aspect ratio constraints (in pixels relative to input size)
+    private val minObjectSizePercent = 0.02f  // Min 2% of image
+    private val maxObjectSizePercent = 0.95f  // Max 95% of image
+    private val minAspectRatio = 0.2f  // Minimum width/height ratio
+    private val maxAspectRatio = 5.0f  // Maximum width/height ratio
+
+    // Class-specific aspect ratio constraints
+    private val aspectRatioRanges = mapOf(
+        "person" to (0.3f to 3.0f),      // People are typically vertical
+        "car" to (1.2f to 3.5f),         // Cars are wider than tall
+        "truck" to (1.2f to 4.0f),       // Trucks can be quite wide
+        "bus" to (1.5f to 4.0f),         // Buses are very wide
+        "motorcycle" to (0.8f to 2.5f),  // Motorcycles vary
+        "bicycle" to (0.8f to 2.0f),     // Bikes are roughly square
+        "knife" to (2.0f to 10.0f),      // Knives are very elongated
+        "backpack" to (0.6f to 1.5f),    // Backpacks are roughly square
+        "handbag" to (1.0f to 2.5f),     // Handbags vary
+        "bottle" to (0.3f to 1.2f)       // Bottles are vertical
+    )
+
     init {
         try {
             interpreter = loadModel(context)
@@ -114,7 +154,16 @@ class YOLODetector(context: Context) {
             val input = preprocessImage(bitmap)
             val output = Array(1) { Array(84) { FloatArray(8400) } }
             interpreter?.run(input, output)
-            return processOutput(output[0], bitmap.width, bitmap.height)
+
+            val rawDetections = processOutput(output[0], bitmap.width, bitmap.height)
+
+            // NEW: Apply size and aspect ratio filtering
+            val filteredDetections = filterDetectionsBySize(rawDetections, bitmap.width, bitmap.height)
+
+            // NEW: Apply tracking
+            val trackedDetections = applyTracking(filteredDetections)
+
+            return trackedDetections
         } catch (e: Exception) {
             Log.e("YOLODetector", "Error during detection: ${e.message}", e)
             return emptyList()
@@ -241,6 +290,148 @@ class YOLODetector(context: Context) {
         return if (unionArea > 0) intersectArea / unionArea else 0f
     }
 
+    // NEW: Filter detections by size and aspect ratio
+    private fun filterDetectionsBySize(
+        detections: List<YOLODetectionResult>,
+        imageWidth: Int,
+        imageHeight: Int
+    ): List<YOLODetectionResult> {
+        val filtered = mutableListOf<YOLODetectionResult>()
+        val totalArea = imageWidth * imageHeight
+
+        detections.forEach { detection ->
+            val box = detection.boundingBox
+            val width = box.right - box.left
+            val height = box.bottom - box.top
+            val area = width * height
+
+            // Size filtering
+            val areaPercent = area / totalArea
+            if (areaPercent < minObjectSizePercent) {
+                Log.d("YOLODetector", "Filtered ${detection.label}: too small (${(areaPercent * 100).toInt()}%)")
+                return@forEach
+            }
+
+            if (areaPercent > maxObjectSizePercent) {
+                Log.d("YOLODetector", "Filtered ${detection.label}: too large (${(areaPercent * 100).toInt()}%)")
+                return@forEach
+            }
+
+            // Aspect ratio filtering
+            val aspectRatio = width / height
+
+            // General aspect ratio check
+            if (aspectRatio < minAspectRatio || aspectRatio > maxAspectRatio) {
+                Log.d("YOLODetector", "Filtered ${detection.label}: invalid aspect ratio ($aspectRatio)")
+                return@forEach
+            }
+
+            // Class-specific aspect ratio check
+            val classRange = aspectRatioRanges[detection.label]
+            if (classRange != null) {
+                val (minRatio, maxRatio) = classRange
+                if (aspectRatio < minRatio || aspectRatio > maxRatio) {
+                    Log.d("YOLODetector", "Filtered ${detection.label}: aspect ratio $aspectRatio outside class range [$minRatio, $maxRatio]")
+                    return@forEach
+                }
+            }
+
+            // Dimension sanity check - reject extremely thin objects
+            if (width < 10f || height < 10f) {
+                Log.d("YOLODetector", "Filtered ${detection.label}: dimension too small (${width}x${height})")
+                return@forEach
+            }
+
+            filtered.add(detection)
+        }
+
+        if (detections.size != filtered.size) {
+            Log.d("YOLODetector", "Size/Aspect filtering: ${detections.size} -> ${filtered.size} detections")
+        }
+
+        return filtered
+    }
+
+    // NEW: Apply object tracking across frames
+    private fun applyTracking(detections: List<YOLODetectionResult>): List<YOLODetectionResult> {
+        val currentTime = System.currentTimeMillis()
+        val trackedDetections = mutableListOf<YOLODetectionResult>()
+        val matchedTrackIds = mutableSetOf<Int>()
+
+        // Clean up old tracks
+        val expiredTracks = trackedObjects.filter { (_, track) ->
+            currentTime - track.lastSeen > maxTrackingAge
+        }
+        expiredTracks.forEach { (id, track) ->
+            Log.d("YOLODetector", "Track expired: ID=$id ${track.label} (age=${currentTime - track.lastSeen}ms)")
+            trackedObjects.remove(id)
+        }
+
+        // Match detections to existing tracks
+        detections.forEach { detection ->
+            var bestMatchId = -1
+            var bestIoU = trackingIouThreshold
+
+            // Find best matching track
+            trackedObjects.forEach { (id, track) ->
+                if (track.label == detection.label && id !in matchedTrackIds) {
+                    val iou = calculateIoU(detection.boundingBox, track.lastBoundingBox)
+                    if (iou > bestIoU) {
+                        bestIoU = iou
+                        bestMatchId = id
+                    }
+                }
+            }
+
+            if (bestMatchId != -1) {
+                // Update existing track
+                val existingTrack = trackedObjects[bestMatchId]!!
+                trackedObjects[bestMatchId] = TrackedObject(
+                    id = bestMatchId,
+                    label = detection.label,
+                    lastBoundingBox = detection.boundingBox,
+                    lastSeen = currentTime,
+                    confidence = detection.confidence,
+                    frameCount = existingTrack.frameCount + 1,
+                    firstSeen = existingTrack.firstSeen
+                )
+                matchedTrackIds.add(bestMatchId)
+
+                trackedDetections.add(
+                    detection.copy(
+                        trackingId = bestMatchId,
+                        frameCount = existingTrack.frameCount + 1
+                    )
+                )
+
+                Log.d("YOLODetector", "Track updated: ID=$bestMatchId ${detection.label} frames=${existingTrack.frameCount + 1}")
+            } else {
+                // Create new track
+                val newId = nextTrackingId++
+                trackedObjects[newId] = TrackedObject(
+                    id = newId,
+                    label = detection.label,
+                    lastBoundingBox = detection.boundingBox,
+                    lastSeen = currentTime,
+                    confidence = detection.confidence,
+                    frameCount = 1,
+                    firstSeen = currentTime
+                )
+
+                trackedDetections.add(
+                    detection.copy(
+                        trackingId = newId,
+                        frameCount = 1
+                    )
+                )
+
+                Log.d("YOLODetector", "Track created: ID=$newId ${detection.label}")
+            }
+        }
+
+        return trackedDetections
+    }
+
     // Enhanced analysis with all improvements
     fun analyzeSuspiciousBehavior(detections: List<YOLODetectionResult>): SecurityAlertResult {
         val currentTime = System.currentTimeMillis()
@@ -282,10 +473,14 @@ class YOLODetector(context: Context) {
     private fun getPreliminaryAlert(detections: List<YOLODetectionResult>): SecurityAlert {
         if (detections.isEmpty()) return SecurityAlert.NONE
 
-        val people = detections.filter { it.label == "person" }
-        val vehicles = detections.filter { it.label in listOf("car", "truck", "motorcycle", "bus") }
-        val weapons = detections.filter { it.label == "knife" }
-        val suspicious = detections.filter { it.label in listOf("backpack", "handbag") }
+        // NEW: Prefer detections with higher frame counts (more stable)
+        val stableDetections = detections.filter { it.frameCount >= 2 }
+        val detectionsToUse = if (stableDetections.isNotEmpty()) stableDetections else detections
+
+        val people = detectionsToUse.filter { it.label == "person" }
+        val vehicles = detectionsToUse.filter { it.label in listOf("car", "truck", "motorcycle", "bus") }
+        val weapons = detectionsToUse.filter { it.label == "knife" }
+        val suspicious = detectionsToUse.filter { it.label in listOf("backpack", "handbag") }
 
         val highConfidenceWeapons = weapons.filter { it.confidence > 0.7f }
         val highConfidencePeople = people.filter { it.confidence > 0.7f }
@@ -391,12 +586,7 @@ class YOLODetector(context: Context) {
     private fun validateDetection(detections: List<YOLODetectionResult>, score: Float): Boolean {
         if (score < 0.3f) return false
 
-        val hasTinyDetections = detections.any { detection ->
-            val width = detection.boundingBox.right - detection.boundingBox.left
-            val height = detection.boundingBox.bottom - detection.boundingBox.top
-            width < 20 || height < 20
-        }
-        if (hasTinyDetections && detections.size == 1) return false
+        // Already filtered by size in filterDetectionsBySize, so skip tiny detection check
 
         val recentAlerts = detectionHistory.takeLast(3).map { it.alert }
         val hasConsistentAlert = recentAlerts.count { it != SecurityAlert.NONE } >= 2
@@ -444,8 +634,22 @@ class YOLODetector(context: Context) {
         return DetectionStats(
             historySize = detectionHistory.size,
             currentAlertState = currentAlertState,
-            recentAlerts = detectionHistory.takeLast(5).map { it.alert }
+            recentAlerts = detectionHistory.takeLast(5).map { it.alert },
+            activeTracksCount = trackedObjects.size,
+            trackedObjects = trackedObjects.values.toList()
         )
+    }
+
+    // NEW: Get tracking information for a specific object
+    fun getTrackInfo(trackingId: Int): TrackedObject? {
+        return trackedObjects[trackingId]
+    }
+
+    // NEW: Clear all tracks
+    fun clearTracks() {
+        trackedObjects.clear()
+        nextTrackingId = 1
+        Log.d("YOLODetector", "All tracks cleared")
     }
 
     // Backward compatibility
@@ -458,9 +662,9 @@ class YOLODetector(context: Context) {
         interpreter = null
         detectionHistory.clear()
         currentAlertState = null
+        trackedObjects.clear()
     }
 
-    // Helper function for power calculation
     private fun floatPow(base: Float, exp: Int): Float {
         var result = 1f
         repeat(exp) { result *= base }
@@ -477,7 +681,9 @@ class YOLODetector(context: Context) {
     data class DetectionStats(
         val historySize: Int,
         val currentAlertState: AlertState?,
-        val recentAlerts: List<SecurityAlert>
+        val recentAlerts: List<SecurityAlert>,
+        val activeTracksCount: Int,  // NEW
+        val trackedObjects: List<TrackedObject>  // NEW
     )
 
     enum class SecurityAlert(val displayName: String, val severity: Int) {

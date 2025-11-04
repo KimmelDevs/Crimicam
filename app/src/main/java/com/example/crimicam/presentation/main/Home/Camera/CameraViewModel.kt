@@ -374,7 +374,27 @@ class CameraViewModel(
                 appendLine("Smoothed Confidence: ${(alertState.smoothedConfidence * 100).toInt()}%")
             } ?: appendLine("Current Alert State: None")
             appendLine("Recent Alerts: ${stats.recentAlerts.joinToString { it.displayName }}")
+            appendLine("\nTracking Info:")
+            appendLine("Active Tracks: ${stats.activeTracksCount}")
+            stats.trackedObjects.forEach { track ->
+                val age = (System.currentTimeMillis() - track.firstSeen) / 1000f
+                appendLine("  Track #${track.id}: ${track.label} (${track.frameCount} frames, ${age}s)")
+            }
         }
+    }
+
+    // NEW: Get tracking info for display
+    fun getTrackingInfo(): Map<Int, String> {
+        val stats = _state.value.detectionStats ?: return emptyMap()
+        return stats.trackedObjects.associate { track ->
+            track.id to "${track.label} (${track.frameCount} frames)"
+        }
+    }
+
+    // NEW: Clear all object tracks (useful for debugging or resetting)
+    fun clearObjectTracks() {
+        yoloDetector?.clearTracks()
+        Log.d("CameraViewModel", "Object tracks cleared")
     }
 
     override fun onCleared() {
