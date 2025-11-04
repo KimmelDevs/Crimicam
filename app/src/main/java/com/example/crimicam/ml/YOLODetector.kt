@@ -183,23 +183,29 @@ class YOLODetector(context: Context) {
         if (detections.isEmpty()) return emptyList()
 
         val result = mutableListOf<YOLODetectionResult>()
-        val sortedDetections = detections.sortedByDescending { it.confidence }
 
-        for (detection in sortedDetections) {
-            var shouldAdd = true
+        // Group by class for better NMS
+        val groupedByClass = detections.groupBy { it.label }
 
-            for (kept in result) {
-                if (detection.label == kept.label) {
-                    val iou = calculateIoU(detection.boundingBox, kept.boundingBox)
-                    if (iou > iouThreshold) {
-                        shouldAdd = false
-                        break
+        groupedByClass.forEach { (_, classDetections) ->
+            val sortedDetections = classDetections.sortedByDescending { it.confidence }
+
+            for (detection in sortedDetections) {
+                var shouldAdd = true
+
+                for (kept in result) {
+                    if (detection.label == kept.label) {
+                        val iou = calculateIoU(detection.boundingBox, kept.boundingBox)
+                        if (iou > iouThreshold) {
+                            shouldAdd = false
+                            break
+                        }
                     }
                 }
-            }
 
-            if (shouldAdd) {
-                result.add(detection)
+                if (shouldAdd) {
+                    result.add(detection)
+                }
             }
         }
 
@@ -223,19 +229,37 @@ class YOLODetector(context: Context) {
         return if (unionArea > 0) intersectArea / unionArea else 0f
     }
 
-    // NEW: Method called by CameraViewModel
+    // NEW: Method called by CameraViewModel with improved logic
     fun analyzeSuspiciousBehavior(detections: List<YOLODetectionResult>): SecurityAlert {
+        if (detections.isEmpty()) return SecurityAlert.NONE
+
         val people = detections.filter { it.label == "person" }
         val vehicles = detections.filter { it.label in listOf("car", "truck", "motorcycle", "bus") }
         val weapons = detections.filter { it.label == "knife" }
         val suspicious = detections.filter { it.label in listOf("backpack", "handbag") }
 
+        // Higher confidence threshold for critical alerts
+        val highConfidenceWeapons = weapons.filter { it.confidence > 0.7f }
+        val highConfidencePeople = people.filter { it.confidence > 0.7f }
+
         return when {
-            weapons.isNotEmpty() -> SecurityAlert.WEAPON_DETECTED
-            people.size >= 3 -> SecurityAlert.MULTIPLE_INTRUDERS
-            people.isNotEmpty() && vehicles.isNotEmpty() -> SecurityAlert.VEHICLE_WITH_PERSON
-            suspicious.size >= 2 -> SecurityAlert.SUSPICIOUS_ITEMS
-            people.any { it.confidence > 0.85 } -> SecurityAlert.HIGH_CONFIDENCE_PERSON
+            // Critical: Weapons detected with high confidence
+            highConfidenceWeapons.isNotEmpty() -> SecurityAlert.WEAPON_DETECTED
+
+            // High: Multiple people with good confidence
+            highConfidencePeople.size >= 3 -> SecurityAlert.MULTIPLE_INTRUDERS
+
+            // Medium: Person with vehicle (require both to have decent confidence)
+            people.any { it.confidence > 0.65f } &&
+                    vehicles.any { it.confidence > 0.65f } -> SecurityAlert.VEHICLE_WITH_PERSON
+
+            // Medium: Multiple suspicious items with person
+            suspicious.size >= 2 &&
+                    people.any { it.confidence > 0.65f } -> SecurityAlert.SUSPICIOUS_ITEMS
+
+            // Low: Single high confidence person
+            people.any { it.confidence > 0.85f } -> SecurityAlert.HIGH_CONFIDENCE_PERSON
+
             else -> SecurityAlert.NONE
         }
     }
@@ -254,6 +278,7 @@ class YOLODetector(context: Context) {
         NONE("Normal", 0),
         HIGH_CONFIDENCE_PERSON("Person Detected", 1),
         SUSPICIOUS_ITEMS("Suspicious Items", 2),
+        MASKED_PERSON("Masked Person Detected", 3),
         VEHICLE_WITH_PERSON("Vehicle with Person", 3),
         MULTIPLE_INTRUDERS("Multiple People", 4),
         WEAPON_DETECTED("Weapon Detected!", 5)
