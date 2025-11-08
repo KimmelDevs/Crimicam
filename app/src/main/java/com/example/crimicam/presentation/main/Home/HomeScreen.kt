@@ -9,7 +9,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -19,13 +18,17 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.example.crimicam.R
 
 @Composable
-fun HomeScreen(navController: NavController) {
-    val scope = rememberCoroutineScope()
+fun HomeScreen(
+    navController: NavController
+) {
+    val viewModel: HomeViewModel = viewModel()
     val scrollState = rememberScrollState()
+    val notificationState = viewModel.notificationState.value
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -82,13 +85,57 @@ fun HomeScreen(navController: NavController) {
                     }
                 )
 
-
                 Spacer(modifier = Modifier.height(6.dp))
 
-                Text(
-                    text = "Recent Activity",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
-                )
+                // Recent Activity Header with Notification Button
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Recent Activity",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                    )
+
+                    // Notification Trigger Button
+                    IconButton(
+                        onClick = {
+                            viewModel.triggerNotification()
+                        },
+                        modifier = Modifier.size(24.dp),
+                        enabled = notificationState !is NotificationState.Loading
+                    ) {
+                        when (notificationState) {
+                            is NotificationState.Loading -> {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            }
+                            is NotificationState.Success -> {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_notification),
+                                    contentDescription = "Notification Sent",
+                                    tint = Color.Green
+                                )
+                            }
+                            is NotificationState.Error -> {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_notification),
+                                    contentDescription = "Trigger Notification - Error",
+                                    tint = Color.Red
+                                )
+                            }
+                            is NotificationState.Idle -> {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_notification),
+                                    contentDescription = "Trigger Notification"
+                                )
+                            }
+                        }
+                    }
+                }
 
                 val recentActivities = List(5) {
                     "Kawatan Alert: Caught lackin'" to "Phone 1 • *Coordinates*"
@@ -103,6 +150,17 @@ fun HomeScreen(navController: NavController) {
                         }
                     )
                 }
+            }
+        }
+
+        // Show error message if any
+        if (notificationState is NotificationState.Error) {
+            Snackbar(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(16.dp)
+            ) {
+                Text(text = notificationState.message)
             }
         }
     }
@@ -183,7 +241,6 @@ fun FeatureCard(
         }
     }
 }
-
 
 @Composable
 fun RecentActivityCard(
