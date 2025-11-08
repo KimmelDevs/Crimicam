@@ -36,11 +36,22 @@ import com.example.crimicam.presentation.main.Profile.ProfileScreen
 import com.example.crimicam.presentation.main.Profile.ViewProfile.ViewProfileScreen
 import com.example.crimicam.presentation.signup.SignupScreen
 import com.example.crimicam.ui.theme.CrimicamTheme
+import com.example.crimicam.util.NotificationHelper
+import com.example.crimicam.util.NotificationManager
 
 class MainActivity : ComponentActivity() {
+    private lateinit var notificationManager: NotificationManager
+
     @RequiresApi(Build.VERSION_CODES.O)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Create notification channel
+        NotificationHelper.createNotificationChannel(this)
+
+        // Initialize notification manager
+        notificationManager = NotificationManager(this)
+
         setContent {
             CrimicamTheme {
                 val view = LocalView.current
@@ -79,15 +90,33 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                AppNavigation()
+                AppNavigation(notificationManager = notificationManager)
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Start listening for notifications when app is in foreground
+        notificationManager.startListening()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // Optional: Stop listening when app goes to background
+        // Remove this line if you want background listening
+        // notificationManager.stopListening()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        notificationManager.stopListening()
     }
 }
 
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
-fun AppNavigation() {
+fun AppNavigation(notificationManager: NotificationManager) {
     val navController = rememberNavController()
 
     NavHost(
@@ -116,7 +145,8 @@ fun AppNavigation() {
         // Main screen with bottom navigation
         composable("main") {
             MainScreen(
-                mainNavController = navController
+                mainNavController = navController,
+                notificationManager = notificationManager
             )
         }
     }
@@ -125,7 +155,8 @@ fun AppNavigation() {
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
 fun MainScreen(
-    mainNavController: androidx.navigation.NavHostController
+    mainNavController: androidx.navigation.NavHostController,
+    notificationManager: NotificationManager
 ) {
     val bottomNavController = rememberNavController()
     val items = listOf(
@@ -160,6 +191,8 @@ fun MainScreen(
                 ProfileScreen(
                     navController = bottomNavController,
                     onLogout = {
+                        // Stop notification listening on logout
+                        notificationManager.stopListening()
                         mainNavController.navigate("login") {
                             popUpTo("main") { inclusive = true }
                         }
