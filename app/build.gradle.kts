@@ -41,6 +41,9 @@ android {
     buildFeatures {
         viewBinding = true
     }
+    aaptOptions {
+        noCompress += "tflite"  // ✅ Also correct
+    }
 }
 
 dependencies {
@@ -55,7 +58,6 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation("com.google.firebase:firebase-firestore-ktx:25.1.1")
     implementation("androidx.compose.ui:ui")
-    implementation(libs.litert.support.api)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
