@@ -55,6 +55,7 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation("com.google.firebase:firebase-firestore-ktx:25.1.1")
     implementation("androidx.compose.ui:ui")
+    implementation(libs.litert.support.api)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -131,9 +132,9 @@ dependencies {
     implementation("com.google.mlkit:pose-detection-accurate:18.0.0-beta3")
 
     //tensor flow stuff
-    implementation("org.tensorflow:tensorflow-lite:2.13.0")
-    implementation("org.tensorflow:tensorflow-lite-gpu:2.13.0")
-
+    implementation("org.tensorflow:tensorflow-lite:2.14.0")
+    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
+    implementation("org.tensorflow:tensorflow-lite-gpu:2.14.0")
     implementation("androidx.work:work-runtime-ktx:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
 
