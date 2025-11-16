@@ -2,7 +2,6 @@ package com.example.crimicam.data.remote
 
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -32,8 +31,11 @@ class FirestoreService @Inject constructor(
 
     fun listenForNotifications(): Flow<Boolean> = callbackFlow {
         val userId = auth.currentUser?.uid
+
+        // If user is not authenticated, emit false and close gracefully
         if (userId == null) {
-            close(Exception("User not authenticated"))
+            trySend(false)
+            close()  // Close without exception
             return@callbackFlow
         }
 
@@ -50,6 +52,8 @@ class FirestoreService @Inject constructor(
                 if (snapshot != null && snapshot.exists()) {
                     val isNotificationActive = snapshot.getBoolean("notification") ?: false
                     trySend(isNotificationActive)
+                } else {
+                    trySend(false)
                 }
             }
 
