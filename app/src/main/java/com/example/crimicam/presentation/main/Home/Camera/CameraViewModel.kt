@@ -37,7 +37,8 @@ data class CameraState(
     val personDetectionMode: PersonDetectionMode = PersonDetectionMode.NONE,
     val motionDetected: Boolean = false,
     val presenceConfidence: Float = 0f,
-    val processingStage: ProcessingStage = ProcessingStage.IDLE
+    val processingStage: ProcessingStage = ProcessingStage.IDLE,
+    val isMotionDetectionEnabled: Boolean = true // NEW: Control motion detection
 )
 
 enum class PersonDetectionMode {
@@ -88,7 +89,6 @@ class CameraViewModel(
 
     fun initDetector(context: Context) {
         try {
-            // Initialize all detectors
             yoloDetector = YOLODetector(context)
             presenceDetector = PresenceDetector(context)
             Log.d("CameraViewModel", "✅ All detectors initialized successfully")
@@ -125,38 +125,49 @@ class CameraViewModel(
         if (_state.value.isProcessing) return
 
         viewModelScope.launch {
-            _state.value = _state.value.copy(
-                isProcessing = true,
-                processingStage = ProcessingStage.CHECKING_MOTION,
-                statusMessage = "Checking motion..."
-            )
-
             try {
                 val locationData = locationManager?.getCurrentLocation()
 
                 // ═══════════════════════════════════════════════════════════
-                // STEP 0: MOTION DETECTION (Ultra-fast, pixel comparison)
+                // STEP 0: MOTION DETECTION (Only if enabled)
                 // ═══════════════════════════════════════════════════════════
-                val motionResult = motionDetector.detectMotion(bitmap)
-
-                if (!motionResult.hasMotion) {
-                    Log.d("CameraViewModel", "⏸️ No motion - skipping heavy processing")
+                if (_state.value.isMotionDetectionEnabled) {
                     _state.value = _state.value.copy(
-                        isProcessing = false,
-                        processingStage = ProcessingStage.IDLE,
-                        statusMessage = "🔍 Monitoring (no motion)",
-                        motionDetected = false,
-                        personDetectionMode = PersonDetectionMode.NONE
+                        isProcessing = true,
+                        processingStage = ProcessingStage.CHECKING_MOTION,
+                        statusMessage = "Checking motion..."
                     )
-                    return@launch
-                }
 
-                Log.d("CameraViewModel", "🏃 Motion detected: ${(motionResult.changePercentage * 100).toInt()}%")
-                _state.value = _state.value.copy(
-                    motionDetected = true,
-                    processingStage = ProcessingStage.CHECKING_PRESENCE,
-                    statusMessage = "Checking presence..."
-                )
+                    val motionResult = motionDetector.detectMotion(bitmap)
+
+                    if (!motionResult.hasMotion) {
+                        Log.d("CameraViewModel", "⏸️ No motion - skipping heavy processing")
+                        _state.value = _state.value.copy(
+                            isProcessing = false,
+                            processingStage = ProcessingStage.IDLE,
+                            statusMessage = "🔍 Monitoring (no motion)",
+                            motionDetected = false,
+                            personDetectionMode = PersonDetectionMode.NONE
+                        )
+                        return@launch
+                    }
+
+                    // MOTION DETECTED! Disable motion detection and continue
+                    Log.d("CameraViewModel", "🏃 Motion detected: ${(motionResult.changePercentage * 100).toInt()}% - DISABLING motion detector")
+                    _state.value = _state.value.copy(
+                        motionDetected = true,
+                        isMotionDetectionEnabled = false, // 🔥 DISABLE motion detection
+                        processingStage = ProcessingStage.CHECKING_PRESENCE,
+                        statusMessage = "Motion detected - checking presence..."
+                    )
+                } else {
+                    // Motion detection disabled - continue with presence check
+                    _state.value = _state.value.copy(
+                        isProcessing = true,
+                        processingStage = ProcessingStage.CHECKING_PRESENCE,
+                        statusMessage = "Checking presence..."
+                    )
+                }
 
                 // ═══════════════════════════════════════════════════════════
                 // STEP 1: PRESENCE DETECTION (Fast TFLite model)
@@ -164,13 +175,17 @@ class CameraViewModel(
                 val presenceConfidence = presenceDetector?.detectPresence(bitmap) ?: 0f
 
                 if (presenceConfidence < 0.5f) {
-                    Log.d("CameraViewModel", "👻 No human presence detected (${(presenceConfidence * 100).toInt()}%)")
+                    Log.d("CameraViewModel", "👻 No human presence (${(presenceConfidence * 100).toInt()}%) - RE-ENABLING motion detector")
+
+                    // No person found - re-enable motion detection
                     _state.value = _state.value.copy(
                         isProcessing = false,
                         processingStage = ProcessingStage.IDLE,
                         statusMessage = "🔍 Motion detected (no human)",
                         presenceConfidence = presenceConfidence,
-                        personDetectionMode = PersonDetectionMode.NONE
+                        personDetectionMode = PersonDetectionMode.NONE,
+                        isMotionDetectionEnabled = true, // 🔥 RE-ENABLE motion detection
+                        motionDetected = false
                     )
                     return@launch
                 }
@@ -183,7 +198,7 @@ class CameraViewModel(
                 )
 
                 // ═══════════════════════════════════════════════════════════
-                // STEP 2: YOLO OBJECT DETECTION (Now we know there's a person)
+                // STEP 2: YOLO OBJECT DETECTION
                 // ═══════════════════════════════════════════════════════════
                 val yoloResults = yoloDetector?.detect(bitmap) ?: emptyList()
                 val alertResult = yoloDetector?.analyzeSuspiciousBehavior(yoloResults)
@@ -191,11 +206,10 @@ class CameraViewModel(
 
                 Log.d("CameraViewModel", "YOLO Detections: ${yoloResults.size} objects")
 
-                // Check for YOLO person detections
                 val yoloPeople = yoloResults.filter { it.label == "person" }
                 val hasYoloPerson = yoloPeople.isNotEmpty()
 
-                // Handle security alerts first
+                // Handle security alerts
                 if (alertResult != null && alertResult.shouldTrigger &&
                     alertResult.alert != YOLODetector.SecurityAlert.NONE) {
 
@@ -244,7 +258,8 @@ class CameraViewModel(
                         alertReason = alertResult.reason,
                         detectionStats = stats,
                         statusMessage = "🚨 ${alert.displayName} (${(alertResult.confidence * 100).toInt()}%)",
-                        suspiciousActivityDetected = alert.displayName
+                        suspiciousActivityDetected = alert.displayName,
+                        isMotionDetectionEnabled = true // Re-enable after processing
                     )
 
                     delay(3000)
@@ -267,11 +282,9 @@ class CameraViewModel(
                 var hasFace = false
                 var hasPose = false
 
-                // Try face detection
                 val faces = faceDetector.detectFaces(bitmap)
                 hasFace = faces.isNotEmpty()
 
-                // Try pose detection if YOLO detected a person
                 if (hasYoloPerson) {
                     val activityResult = activityDetectionModel?.detectSuspiciousActivity(bitmap)
                     hasPose = when (activityResult) {
@@ -280,7 +293,6 @@ class CameraViewModel(
                         else -> false
                     }
 
-                    // Handle suspicious activity detection
                     if (activityResult is ActivityDetectionResult.Detected) {
                         val activity = activityResult.activities.first()
                         Log.d("CameraViewModel", "🚨 Suspicious Activity: ${activity.type.displayName}")
@@ -313,7 +325,8 @@ class CameraViewModel(
                             detectionStats = stats,
                             statusMessage = "🚨 ${activity.type.displayName} detected!",
                             suspiciousActivityDetected = activity.type.displayName,
-                            personDetectionMode = PersonDetectionMode.POSE_ONLY
+                            personDetectionMode = PersonDetectionMode.POSE_ONLY,
+                            isMotionDetectionEnabled = true // Re-enable
                         )
 
                         delay(3000)
@@ -325,7 +338,6 @@ class CameraViewModel(
                     }
                 }
 
-                // Determine detection mode
                 detectionMode = when {
                     hasFace && hasPose -> PersonDetectionMode.FACE_AND_POSE
                     hasFace && !hasPose -> PersonDetectionMode.FACE_ONLY
@@ -372,7 +384,8 @@ class CameraViewModel(
                             yoloDetections = yoloResults,
                             detectionStats = stats,
                             statusMessage = "👤 Person (face hidden/covered)",
-                            personDetectionMode = detectionMode
+                            personDetectionMode = detectionMode,
+                            isMotionDetectionEnabled = true // Re-enable
                         )
                     }
 
@@ -400,7 +413,8 @@ class CameraViewModel(
                             yoloDetections = yoloResults,
                             detectionStats = stats,
                             statusMessage = "👤 Person detected (${yoloPeople.size})",
-                            personDetectionMode = detectionMode
+                            personDetectionMode = detectionMode,
+                            isMotionDetectionEnabled = true // Re-enable
                         )
                     }
 
@@ -421,7 +435,8 @@ class CameraViewModel(
                             yoloDetections = yoloResults,
                             detectionStats = stats,
                             statusMessage = statusMessage,
-                            personDetectionMode = detectionMode
+                            personDetectionMode = detectionMode,
+                            isMotionDetectionEnabled = true // Re-enable
                         )
                     }
                 }
@@ -431,7 +446,8 @@ class CameraViewModel(
                 _state.value = _state.value.copy(
                     isProcessing = false,
                     processingStage = ProcessingStage.IDLE,
-                    statusMessage = "Error: ${e.message}"
+                    statusMessage = "Error: ${e.message}",
+                    isMotionDetectionEnabled = true // Re-enable even on error
                 )
             }
         }
@@ -454,7 +470,8 @@ class CameraViewModel(
                 processingStage = ProcessingStage.COMPLETE,
                 yoloDetections = yoloResults,
                 detectionStats = stats,
-                statusMessage = "Face detected but couldn't crop"
+                statusMessage = "Face detected but couldn't crop",
+                isMotionDetectionEnabled = true // Re-enable
             )
             return
         }
@@ -504,7 +521,8 @@ class CameraViewModel(
                     yoloDetections = yoloResults,
                     detectionStats = stats,
                     statusMessage = statusMessage,
-                    personDetectionMode = detectionMode
+                    personDetectionMode = detectionMode,
+                    isMotionDetectionEnabled = true // Re-enable
                 )
             }
             is Result.Error -> {
@@ -513,7 +531,8 @@ class CameraViewModel(
                     processingStage = ProcessingStage.COMPLETE,
                     yoloDetections = yoloResults,
                     detectionStats = stats,
-                    statusMessage = "Error saving"
+                    statusMessage = "Error saving",
+                    isMotionDetectionEnabled = true // Re-enable
                 )
             }
             is Result.Loading -> {}
@@ -536,13 +555,18 @@ class CameraViewModel(
 
     fun resetMotionDetector() {
         motionDetector.reset()
-        Log.d("CameraViewModel", "Motion detector reset")
+        _state.value = _state.value.copy(
+            isMotionDetectionEnabled = true,
+            motionDetected = false
+        )
+        Log.d("CameraViewModel", "Motion detector reset and re-enabled")
     }
 
     fun getDebugInfo(): String {
         val stats = _state.value.detectionStats ?: return "No stats available"
         return buildString {
             appendLine("Processing Stage: ${_state.value.processingStage}")
+            appendLine("Motion Detection: ${if (_state.value.isMotionDetectionEnabled) "ENABLED ✅" else "DISABLED ⏸️"}")
             appendLine("Motion Detected: ${_state.value.motionDetected}")
             appendLine("Presence Confidence: ${(_state.value.presenceConfidence * 100).toInt()}%")
             appendLine("Detection Mode: ${_state.value.personDetectionMode}")
