@@ -18,6 +18,7 @@ package com.example.crimicam.facerecognitionnetface.models
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
+import com.example.crimicam.facerecognitionnetface.Logger
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.gpu.CompatibilityList

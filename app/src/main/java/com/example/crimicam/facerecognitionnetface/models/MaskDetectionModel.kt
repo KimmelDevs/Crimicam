@@ -29,6 +29,7 @@ class MaskDetectionModel( context: Context ) {
     private val modelName = "mask_detector.tflite"
 
     private var interpreter : Interpreter
+    private var gpuDelegate: GpuDelegate? = null
     private val imageTensorProcessor = ImageProcessor.Builder()
         .add( ResizeOp( imgSize , imgSize , ResizeOp.ResizeMethod.BILINEAR ) )
         .add( NormalizeOp( 127.5f ,127.5f ) )
@@ -37,13 +38,23 @@ class MaskDetectionModel( context: Context ) {
     init {
         // Initialize TFLiteInterpreter
         val interpreterOptions = Interpreter.Options().apply {
-            // Add the GPU Delegate if supported.
-            // See -> https://www.tensorflow.org/lite/performance/gpu#android
-            if ( CompatibilityList().isDelegateSupportedOnThisDevice ) {
-                addDelegate( GpuDelegate( CompatibilityList().bestOptionsForThisDevice ) )
-            }
-            else {
-                // Number of threads for computation
+            try {
+                // Check if GPU delegate is supported
+                val compatList = CompatibilityList()
+                if (compatList.isDelegateSupportedOnThisDevice) {
+                    // Create GPU delegate with best options for this device
+                    val delegateOptions = compatList.bestOptionsForThisDevice
+                    gpuDelegate = GpuDelegate(delegateOptions)
+                    addDelegate(gpuDelegate)
+                    Log.i("MaskDetection", "GPU delegate enabled successfully")
+                } else {
+                    // Fallback to CPU with multiple threads
+                    numThreads = 4
+                    Log.i("MaskDetection", "GPU not supported, using CPU with 4 threads")
+                }
+            } catch (e: Exception) {
+                // If GPU initialization fails, fallback to CPU
+                Log.e("MaskDetection", "Error initializing GPU delegate: ${e.message}")
                 numThreads = 4
             }
             setUseXNNPACK(true)
@@ -80,5 +91,10 @@ class MaskDetectionModel( context: Context ) {
         return imageTensorProcessor.process( TensorImage.fromBitmap( image ) ).buffer
     }
 
+    // Clean up resources when done
+    fun close() {
+        interpreter.close()
+        gpuDelegate?.close()
+    }
 
 }
