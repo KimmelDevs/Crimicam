@@ -1,7 +1,6 @@
 package com.example.crimicam.ml
 
-
-import com.example.crimicam.data.model.KnownPerson
+import com.example.crimicam.data.model.PersonImage
 import kotlin.math.pow
 import kotlin.math.sqrt
 
@@ -40,32 +39,72 @@ object FaceRecognizer {
     }
 
     /**
-     * Find the best match from a list of known people
-     * Returns pair of (matched person, confidence score)
+     * Find the best match from a list of person images
+     * Returns triple of (personId, personName, confidence score)
      */
     fun findBestMatch(
         capturedFeatures: Map<String, Float>,
-        knownPeople: List<KnownPerson>,
+        personImages: List<PersonImage>,
         threshold: Float = 0.6f // Minimum confidence to consider a match
-    ): Pair<KnownPerson?, Float> {
-        if (knownPeople.isEmpty()) return Pair(null, 0f)
+    ): Triple<String?, String?, Float> {
+        if (personImages.isEmpty()) return Triple(null, null, 0f)
 
-        var bestMatch: KnownPerson? = null
+        var bestPersonId: String? = null
         var bestScore = 0f
 
-        knownPeople.forEach { person ->
-            val score = compareFaces(capturedFeatures, person.faceFeatures)
+        // Compare against all images and find the best match
+        personImages.forEach { image ->
+            val score = compareFaces(capturedFeatures, image.faceFeatures)
             if (score > bestScore) {
                 bestScore = score
-                bestMatch = person
+                bestPersonId = image.personId
             }
         }
 
         // Only return match if score is above threshold
-        return if (bestScore >= threshold) {
-            Pair(bestMatch, bestScore)
+        return if (bestScore >= threshold && bestPersonId != null) {
+            Triple(bestPersonId, null, bestScore) // Name will be fetched separately
         } else {
-            Pair(null, bestScore)
+            Triple(null, null, bestScore)
         }
+    }
+
+    /**
+     * Compare captured features against a single person's all images
+     * Returns the best match score among all their images
+     */
+    fun matchAgainstPerson(
+        capturedFeatures: Map<String, Float>,
+        personImages: List<PersonImage>
+    ): Float {
+        if (personImages.isEmpty()) return 0f
+
+        var bestScore = 0f
+        personImages.forEach { image ->
+            val score = compareFaces(capturedFeatures, image.faceFeatures)
+            if (score > bestScore) {
+                bestScore = score
+            }
+        }
+
+        return bestScore
+    }
+
+    /**
+     * Calculate average similarity across multiple images of the same person
+     * More robust than single image comparison
+     */
+    fun averageMatchScore(
+        capturedFeatures: Map<String, Float>,
+        personImages: List<PersonImage>
+    ): Float {
+        if (personImages.isEmpty()) return 0f
+
+        var totalScore = 0f
+        personImages.forEach { image ->
+            totalScore += compareFaces(capturedFeatures, image.faceFeatures)
+        }
+
+        return totalScore / personImages.size
     }
 }

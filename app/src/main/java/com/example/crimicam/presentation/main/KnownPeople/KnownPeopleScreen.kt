@@ -12,17 +12,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CameraAlt
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -31,7 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.crimicam.util.ImageCompressor
+import com.example.crimicam.data.model.KnownPerson
 
 @Composable
 fun KnownPeopleScreen(
@@ -40,6 +36,7 @@ fun KnownPeopleScreen(
     val state by viewModel.state.collectAsState()
     val context = LocalContext.current
     var showAddDialog by remember { mutableStateOf(false) }
+    var selectedPersonForImage by remember { mutableStateOf<KnownPerson?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     // Show error messages
@@ -76,23 +73,17 @@ fun KnownPeopleScreen(
                     .padding(16.dp)
             ) {
                 // Header
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "Known People",
-                            fontSize = 28.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "${state.people.size} people won't trigger alerts",
-                            fontSize = 14.sp,
-                            color = Color.Gray
-                        )
-                    }
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "Known People",
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "${state.people.size} people • ${state.people.sumOf { it.imageCount }} images",
+                        fontSize = 14.sp,
+                        color = Color.Gray
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -118,13 +109,13 @@ fun KnownPeopleScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text(
-                                text = "Add trusted people to prevent false alerts",
+                                text = "Add multiple photos per person for better recognition",
                                 fontSize = 13.sp,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "💡 Tip: More photos = Better accuracy",
+                                text = "💡 Tip: 3-5 photos from different angles works best",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = MaterialTheme.colorScheme.primary
@@ -152,7 +143,8 @@ fun KnownPeopleScreen(
                         items(state.people, key = { it.id }) { person ->
                             KnownPersonCard(
                                 person = person,
-                                onDelete = { viewModel.deletePerson(person.id) }
+                                onDelete = { viewModel.deletePerson(person.id) },
+                                onAddImage = { selectedPersonForImage = person }
                             )
                         }
                     }
@@ -175,18 +167,28 @@ fun KnownPeopleScreen(
                 }
             )
         }
+
+        // Add Image to Existing Person
+        selectedPersonForImage?.let { person ->
+            AddImageDialog(
+                personName = person.name,
+                onDismiss = { selectedPersonForImage = null },
+                onAdd = { imageUri ->
+                    viewModel.addImageToPerson(context, person.id, imageUri)
+                    selectedPersonForImage = null
+                }
+            )
+        }
     }
 }
 
 @Composable
 fun KnownPersonCard(
-    person: com.example.crimicam.data.model.KnownPerson,
-    onDelete: () -> Unit
+    person: KnownPerson,
+    onDelete: () -> Unit,
+    onAddImage: () -> Unit
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
-    val bitmap = remember(person.croppedFaceBase64) {
-        ImageCompressor.base64ToBitmap(person.croppedFaceBase64)
-    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -199,7 +201,7 @@ fun KnownPersonCard(
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Avatar with actual face image
+            // Avatar
             Box(
                 modifier = Modifier
                     .size(56.dp)
@@ -207,21 +209,12 @@ fun KnownPersonCard(
                     .background(MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center
             ) {
-                if (bitmap != null) {
-                    Image(
-                        bitmap = bitmap.asImageBitmap(),
-                        contentDescription = person.name,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
-                } else {
-                    Text(
-                        text = person.name.first().uppercase(),
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
+                Text(
+                    text = person.name.first().uppercase(),
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
             }
 
             Spacer(modifier = Modifier.width(16.dp))
@@ -240,10 +233,30 @@ fun KnownPersonCard(
                     color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "Added ${formatDate(person.createdAt)}",
-                    fontSize = 12.sp,
-                    color = Color.Gray
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PhotoLibrary,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = Color.Gray
+                    )
+                    Text(
+                        text = "${person.imageCount} image${if (person.imageCount != 1) "s" else ""}",
+                        fontSize = 12.sp,
+                        color = Color.Gray
+                    )
+                }
+            }
+
+            // Add Image Button
+            IconButton(onClick = onAddImage) {
+                Icon(
+                    imageVector = Icons.Default.AddAPhoto,
+                    contentDescription = "Add Image",
+                    tint = MaterialTheme.colorScheme.primary
                 )
             }
 
@@ -264,7 +277,7 @@ fun KnownPersonCard(
             onDismissRequest = { showDeleteConfirm = false },
             title = { Text("Remove Person") },
             text = {
-                Text("Are you sure you want to remove ${person.name}? They will trigger alerts again.")
+                Text("Are you sure you want to remove ${person.name}? This will delete all ${person.imageCount} image(s).")
             },
             confirmButton = {
                 TextButton(
@@ -293,7 +306,6 @@ fun AddPersonDialog(
     var name by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
-    val context = LocalContext.current
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -314,7 +326,7 @@ fun AddPersonDialog(
                     .padding(24.dp)
             ) {
                 Text(
-                    text = "Add Known Person",
+                    text = "Add New Person",
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -340,11 +352,11 @@ fun AddPersonDialog(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = if (selectedImageUri != null) "Image Selected ✓" else "Select Photo",
+                            text = if (selectedImageUri != null) "Image Selected ✓" else "Select First Photo",
                             fontSize = 14.sp
                         )
                         Text(
-                            text = "Face will be detected automatically",
+                            text = "You can add more photos later",
                             fontSize = 11.sp,
                             color = Color.Gray
                         )
@@ -353,7 +365,6 @@ fun AddPersonDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Name Input
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -366,7 +377,6 @@ fun AddPersonDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Description Input
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it },
@@ -379,7 +389,6 @@ fun AddPersonDialog(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                // Buttons
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -403,6 +412,104 @@ fun AddPersonDialog(
                         enabled = name.isNotBlank() && selectedImageUri != null
                     ) {
                         Text("Add Person")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AddImageDialog(
+    personName: String,
+    onDismiss: () -> Unit,
+    onAdd: (Uri) -> Unit
+) {
+    var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        selectedImageUri = uri
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp)
+            ) {
+                Text(
+                    text = "Add Photo",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Adding photo for: $personName",
+                    fontSize = 14.sp,
+                    color = Color.Gray
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                OutlinedButton(
+                    onClick = { imagePickerLauncher.launch("image/*") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AddAPhoto,
+                            contentDescription = null,
+                            modifier = Modifier.size(40.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = if (selectedImageUri != null) "Image Selected ✓" else "Select Photo",
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Cancel")
+                    }
+
+                    Button(
+                        onClick = {
+                            selectedImageUri?.let { uri ->
+                                onAdd(uri)
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        enabled = selectedImageUri != null
+                    ) {
+                        Text("Add Photo")
                     }
                 }
             }
@@ -443,7 +550,7 @@ fun ProcessingOverlay(progress: ProcessingProgress?) {
                         ProcessingStage.CROPPING_FACE -> "Cropping Face..."
                         ProcessingStage.COMPRESSING -> "Compressing Image..."
                         ProcessingStage.EXTRACTING_FEATURES -> "Extracting Features..."
-                        ProcessingStage.UPLOADING -> "Uploading to Cloud..."
+                        ProcessingStage.UPLOADING -> "Uploading..."
                         ProcessingStage.COMPLETE -> "Complete!"
                         null -> "Processing..."
                     },
@@ -467,15 +574,6 @@ fun ProcessingOverlay(progress: ProcessingProgress?) {
                         .fillMaxWidth()
                         .height(8.dp)
                         .clip(RoundedCornerShape(4.dp)),
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Text(
-                    text = "💡 More photos = Better accuracy",
-                    fontSize = 12.sp,
-                    color = Color.Gray,
-                    textAlign = TextAlign.Center
                 )
             }
         }
@@ -511,31 +609,11 @@ fun EmptyStateView() {
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "Add trusted people to prevent false alerts",
+                text = "Add people and multiple photos for face recognition",
                 fontSize = 14.sp,
                 color = Color.Gray,
                 textAlign = TextAlign.Center
             )
         }
-    }
-}
-
-private fun formatDate(timestamp: Long): String {
-    val now = System.currentTimeMillis()
-    val diff = now - timestamp
-    val seconds = diff / 1000
-    val minutes = seconds / 60
-    val hours = minutes / 60
-    val days = hours / 24
-    val weeks = days / 7
-    val months = days / 30
-
-    return when {
-        seconds < 60 -> "just now"
-        minutes < 60 -> "$minutes minute${if (minutes != 1L) "s" else ""} ago"
-        hours < 24 -> "$hours hour${if (hours != 1L) "s" else ""} ago"
-        days < 7 -> "$days day${if (days != 1L) "s" else ""} ago"
-        weeks < 4 -> "$weeks week${if (weeks != 1L) "s" else ""} ago"
-        else -> "$months month${if (months != 1L) "s" else ""} ago"
     }
 }
