@@ -1,87 +1,174 @@
 package com.example.crimicam.facerecognitionnetface
 
+/*
+ * Copyright 2023 Shubham Panchal
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
+import android.util.AttributeSet
+import android.view.View
 import androidx.camera.core.CameraSelector
 
 /**
- * Data class for face predictions
- * Used by the face detection overlay system
+ * Custom View to draw bounding boxes over detected faces
  */
-data class Prediction(
-    val bbox: RectF,
-    val label: String,
-    val maskLabel: String = "",
-    val confidence: Float = 0f
-)
+class BoundingBoxOverlay(context: Context, attributeSet: AttributeSet?) : View(context, attributeSet) {
 
-/**
- * Helper class for bounding box transformations
- * Converts camera coordinates to screen coordinates
- */
-class BoundingBoxTransformer {
+    // Properties accessed by FrameAnalyser
+    var drawMaskLabel: Boolean = false
+    var areDimsInit: Boolean = false
+    var frameHeight: Int = 0
+        set(value) {
+            field = value
+            areDimsInit = frameWidth != 0 && frameHeight != 0
+        }
+    var frameWidth: Int = 0
+        set(value) {
+            field = value
+            areDimsInit = frameWidth != 0 && frameHeight != 0
+        }
 
-    private var frameWidth = 0
-    private var frameHeight = 0
-    private var viewWidth = 0f
-    private var viewHeight = 0f
-    private var isInitialized = false
+    var faceBoundingBoxes: ArrayList<Prediction> = ArrayList()
+
     private var cameraFacing: Int = CameraSelector.LENS_FACING_BACK
 
-    fun initialize(
-        frameWidth: Int,
-        frameHeight: Int,
-        viewWidth: Float,
-        viewHeight: Float,
-        cameraFacing: Int = CameraSelector.LENS_FACING_BACK
-    ) {
-        this.frameWidth = frameWidth
-        this.frameHeight = frameHeight
-        this.viewWidth = viewWidth
-        this.viewHeight = viewHeight
-        this.cameraFacing = cameraFacing
-        this.isInitialized = true
+    // Paint objects for drawing
+    private val boxPaint = Paint().apply {
+        color = Color.GREEN
+        style = Paint.Style.STROKE
+        strokeWidth = 4f
+    }
+
+    private val textPaint = Paint().apply {
+        color = Color.WHITE
+        textSize = 40f
+        style = Paint.Style.FILL
+    }
+
+    private val backgroundPaint = Paint().apply {
+        color = Color.parseColor("#AA000000") // Semi-transparent black
+        style = Paint.Style.FILL
+    }
+
+    private val maskTextPaint = Paint().apply {
+        color = Color.YELLOW
+        textSize = 32f
+        style = Paint.Style.FILL
     }
 
     /**
-     * Transform camera frame coordinates to screen coordinates
+     * Set the camera facing direction for proper coordinate transformation
      */
-    fun transformBoundingBox(bbox: RectF): RectF {
-        if (!isInitialized) {
-            Logger.logWarning("BoundingBoxTransformer not initialized")
-            return bbox
+    fun setCameraFacing(facing: Int) {
+        this.cameraFacing = facing
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+
+        if (!areDimsInit) {
+            return
         }
 
-        val xFactor = viewWidth / frameWidth.toFloat()
-        val yFactor = viewHeight / frameHeight.toFloat()
+        val scaleX = width.toFloat() / frameWidth
+        val scaleY = height.toFloat() / frameHeight
 
-        val transformedBox = RectF(
-            bbox.left * xFactor,
-            bbox.top * yFactor,
-            bbox.right * xFactor,
-            bbox.bottom * yFactor
-        )
+        for (prediction in faceBoundingBoxes) {
+            val bbox = transformBoundingBox(prediction.bbox, scaleX, scaleY)
+
+            // Draw bounding box
+            canvas.drawRect(bbox, boxPaint)
+
+            // Draw label background
+            val labelText = prediction.label
+            val textWidth = textPaint.measureText(labelText)
+            val textHeight = textPaint.textSize
+
+            val labelRect = RectF(
+                bbox.left.toFloat(),
+                bbox.top.toFloat() - textHeight - 16f,
+                bbox.left.toFloat() + textWidth + 16f,
+                bbox.top.toFloat()
+            )
+            canvas.drawRect(labelRect, backgroundPaint)
+
+            // Draw label text
+            canvas.drawText(
+                labelText,
+                bbox.left.toFloat() + 8f,
+                bbox.top.toFloat() - 8f,
+                textPaint
+            )
+
+            // Draw mask label if enabled and available
+            if (drawMaskLabel && prediction.maskLabel.isNotEmpty()) {
+                val maskText = prediction.maskLabel
+                val maskTextWidth = maskTextPaint.measureText(maskText)
+                val maskTextHeight = maskTextPaint.textSize
+
+                val maskLabelRect = RectF(
+                    bbox.left.toFloat(),
+                    bbox.bottom.toFloat(),
+                    bbox.left.toFloat() + maskTextWidth + 16f,
+                    bbox.bottom.toFloat() + maskTextHeight + 16f
+                )
+                canvas.drawRect(maskLabelRect, backgroundPaint)
+
+                canvas.drawText(
+                    maskText,
+                    bbox.left.toFloat() + 8f,
+                    bbox.bottom.toFloat() + maskTextHeight + 4f,
+                    maskTextPaint
+                )
+            }
+        }
+    }
+
+    /**
+     * Transform bounding box coordinates from frame coordinates to view coordinates
+     */
+    private fun transformBoundingBox(bbox: Rect, scaleX: Float, scaleY: Float): Rect {
+        var left = (bbox.left * scaleX).toInt()
+        var top = (bbox.top * scaleY).toInt()
+        var right = (bbox.right * scaleX).toInt()
+        var bottom = (bbox.bottom * scaleY).toInt()
 
         // Mirror horizontally for front camera
         if (cameraFacing == CameraSelector.LENS_FACING_FRONT) {
-            val centerX = viewWidth / 2f
-            transformedBox.left = 2 * centerX - transformedBox.left
-            transformedBox.right = 2 * centerX - transformedBox.right
+            val centerX = width / 2
+            left = 2 * centerX - left
+            right = 2 * centerX - right
 
             // Swap left and right after mirroring
-            val temp = transformedBox.left
-            transformedBox.left = transformedBox.right
-            transformedBox.right = temp
+            val temp = left
+            left = right
+            right = temp
         }
 
-        return transformedBox
+        return Rect(left, top, right, bottom)
     }
 
     /**
-     * Batch transform multiple bounding boxes
+     * Clear all bounding boxes
      */
-    fun transformBoundingBoxes(predictions: List<Prediction>): List<Prediction> {
-        return predictions.map { prediction ->
-            prediction.copy(bbox = transformBoundingBox(prediction.bbox))
-        }
+    fun clear() {
+        faceBoundingBoxes.clear()
+        invalidate()
     }
 }

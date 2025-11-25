@@ -56,7 +56,7 @@ class FaceNetModel( context : Context ,
     init {
         // Initialize TFLiteInterpreter
         val interpreterOptions = Interpreter.Options().apply {
-            // Add the GPU Delegate if supported.
+            // Add the GPU Delegate if supported.S
             // See -> https://www.tensorflow.org/lite/performance/gpu#android
             if ( useGpu ) {
                 if ( CompatibilityList().isDelegateSupportedOnThisDevice ) {
