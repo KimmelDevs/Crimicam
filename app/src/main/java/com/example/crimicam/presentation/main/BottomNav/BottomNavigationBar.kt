@@ -12,13 +12,21 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 @Composable
 fun BottomNavigationBar(
     navController: NavHostController,
-    items: List<BottomNavItem>
+    items: List<BottomNavItem>,
+    isAdmin: Boolean = false
 ) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
 
+    // Filter items based on admin status
+    val filteredItems = if (isAdmin) {
+        items // Show all items including admin
+    } else {
+        items.filter { it != BottomNavItem.Admin } // Exclude admin item
+    }
+
     NavigationBar {
-        items.forEach { item ->
+        filteredItems.forEach { item ->
             NavigationBarItem(
                 icon = { Icon(item.icon, contentDescription = item.label) },
                 label = { Text(item.label) },

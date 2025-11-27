@@ -13,15 +13,22 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.crimicam.presentation.login.LoginScreen
+import com.example.crimicam.presentation.main.Admin.AdminScreen
 import com.example.crimicam.presentation.main.BottomNav.BottomNavItem
 import com.example.crimicam.presentation.main.BottomNav.BottomNavigationBar
 import com.example.crimicam.presentation.main.Home.ActivityDetail.ActivityDetailScreen
@@ -38,6 +45,8 @@ import com.example.crimicam.presentation.signup.SignupScreen
 import com.example.crimicam.ui.theme.CrimicamTheme
 import com.example.crimicam.util.NotificationHelper
 import com.example.crimicam.util.NotificationManager
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
 
 class MainActivity : ComponentActivity() {
     private lateinit var notificationManager: NotificationManager
@@ -159,16 +168,33 @@ fun MainScreen(
     notificationManager: NotificationManager
 ) {
     val bottomNavController = rememberNavController()
-    val items = listOf(
+    val context = LocalContext.current
+
+    // State to track if user is admin
+    var isAdmin by remember { mutableStateOf(false) }
+
+    // Check if current user is admin
+    LaunchedEffect(Unit) {
+        checkAdminStatus { adminStatus ->
+            isAdmin = adminStatus
+        }
+    }
+
+    val allItems = listOf(
         BottomNavItem.Home,
         BottomNavItem.Map,
         BottomNavItem.KnownPeople,
+        BottomNavItem.Admin,
         BottomNavItem.Profile
     )
 
     Scaffold(
         bottomBar = {
-            BottomNavigationBar(navController = bottomNavController, items = items)
+            BottomNavigationBar(
+                navController = bottomNavController,
+                items = allItems,
+                isAdmin = isAdmin
+            )
         }
     ) { paddingValues ->
         NavHost(
@@ -199,6 +225,9 @@ fun MainScreen(
                     }
                 )
             }
+            composable(BottomNavItem.Admin.route) {
+                AdminScreen()
+            }
 
             // Home nested routes
             composable("camera") {
@@ -228,5 +257,28 @@ fun MainScreen(
                 )
             }
         }
+    }
+}
+
+// Function to check if current user has admin privileges
+private fun checkAdminStatus(onResult: (Boolean) -> Unit) {
+    val currentUser = FirebaseAuth.getInstance().currentUser
+    val db = FirebaseFirestore.getInstance()
+
+    if (currentUser != null) {
+        db.collection("users")
+            .document(currentUser.uid)
+            .get()
+            .addOnSuccessListener { document ->
+                val isAdmin = document.getBoolean("admin") ?: false
+                onResult(isAdmin)
+            }
+            .addOnFailureListener {
+                // If there's an error, assume user is not admin
+                onResult(false)
+            }
+    } else {
+        // No user logged in, not admin
+        onResult(false)
     }
 }
