@@ -228,7 +228,7 @@ fun CriminalCard(criminal: Criminal) {
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Avatar with first letter
+            // Avatar with first letter - FIXED: Handle empty names
             Box(
                 modifier = Modifier
                     .size(56.dp)
@@ -237,7 +237,7 @@ fun CriminalCard(criminal: Criminal) {
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = criminal.firstName.first().uppercase(),
+                    text = getFirstInitial(criminal.firstName, criminal.lastName),
                     fontSize = 24.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
@@ -249,13 +249,13 @@ fun CriminalCard(criminal: Criminal) {
             // Criminal Info
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = criminal.fullName,
+                    text = criminal.fullName.ifEmpty { "Unknown Criminal" },
                     fontSize = 16.sp,
                     fontWeight = FontWeight.SemiBold
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "${criminal.age} years • ${criminal.gender}",
+                    text = getAgeDisplay(criminal),
                     fontSize = 14.sp,
                     color = Color.Gray
                 )
@@ -278,7 +278,7 @@ fun CriminalCard(criminal: Criminal) {
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = criminal.status,
+                            text = criminal.status.ifEmpty { "Unknown" },
                             fontSize = 12.sp,
                             color = when (criminal.status) {
                                 "Wanted" -> Color.Red
@@ -304,7 +304,7 @@ fun CriminalCard(criminal: Criminal) {
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = criminal.riskLevel,
+                            text = criminal.riskLevel.ifEmpty { "Unknown" },
                             fontSize = 12.sp,
                             color = when (criminal.riskLevel) {
                                 "High", "Extreme" -> Color.Red
@@ -317,6 +317,24 @@ fun CriminalCard(criminal: Criminal) {
                 }
             }
         }
+    }
+}
+
+// Helper function to safely get first initial
+private fun getFirstInitial(firstName: String, lastName: String): String {
+    return when {
+        firstName.isNotEmpty() -> firstName.first().uppercase()
+        lastName.isNotEmpty() -> lastName.first().uppercase()
+        else -> "?"
+    }
+}
+
+// Helper function to safely display age
+private fun getAgeDisplay(criminal: Criminal): String {
+    return when {
+        criminal.dateOfBirth.isNotEmpty() -> "${criminal.age} years • ${criminal.gender.ifEmpty { "Unknown" }}"
+        criminal.gender.isNotEmpty() -> criminal.gender
+        else -> "No information"
     }
 }
 
