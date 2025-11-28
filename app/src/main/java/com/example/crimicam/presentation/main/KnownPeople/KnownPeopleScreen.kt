@@ -31,13 +31,19 @@ import com.example.crimicam.data.model.KnownPerson
 
 @Composable
 fun KnownPeopleScreen(
-    viewModel: KnownPeopleViewModel = viewModel()
+    viewModel: KnownPeopleViewModel = viewModel(),
+    onPersonAdded: () -> Unit = {} // ✅ Callback to refresh camera cache
 ) {
     val state by viewModel.state.collectAsState()
     val context = LocalContext.current
     var showAddDialog by remember { mutableStateOf(false) }
     var selectedPersonForImage by remember { mutableStateOf<KnownPerson?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // ✅ Initialize FaceNet model when screen is created
+    LaunchedEffect(Unit) {
+        viewModel.initFaceNetModel(context)
+    }
 
     // Show error messages
     LaunchedEffect(state.errorMessage) {
@@ -164,6 +170,7 @@ fun KnownPeopleScreen(
                 onAdd = { imageUri, name, description ->
                     viewModel.processAndAddPerson(context, imageUri, name, description)
                     showAddDialog = false
+                    onPersonAdded() // ✅ Notify camera to refresh
                 }
             )
         }
@@ -176,6 +183,7 @@ fun KnownPeopleScreen(
                 onAdd = { imageUri ->
                     viewModel.addImageToPerson(context, person.id, imageUri)
                     selectedPersonForImage = null
+                    onPersonAdded() // ✅ Notify camera to refresh
                 }
             )
         }

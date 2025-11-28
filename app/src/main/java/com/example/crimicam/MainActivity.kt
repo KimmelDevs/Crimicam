@@ -24,6 +24,8 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavBackStackEntry
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -33,6 +35,7 @@ import com.example.crimicam.presentation.main.BottomNav.BottomNavItem
 import com.example.crimicam.presentation.main.BottomNav.BottomNavigationBar
 import com.example.crimicam.presentation.main.Home.ActivityDetail.ActivityDetailScreen
 import com.example.crimicam.presentation.main.Home.Camera.CameraScreen
+import com.example.crimicam.presentation.main.Home.Camera.CameraViewModel
 import com.example.crimicam.presentation.main.Home.HomeScreen
 import com.example.crimicam.presentation.main.Home.Monitor.MonitorScreen
 import com.example.crimicam.presentation.main.Home.Monitor.StreamViewerScreen
@@ -211,7 +214,18 @@ fun MainScreen(
                 MapScreen()
             }
             composable(BottomNavItem.KnownPeople.route) {
-                KnownPeopleScreen()
+                // ✅ Get shared CameraViewModel to refresh after adding people
+                val parentEntry = remember(it) {
+                    bottomNavController.getBackStackEntry("camera")
+                }
+                val sharedCameraViewModel: CameraViewModel = viewModel(parentEntry)
+
+                KnownPeopleScreen(
+                    onPersonAdded = {
+                        // ✅ Refresh camera's known people cache when person is added
+                        sharedCameraViewModel.refreshKnownPeople()
+                    }
+                )
             }
             composable(BottomNavItem.Profile.route) {
                 ProfileScreen(
@@ -231,7 +245,13 @@ fun MainScreen(
 
             // Home nested routes
             composable("camera") {
-                CameraScreen(navController = bottomNavController)
+                // ✅ Create shared CameraViewModel at this level
+                val sharedCameraViewModel: CameraViewModel = viewModel(it)
+
+                CameraScreen(
+                    navController = bottomNavController,
+                    viewModel = sharedCameraViewModel
+                )
             }
             composable("monitor") {
                 MonitorScreen(navController = bottomNavController)
