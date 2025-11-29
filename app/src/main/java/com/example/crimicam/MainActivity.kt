@@ -25,7 +25,6 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.NavBackStackEntry
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -109,15 +108,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Start listening for notifications when app is in foreground
         notificationManager.startListening()
     }
 
     override fun onPause() {
         super.onPause()
-        // Optional: Stop listening when app goes to background
-        // Remove this line if you want background listening
-        // notificationManager.stopListening()
     }
 
     override fun onDestroy() {
@@ -137,7 +132,6 @@ fun AppNavigation(notificationManager: NotificationManager) {
         enterTransition = { fadeIn(animationSpec = tween(50)) },
         exitTransition = { fadeOut(animationSpec = tween(50)) }
     ) {
-        // Login
         composable("login") {
             LoginScreen(
                 homeClick = {
@@ -149,12 +143,10 @@ fun AppNavigation(notificationManager: NotificationManager) {
             )
         }
 
-        // Signup
         composable("signup") {
             SignupScreen(navController = navController)
         }
 
-        // Main screen with bottom navigation
         composable("main") {
             MainScreen(
                 mainNavController = navController,
@@ -173,10 +165,8 @@ fun MainScreen(
     val bottomNavController = rememberNavController()
     val context = LocalContext.current
 
-    // State to track if user is admin
     var isAdmin by remember { mutableStateOf(false) }
 
-    // Check if current user is admin
     LaunchedEffect(Unit) {
         checkAdminStatus { adminStatus ->
             isAdmin = adminStatus
@@ -214,24 +204,14 @@ fun MainScreen(
                 MapScreen()
             }
             composable(BottomNavItem.KnownPeople.route) {
-                // ✅ Get shared CameraViewModel to refresh after adding people
-                val parentEntry = remember(it) {
-                    bottomNavController.getBackStackEntry("camera")
-                }
-                val sharedCameraViewModel: CameraViewModel = viewModel(parentEntry)
-
-                KnownPeopleScreen(
-                    onPersonAdded = {
-                        // ✅ Refresh camera's known people cache when person is added
-                        sharedCameraViewModel.refreshKnownPeople()
-                    }
-                )
+                // ✅ Clean separation - KnownPeopleScreen works independently
+                // CameraViewModel listens to Firestore changes automatically
+                KnownPeopleScreen()
             }
             composable(BottomNavItem.Profile.route) {
                 ProfileScreen(
                     navController = bottomNavController,
                     onLogout = {
-                        // Stop notification listening on logout
                         notificationManager.stopListening()
                         mainNavController.navigate("login") {
                             popUpTo("main") { inclusive = true }
@@ -245,13 +225,7 @@ fun MainScreen(
 
             // Home nested routes
             composable("camera") {
-                // ✅ Create shared CameraViewModel at this level
-                val sharedCameraViewModel: CameraViewModel = viewModel(it)
-
-                CameraScreen(
-                    navController = bottomNavController,
-                    viewModel = sharedCameraViewModel
-                )
+                CameraScreen(navController = bottomNavController)
             }
             composable("monitor") {
                 MonitorScreen(navController = bottomNavController)
@@ -268,19 +242,18 @@ fun MainScreen(
                 LocationLabelScreen(navController = bottomNavController)
             }
 
-            // Stream viewer route - FIXED
+            // Stream viewer route
             composable("stream_viewer/{sessionId}") { backStackEntry ->
                 val sessionId = backStackEntry.arguments?.getString("sessionId") ?: ""
                 StreamViewerScreen(
                     sessionId = sessionId,
-                    navController = bottomNavController // Fixed: use bottomNavController
+                    navController = bottomNavController
                 )
             }
         }
     }
 }
 
-// Function to check if current user has admin privileges
 private fun checkAdminStatus(onResult: (Boolean) -> Unit) {
     val currentUser = FirebaseAuth.getInstance().currentUser
     val db = FirebaseFirestore.getInstance()
@@ -294,11 +267,9 @@ private fun checkAdminStatus(onResult: (Boolean) -> Unit) {
                 onResult(isAdmin)
             }
             .addOnFailureListener {
-                // If there's an error, assume user is not admin
                 onResult(false)
             }
     } else {
-        // No user logged in, not admin
         onResult(false)
     }
 }

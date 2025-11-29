@@ -2,6 +2,7 @@ package com.example.crimicam.presentation.main.Home.Camera
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.RectF
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -12,23 +13,27 @@ import com.example.crimicam.facerecognitionnetface.models.FaceNetModel
 import com.example.crimicam.facerecognitionnetface.models.Models
 import com.example.crimicam.util.LocationManager
 import com.example.crimicam.util.Result
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.face.Face
-import com.google.mlkit.vision.face.FaceDetection
-import com.google.mlkit.vision.face.FaceDetectorOptions
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.support.common.FileUtil
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sqrt
 
 data class DetectedFace(
-    val boundingBox: android.graphics.RectF,
+    val boundingBox: RectF,
     val personId: String? = null,
     val personName: String? = null,
     val confidence: Float,
-    val distance: Float = 0f // L2 distance or cosine similarity
+    val distance: Float = 0f
 )
 
 data class CameraState(
@@ -59,32 +64,35 @@ class CameraViewModel(
 
     private var locationManager: LocationManager? = null
     private var lastProcessTime = 0L
-    private val processingInterval = 300L // Process every 300ms
+    private val processingInterval = 300L
+
+    // BlazeFace Model
+    private var blazeFaceInterpreter: Interpreter? = null
+
+    // BlazeFace input/output specs
+    private val inputSize = 128
+    private val numBoxes = 896
+    private val numCoords = 16
+    private val faceDetectionThreshold = 0.7f
+    private val iouThreshold = 0.3f
 
     // FaceNet Model
     private var faceNetModel: FaceNetModel? = null
 
-    // ML Kit Face Detector
-    private val realTimeOpts = FaceDetectorOptions.Builder()
-        .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
-        .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
-        .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
-        .setMinFaceSize(0.15f)
-        .build()
-    private val faceDetector = FaceDetection.getClient(realTimeOpts)
-
     // Recognition settings
-    private val useMetric = "l2" // "l2" or "cosine"
-    private val l2Threshold = 1.0f // Adjust based on your model
-    private val cosineThreshold = 0.6f // Adjust based on your model
+    private val useMetric = "l2"
+    private val l2Threshold = 1.0f
+    private val cosineThreshold = 0.6f
 
     // Cache for known people embeddings
-    // Map<PersonId, List<Embedding>>
     private val knownEmbeddingsCache = mutableMapOf<String, List<FloatArray>>()
     private var knownPeopleList = emptyList<com.example.crimicam.data.model.KnownPerson>()
 
+    // Firestore listener for real-time updates
+    private var knownPeopleListener: ListenerRegistration? = null
+
     init {
-        loadKnownPeopleAndEmbeddings()
+        setupKnownPeopleListener()
     }
 
     fun initLocationManager(context: Context) {
@@ -95,15 +103,16 @@ class CameraViewModel(
     }
 
     /**
-     * Initialize FaceNet model with GPU support
+     * Initialize BlazeFace and FaceNet models
      */
     fun initDetector(context: Context) {
         viewModelScope.launch {
             try {
-                // Choose a model from Models.kt
-                // Options: FACENET, FACENET_512, FACENET_QUANTIZED, FACENET_512_QUANTIZED
-                val modelInfo = Models.FACENET // 128-dim embeddings
+                // Initialize BlazeFace
+                initBlazeFace(context)
 
+                // Initialize FaceNet
+                val modelInfo = Models.FACENET
                 faceNetModel = FaceNetModel(
                     context = context,
                     model = modelInfo,
@@ -112,9 +121,9 @@ class CameraViewModel(
                 )
 
                 _state.value = _state.value.copy(modelInitialized = true)
-                Log.d("CameraViewModel", "✅ FaceNet Model Initialized: ${modelInfo.name}")
+                Log.d("CameraViewModel", "✅ BlazeFace & FaceNet Models Initialized")
             } catch (e: Exception) {
-                Log.e("CameraViewModel", "Failed to initialize FaceNet: ${e.message}", e)
+                Log.e("CameraViewModel", "Failed to initialize models: ${e.message}", e)
                 _state.value = _state.value.copy(
                     modelInitialized = false,
                     statusMessage = "⚠️ Model initialization failed"
@@ -122,6 +131,54 @@ class CameraViewModel(
             }
         }
     }
+
+    /**
+     * Initialize BlazeFace TFLite model
+     */
+    private fun initBlazeFace(context: Context) {
+        try {
+            val modelPath = "blaze_face_short_range.tflite"
+
+            val options = Interpreter.Options()
+            options.setNumThreads(4)
+
+            // Use NNAPI delegate instead of GPU delegate
+            options.setUseNNAPI(true)
+
+            // Alternative: Use XNNPack delegate (more compatible)
+            // options.setUseXNNPACK(true)
+
+            blazeFaceInterpreter = Interpreter(FileUtil.loadMappedFile(context, modelPath), options)
+            Log.d("CameraViewModel", "✅ BlazeFace initialized with NNAPI")
+        } catch (e: Exception) {
+            Log.e("CameraViewModel", "Failed to init BlazeFace: ${e.message}", e)
+            throw e
+        }
+    }
+
+    /**
+     * Setup real-time listener for known people changes
+     */
+    private fun setupKnownPeopleListener() {
+        val db = FirebaseFirestore.getInstance()
+
+        knownPeopleListener = db.collection("known_people")
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    Log.e("CameraViewModel", "Error listening to known people: ${error.message}")
+                    return@addSnapshotListener
+                }
+
+                if (snapshot != null) {
+                    Log.d("CameraViewModel", "🔄 Known people collection changed, refreshing...")
+                    loadKnownPeopleAndEmbeddings()
+                }
+            }
+    }
+
+    /**
+     * Load TFLite model from assets (no longer needed with FileUtil)
+     */
 
     /**
      * Load all known people and their face embeddings from Firestore
@@ -134,18 +191,18 @@ class CameraViewModel(
                         knownPeopleList = result.data
                         _state.value = _state.value.copy(knownPeople = knownPeopleList)
 
+                        // Clear cache before reloading
+                        knownEmbeddingsCache.clear()
+
                         // Load all embeddings for each person
                         knownPeopleList.forEach { person ->
                             when (val imagesResult = knownPeopleRepository.getPersonImages(person.id)) {
                                 is Result.Success -> {
                                     val embeddings = imagesResult.data.mapNotNull { personImage ->
                                         try {
-                                            // Convert Map<String, Float> to FloatArray
-                                            // Ensure correct order: dim_0, dim_1, dim_2, ...
                                             val sortedFeatures = personImage.faceFeatures.toList()
                                                 .sortedBy { it.first.removePrefix("dim_").toIntOrNull() ?: Int.MAX_VALUE }
                                                 .map { it.second }
-
                                             sortedFeatures.toFloatArray()
                                         } catch (e: Exception) {
                                             Log.e("CameraViewModel", "Failed to parse embedding: ${e.message}")
@@ -180,10 +237,12 @@ class CameraViewModel(
 
     /**
      * Refresh known people cache (call this when new people are added)
+     * This is now automatically handled by Firestore listener
      */
     fun refreshKnownPeople() {
-        knownEmbeddingsCache.clear()
-        loadKnownPeopleAndEmbeddings()
+        // This method is kept for backward compatibility
+        // but the Firestore listener already handles automatic updates
+        Log.d("CameraViewModel", "Manual refresh requested (auto-refresh is active)")
     }
 
     /**
@@ -192,14 +251,12 @@ class CameraViewModel(
     fun processFrame(bitmap: Bitmap) {
         val currentTime = System.currentTimeMillis()
 
-        // Throttle processing
         if (currentTime - lastProcessTime < processingInterval) {
             return
         }
         lastProcessTime = currentTime
 
-        // Skip if already processing or model not initialized
-        if (_state.value.isProcessing || faceNetModel == null) {
+        if (_state.value.isProcessing || blazeFaceInterpreter == null || faceNetModel == null) {
             return
         }
 
@@ -210,23 +267,9 @@ class CameraViewModel(
                     scanningMode = ScanningMode.DETECTING
                 )
 
-                // Detect all faces using ML Kit
-                val inputImage = InputImage.fromBitmap(bitmap, 0)
-
-                faceDetector.process(inputImage)
-                    .addOnSuccessListener { faces ->
-                        viewModelScope.launch {
-                            processFaces(faces, bitmap)
-                        }
-                    }
-                    .addOnFailureListener { e ->
-                        Log.e("CameraViewModel", "Face detection failed: ${e.message}", e)
-                        _state.value = _state.value.copy(
-                            isProcessing = false,
-                            scanningMode = ScanningMode.IDLE,
-                            statusMessage = "⚠️ Detection error"
-                        )
-                    }
+                // Detect faces using BlazeFace
+                val faces = detectFacesWithBlazeFace(bitmap)
+                processFaces(faces, bitmap)
 
             } catch (e: Exception) {
                 Log.e("CameraViewModel", "Error in processFrame: ${e.message}", e)
@@ -240,10 +283,144 @@ class CameraViewModel(
     }
 
     /**
+     * Detect faces using BlazeFace
+     */
+    private fun detectFacesWithBlazeFace(bitmap: Bitmap): List<RectF> {
+        val interpreter = blazeFaceInterpreter ?: return emptyList()
+
+        // Resize and normalize input
+        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
+        val inputBuffer = bitmapToByteBuffer(resizedBitmap)
+
+        // Prepare output buffers
+        val outputBoxes = Array(1) { Array(numBoxes) { FloatArray(numCoords) } }
+        val outputScores = Array(1) { FloatArray(numBoxes) }
+
+        val outputs = mutableMapOf<Int, Any>()
+        outputs[0] = outputBoxes
+        outputs[1] = outputScores
+
+        // Run inference
+        interpreter.runForMultipleInputsOutputs(arrayOf(inputBuffer), outputs)
+
+        // Post-process detections
+        return postProcessDetections(
+            outputBoxes[0],
+            outputScores[0],
+            bitmap.width,
+            bitmap.height
+        )
+    }
+
+    /**
+     * Convert bitmap to ByteBuffer for BlazeFace input
+     */
+    private fun bitmapToByteBuffer(bitmap: Bitmap): ByteBuffer {
+        val byteBuffer = ByteBuffer.allocateDirect(4 * inputSize * inputSize * 3)
+        byteBuffer.order(ByteOrder.nativeOrder())
+
+        val intValues = IntArray(inputSize * inputSize)
+        bitmap.getPixels(intValues, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+
+        var pixel = 0
+        for (i in 0 until inputSize) {
+            for (j in 0 until inputSize) {
+                val value = intValues[pixel++]
+
+                // Normalize to [-1, 1]
+                byteBuffer.putFloat(((value shr 16 and 0xFF) / 127.5f - 1.0f))
+                byteBuffer.putFloat(((value shr 8 and 0xFF) / 127.5f - 1.0f))
+                byteBuffer.putFloat(((value and 0xFF) / 127.5f - 1.0f))
+            }
+        }
+
+        return byteBuffer
+    }
+
+    /**
+     * Post-process BlazeFace detections with NMS
+     */
+    private fun postProcessDetections(
+        boxes: Array<FloatArray>,
+        scores: FloatArray,
+        imageWidth: Int,
+        imageHeight: Int
+    ): List<RectF> {
+        val detections = mutableListOf<Pair<RectF, Float>>()
+
+        // Filter by threshold
+        for (i in scores.indices) {
+            if (scores[i] > faceDetectionThreshold) {
+                val box = boxes[i]
+
+                // Convert normalized coords to image coords
+                val ymin = (box[0] * imageHeight).coerceIn(0f, imageHeight.toFloat())
+                val xmin = (box[1] * imageWidth).coerceIn(0f, imageWidth.toFloat())
+                val ymax = (box[2] * imageHeight).coerceIn(0f, imageHeight.toFloat())
+                val xmax = (box[3] * imageWidth).coerceIn(0f, imageWidth.toFloat())
+
+                detections.add(Pair(RectF(xmin, ymin, xmax, ymax), scores[i]))
+            }
+        }
+
+        // Apply Non-Maximum Suppression
+        return nonMaxSuppression(detections, iouThreshold)
+    }
+
+    /**
+     * Non-Maximum Suppression
+     */
+    private fun nonMaxSuppression(
+        detections: List<Pair<RectF, Float>>,
+        iouThreshold: Float
+    ): List<RectF> {
+        val sortedDetections = detections.sortedByDescending { it.second }
+        val selectedBoxes = mutableListOf<RectF>()
+
+        for (detection in sortedDetections) {
+            val box = detection.first
+            var shouldSelect = true
+
+            for (selectedBox in selectedBoxes) {
+                if (calculateIoU(box, selectedBox) > iouThreshold) {
+                    shouldSelect = false
+                    break
+                }
+            }
+
+            if (shouldSelect) {
+                selectedBoxes.add(box)
+            }
+        }
+
+        return selectedBoxes
+    }
+
+    /**
+     * Calculate Intersection over Union
+     */
+    private fun calculateIoU(box1: RectF, box2: RectF): Float {
+        val intersectionLeft = max(box1.left, box2.left)
+        val intersectionTop = max(box1.top, box2.top)
+        val intersectionRight = min(box1.right, box2.right)
+        val intersectionBottom = min(box1.bottom, box2.bottom)
+
+        val intersectionArea = max(0f, intersectionRight - intersectionLeft) *
+                max(0f, intersectionBottom - intersectionTop)
+
+        val box1Area = (box1.right - box1.left) * (box1.bottom - box1.top)
+        val box2Area = (box2.right - box2.left) * (box2.bottom - box2.top)
+
+        val unionArea = box1Area + box2Area - intersectionArea
+
+        return if (unionArea > 0) intersectionArea / unionArea else 0f
+    }
+
+    /**
      * Process detected faces
      */
-    private suspend fun processFaces(faces: List<Face>, bitmap: Bitmap) {
-        if (faces.isEmpty()) {
+    private suspend fun processFaces(faceBoxes: List<RectF>, bitmap: Bitmap) {
+        if (faceBoxes.isEmpty()) {
             _state.value = _state.value.copy(
                 isProcessing = false,
                 scanningMode = ScanningMode.IDLE,
@@ -259,17 +436,19 @@ class CameraViewModel(
         var hasUnknown = false
         var identifiedCount = 0
 
-        for (face in faces) {
+        for (boundingBox in faceBoxes) {
             try {
-                val boundingBox = face.boundingBox
+                // Convert RectF to Rect for cropping
+                val rect = android.graphics.Rect(
+                    boundingBox.left.toInt(),
+                    boundingBox.top.toInt(),
+                    boundingBox.right.toInt(),
+                    boundingBox.bottom.toInt()
+                )
 
-                // Crop the face from bitmap
-                val croppedFace = BitmapUtils.cropRectFromBitmap(bitmap, boundingBox)
-
-                // Extract face embedding using FaceNet
+                val croppedFace = BitmapUtils.cropRectFromBitmap(bitmap, rect)
                 val faceEmbedding = faceNetModel?.getFaceEmbedding(croppedFace) ?: continue
 
-                // Try to match against known people
                 val matchResult = findBestMatch(faceEmbedding)
 
                 if (matchResult != null) {
@@ -278,7 +457,6 @@ class CameraViewModel(
                     hasUnknown = true
                 }
 
-                // Save to captured_faces collection
                 saveCapturedFace(
                     originalBitmap = bitmap,
                     croppedFace = croppedFace,
@@ -289,17 +467,9 @@ class CameraViewModel(
                     distance = matchResult?.distance ?: 0f
                 )
 
-                // Convert Rect to RectF for display
-                val rectF = android.graphics.RectF(
-                    boundingBox.left.toFloat(),
-                    boundingBox.top.toFloat(),
-                    boundingBox.right.toFloat(),
-                    boundingBox.bottom.toFloat()
-                )
-
                 detectedFaces.add(
                     DetectedFace(
-                        boundingBox = rectF,
+                        boundingBox = boundingBox,
                         personId = matchResult?.personId,
                         personName = matchResult?.personName,
                         confidence = matchResult?.confidence ?: 0f,
@@ -313,7 +483,6 @@ class CameraViewModel(
             }
         }
 
-        // Update status message
         val statusMessage = when {
             identifiedCount > 0 && !hasUnknown ->
                 "✅ ${identifiedCount} IDENTIFIED"
@@ -338,9 +507,6 @@ class CameraViewModel(
         )
     }
 
-    /**
-     * Find best matching person for the given face embedding
-     */
     private data class MatchResult(
         val personId: String,
         val personName: String,
@@ -358,7 +524,6 @@ class CameraViewModel(
         var bestDistance = Float.MAX_VALUE
         var bestSimilarity = 0f
 
-        // Compare against all known embeddings
         knownEmbeddingsCache.forEach { (personId, embeddings) ->
             embeddings.forEach { knownEmbedding ->
                 when (useMetric) {
@@ -373,7 +538,7 @@ class CameraViewModel(
                         val similarity = cosineSimilarity(faceEmbedding, knownEmbedding)
                         if (similarity > bestSimilarity) {
                             bestSimilarity = similarity
-                            bestDistance = 1f - similarity // Convert to distance
+                            bestDistance = 1f - similarity
                             bestPersonId = personId
                         }
                     }
@@ -381,7 +546,6 @@ class CameraViewModel(
             }
         }
 
-        // Check if match exceeds threshold
         val isMatch = when (useMetric) {
             "l2" -> bestDistance < l2Threshold
             "cosine" -> bestSimilarity > cosineThreshold
@@ -391,7 +555,6 @@ class CameraViewModel(
         if (isMatch && bestPersonId != null) {
             bestPersonName = knownPeopleList.find { it.id == bestPersonId }?.name
 
-            // Calculate confidence (0-1 scale)
             val confidence = when (useMetric) {
                 "l2" -> (1f - (bestDistance / l2Threshold)).coerceIn(0f, 1f)
                 "cosine" -> bestSimilarity
@@ -409,9 +572,6 @@ class CameraViewModel(
         return null
     }
 
-    /**
-     * Calculate L2 (Euclidean) distance between two embeddings
-     */
     private fun l2Distance(embedding1: FloatArray, embedding2: FloatArray): Float {
         require(embedding1.size == embedding2.size) { "Embeddings must have same size" }
         return sqrt(
@@ -421,10 +581,6 @@ class CameraViewModel(
         )
     }
 
-    /**
-     * Calculate cosine similarity between two embeddings
-     * Returns value between 0 (not similar) and 1 (identical)
-     */
     private fun cosineSimilarity(embedding1: FloatArray, embedding2: FloatArray): Float {
         require(embedding1.size == embedding2.size) { "Embeddings must have same size" }
 
@@ -442,9 +598,6 @@ class CameraViewModel(
         return if (denominator > 0f) dotProduct / denominator else 0f
     }
 
-    /**
-     * Save captured face to Firestore
-     */
     private fun saveCapturedFace(
         originalBitmap: Bitmap,
         croppedFace: Bitmap,
@@ -458,7 +611,6 @@ class CameraViewModel(
             try {
                 val locationData = locationManager?.getCurrentLocation()
 
-                // Convert FloatArray to Map<String, Float> for Firestore
                 val faceFeatures = faceEmbedding.mapIndexed { index, value ->
                     "dim_$index" to value
                 }.toMap()
@@ -486,8 +638,8 @@ class CameraViewModel(
 
     override fun onCleared() {
         super.onCleared()
-        faceDetector.close()
-        // FaceNetModel's interpreter will be garbage collected
+        blazeFaceInterpreter?.close()
+        knownPeopleListener?.remove()
         Log.d("CameraViewModel", "ViewModel cleared")
     }
 }
