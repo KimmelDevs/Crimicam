@@ -3,6 +3,7 @@ package com.example.crimicam.presentation.main.Home.Camera
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.RectF
+import android.util.Base64
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -23,10 +24,19 @@ import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.support.common.FileUtil
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sqrt
+
+// Anchor data class for BlazeFace
+data class Anchor(
+    val x_center: Float,
+    val y_center: Float,
+    val w: Float,
+    val h: Float
+)
 
 data class DetectedFace(
     val boundingBox: RectF,
@@ -69,11 +79,16 @@ class CameraViewModel(
     // BlazeFace Model
     private var blazeFaceInterpreter: Interpreter? = null
 
-    // BlazeFace input/output specs
+    // BlazeFace anchor-based detection parameters
+    private val anchors = mutableListOf<Anchor>()
     private val inputSize = 128
     private val numBoxes = 896
-    private val numCoords = 16
-    private val faceDetectionThreshold = 0.7f
+    private val NUM_COORDS = 16
+    private val X_SCALE = 128.0f
+    private val Y_SCALE = 128.0f
+    private val H_SCALE = 128.0f
+    private val W_SCALE = 128.0f
+    private val MIN_SCORE_THRESH = 0.75f
     private val iouThreshold = 0.3f
 
     // FaceNet Model
@@ -81,8 +96,8 @@ class CameraViewModel(
 
     // Recognition settings
     private val useMetric = "l2"
-    private val l2Threshold = 1.0f
-    private val cosineThreshold = 0.6f
+    private val l2Threshold = 1.2f
+    private val cosineThreshold = 0.4f
 
     // Cache for known people embeddings
     private val knownEmbeddingsCache = mutableMapOf<String, List<FloatArray>>()
@@ -108,8 +123,13 @@ class CameraViewModel(
     fun initDetector(context: Context) {
         viewModelScope.launch {
             try {
+                Log.d("CameraViewModel", "🔄 Starting model initialization...")
+
                 // Initialize BlazeFace
                 initBlazeFace(context)
+
+                // Generate anchors (CRITICAL!)
+                generateAnchors()
 
                 // Initialize FaceNet
                 val modelInfo = Models.FACENET
@@ -123,10 +143,10 @@ class CameraViewModel(
                 _state.value = _state.value.copy(modelInitialized = true)
                 Log.d("CameraViewModel", "✅ BlazeFace & FaceNet Models Initialized")
             } catch (e: Exception) {
-                Log.e("CameraViewModel", "Failed to initialize models: ${e.message}", e)
+                Log.e("CameraViewModel", "❌ Failed to initialize models: ${e.message}", e)
                 _state.value = _state.value.copy(
                     modelInitialized = false,
-                    statusMessage = "⚠️ Model initialization failed"
+                    statusMessage = "⚠️ Model initialization failed: ${e.message}"
                 )
             }
         }
@@ -138,22 +158,69 @@ class CameraViewModel(
     private fun initBlazeFace(context: Context) {
         try {
             val modelPath = "blaze_face_short_range.tflite"
+            Log.d("CameraViewModel", "Loading BlazeFace model from: $modelPath")
 
             val options = Interpreter.Options()
             options.setNumThreads(4)
 
-            // Use NNAPI delegate instead of GPU delegate
-            options.setUseNNAPI(true)
+            try {
+                options.setUseXNNPACK(true)
+                blazeFaceInterpreter = Interpreter(FileUtil.loadMappedFile(context, modelPath), options)
+                Log.d("CameraViewModel", "✅ BlazeFace initialized with XNNPack")
+            } catch (e: Exception) {
+                Log.w("CameraViewModel", "XNNPack failed, trying CPU-only: ${e.message}")
+                val cpuOptions = Interpreter.Options()
+                cpuOptions.setNumThreads(4)
+                blazeFaceInterpreter = Interpreter(FileUtil.loadMappedFile(context, modelPath), cpuOptions)
+                Log.d("CameraViewModel", "✅ BlazeFace initialized with CPU-only")
+            }
 
-            // Alternative: Use XNNPack delegate (more compatible)
-            // options.setUseXNNPACK(true)
-
-            blazeFaceInterpreter = Interpreter(FileUtil.loadMappedFile(context, modelPath), options)
-            Log.d("CameraViewModel", "✅ BlazeFace initialized with NNAPI")
         } catch (e: Exception) {
-            Log.e("CameraViewModel", "Failed to init BlazeFace: ${e.message}", e)
+            Log.e("CameraViewModel", "❌ Failed to init BlazeFace: ${e.message}", e)
             throw e
         }
+    }
+
+    /**
+     * Generate anchors for BlazeFace-ShortRange
+     */
+    private fun generateAnchors() {
+        anchors.clear()
+
+        // BlazeFace-ShortRange anchor configuration
+        val strides = listOf(8, 16)
+        val anchorOffsets = listOf(0.5f, 0.5f)
+
+        var layerId = 0
+        while (layerId < strides.size) {
+            val stride = strides[layerId]
+            val offset = anchorOffsets[layerId]
+
+            val featureMapHeight = (inputSize / stride)
+            val featureMapWidth = (inputSize / stride)
+
+            for (y in 0 until featureMapHeight) {
+                for (x in 0 until featureMapWidth) {
+                    // Each location has 2 anchors (aspect ratios 1:1)
+                    repeat(2) {
+                        val x_center = (x + offset) / featureMapWidth
+                        val y_center = (y + offset) / featureMapHeight
+
+                        anchors.add(
+                            Anchor(
+                                x_center = x_center,
+                                y_center = y_center,
+                                w = 1.0f,
+                                h = 1.0f
+                            )
+                        )
+                    }
+                }
+            }
+            layerId++
+        }
+
+        Log.d("CameraViewModel", "✅ Generated ${anchors.size} anchors")
     }
 
     /**
@@ -177,10 +244,6 @@ class CameraViewModel(
     }
 
     /**
-     * Load TFLite model from assets (no longer needed with FileUtil)
-     */
-
-    /**
      * Load all known people and their face embeddings from Firestore
      */
     private fun loadKnownPeopleAndEmbeddings() {
@@ -191,10 +254,8 @@ class CameraViewModel(
                         knownPeopleList = result.data
                         _state.value = _state.value.copy(knownPeople = knownPeopleList)
 
-                        // Clear cache before reloading
                         knownEmbeddingsCache.clear()
 
-                        // Load all embeddings for each person
                         knownPeopleList.forEach { person ->
                             when (val imagesResult = knownPeopleRepository.getPersonImages(person.id)) {
                                 is Result.Success -> {
@@ -217,7 +278,10 @@ class CameraViewModel(
                                 is Result.Error -> {
                                     Log.e("CameraViewModel", "Failed to load images for ${person.name}: ${imagesResult.exception.message}")
                                 }
-                                is Result.Loading -> {}
+                                is Result.Loading -> {
+                                    // Handle loading state if needed
+                                    Log.d("CameraViewModel", "Loading images for ${person.name}...")
+                                }
                             }
                         }
 
@@ -227,7 +291,10 @@ class CameraViewModel(
                     is Result.Error -> {
                         Log.e("CameraViewModel", "Failed to load known people: ${result.exception.message}")
                     }
-                    is Result.Loading -> {}
+                    is Result.Loading -> {
+                        // Handle loading state if needed
+                        Log.d("CameraViewModel", "Loading known people...")
+                    }
                 }
             } catch (e: Exception) {
                 Log.e("CameraViewModel", "Error loading known people: ${e.message}", e)
@@ -235,13 +302,7 @@ class CameraViewModel(
         }
     }
 
-    /**
-     * Refresh known people cache (call this when new people are added)
-     * This is now automatically handled by Firestore listener
-     */
     fun refreshKnownPeople() {
-        // This method is kept for backward compatibility
-        // but the Firestore listener already handles automatic updates
         Log.d("CameraViewModel", "Manual refresh requested (auto-refresh is active)")
     }
 
@@ -267,49 +328,140 @@ class CameraViewModel(
                     scanningMode = ScanningMode.DETECTING
                 )
 
-                // Detect faces using BlazeFace
                 val faces = detectFacesWithBlazeFace(bitmap)
                 processFaces(faces, bitmap)
 
             } catch (e: Exception) {
-                Log.e("CameraViewModel", "Error in processFrame: ${e.message}", e)
+                Log.e("CameraViewModel", "❌ Error in processFrame: ${e.message}", e)
                 _state.value = _state.value.copy(
                     isProcessing = false,
                     scanningMode = ScanningMode.IDLE,
-                    statusMessage = "⚠️ Processing error"
+                    statusMessage = "⚠️ Error: ${e.message?.take(50) ?: "Unknown error"}"
                 )
             }
         }
     }
 
     /**
-     * Detect faces using BlazeFace
+     * Detect faces using BlazeFace with anchor-based decoding
      */
     private fun detectFacesWithBlazeFace(bitmap: Bitmap): List<RectF> {
-        val interpreter = blazeFaceInterpreter ?: return emptyList()
+        return try {
+            val interpreter = blazeFaceInterpreter ?: run {
+                Log.e("CameraViewModel", "❌ BlazeFace interpreter is null")
+                return emptyList()
+            }
 
-        // Resize and normalize input
-        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
-        val inputBuffer = bitmapToByteBuffer(resizedBitmap)
+            if (anchors.isEmpty()) {
+                Log.e("CameraViewModel", "❌ Anchors not generated!")
+                return emptyList()
+            }
 
-        // Prepare output buffers
-        val outputBoxes = Array(1) { Array(numBoxes) { FloatArray(numCoords) } }
-        val outputScores = Array(1) { FloatArray(numBoxes) }
+            // Resize and normalize input
+            val resizedBitmap = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
+            val inputBuffer = bitmapToByteBuffer(resizedBitmap)
 
-        val outputs = mutableMapOf<Int, Any>()
-        outputs[0] = outputBoxes
-        outputs[1] = outputScores
+            // BlazeFace outputs:
+            // regressors: [1, 896, 16] - bounding box coordinates + keypoints
+            // classificators: [1, 896, 1] - face confidence scores
+            val outputRegressors = Array(1) { Array(numBoxes) { FloatArray(NUM_COORDS) } }
+            val outputScores = Array(1) { Array(numBoxes) { FloatArray(1) } }
 
-        // Run inference
-        interpreter.runForMultipleInputsOutputs(arrayOf(inputBuffer), outputs)
+            val outputs = mapOf(
+                0 to outputRegressors,
+                1 to outputScores
+            )
 
-        // Post-process detections
-        return postProcessDetections(
-            outputBoxes[0],
-            outputScores[0],
-            bitmap.width,
-            bitmap.height
-        )
+            // Run inference
+            interpreter.runForMultipleInputsOutputs(arrayOf(inputBuffer), outputs)
+
+            // Decode detections using anchors
+            val detections = decodeDetections(
+                outputRegressors[0],
+                outputScores[0],
+                bitmap.width,
+                bitmap.height
+            )
+
+            Log.d("CameraViewModel", "✅ Found ${detections.size} faces after decoding")
+            return detections
+
+        } catch (e: Exception) {
+            Log.e("CameraViewModel", "❌ Error in detectFacesWithBlazeFace: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * Decode anchor-based predictions into bounding boxes
+     */
+    private fun decodeDetections(
+        rawBoxes: Array<FloatArray>,
+        rawScores: Array<FloatArray>,
+        imageWidth: Int,
+        imageHeight: Int
+    ): List<RectF> {
+        val detections = mutableListOf<Pair<RectF, Float>>()
+
+        for (i in rawScores.indices) {
+            val score = 1.0f / (1.0f + exp(-rawScores[i][0])) // Sigmoid activation
+
+            if (score < MIN_SCORE_THRESH) continue
+
+            val anchor = anchors[i]
+            val rawBox = rawBoxes[i]
+
+            // Decode box coordinates from anchor-relative predictions
+            val y_center = rawBox[0] / Y_SCALE * anchor.h + anchor.y_center
+            val x_center = rawBox[1] / X_SCALE * anchor.w + anchor.x_center
+            val h = exp(rawBox[2] / H_SCALE) * anchor.h
+            val w = exp(rawBox[3] / W_SCALE) * anchor.w
+
+            // Convert to corner coordinates
+            val ymin = (y_center - h / 2.0f) * imageHeight
+            val xmin = (x_center - w / 2.0f) * imageWidth
+            val ymax = (y_center + h / 2.0f) * imageHeight
+            val xmax = (x_center + w / 2.0f) * imageWidth
+
+            // Clamp to image bounds
+            val box = RectF(
+                xmin.coerceIn(0f, imageWidth.toFloat()),
+                ymin.coerceIn(0f, imageHeight.toFloat()),
+                xmax.coerceIn(0f, imageWidth.toFloat()),
+                ymax.coerceIn(0f, imageHeight.toFloat())
+            )
+
+            detections.add(Pair(box, score))
+        }
+
+        Log.d("CameraViewModel", "Decoded ${detections.size} detections above threshold")
+
+        // Apply NMS
+        return weightedNonMaxSuppression(detections)
+    }
+
+    /**
+     * Weighted Non-Maximum Suppression (as used by BlazeFace)
+     */
+    private fun weightedNonMaxSuppression(
+        detections: List<Pair<RectF, Float>>,
+        iouThreshold: Float = 0.3f
+    ): List<RectF> {
+        if (detections.isEmpty()) return emptyList()
+
+        val sortedDetections = detections.sortedByDescending { it.second }.toMutableList()
+        val outputBoxes = mutableListOf<RectF>()
+
+        while (sortedDetections.isNotEmpty()) {
+            val best = sortedDetections.removeAt(0)
+            outputBoxes.add(best.first)
+
+            sortedDetections.removeAll { candidate ->
+                calculateIoU(best.first, candidate.first) > iouThreshold
+            }
+        }
+
+        return outputBoxes
     }
 
     /**
@@ -338,65 +490,6 @@ class CameraViewModel(
     }
 
     /**
-     * Post-process BlazeFace detections with NMS
-     */
-    private fun postProcessDetections(
-        boxes: Array<FloatArray>,
-        scores: FloatArray,
-        imageWidth: Int,
-        imageHeight: Int
-    ): List<RectF> {
-        val detections = mutableListOf<Pair<RectF, Float>>()
-
-        // Filter by threshold
-        for (i in scores.indices) {
-            if (scores[i] > faceDetectionThreshold) {
-                val box = boxes[i]
-
-                // Convert normalized coords to image coords
-                val ymin = (box[0] * imageHeight).coerceIn(0f, imageHeight.toFloat())
-                val xmin = (box[1] * imageWidth).coerceIn(0f, imageWidth.toFloat())
-                val ymax = (box[2] * imageHeight).coerceIn(0f, imageHeight.toFloat())
-                val xmax = (box[3] * imageWidth).coerceIn(0f, imageWidth.toFloat())
-
-                detections.add(Pair(RectF(xmin, ymin, xmax, ymax), scores[i]))
-            }
-        }
-
-        // Apply Non-Maximum Suppression
-        return nonMaxSuppression(detections, iouThreshold)
-    }
-
-    /**
-     * Non-Maximum Suppression
-     */
-    private fun nonMaxSuppression(
-        detections: List<Pair<RectF, Float>>,
-        iouThreshold: Float
-    ): List<RectF> {
-        val sortedDetections = detections.sortedByDescending { it.second }
-        val selectedBoxes = mutableListOf<RectF>()
-
-        for (detection in sortedDetections) {
-            val box = detection.first
-            var shouldSelect = true
-
-            for (selectedBox in selectedBoxes) {
-                if (calculateIoU(box, selectedBox) > iouThreshold) {
-                    shouldSelect = false
-                    break
-                }
-            }
-
-            if (shouldSelect) {
-                selectedBoxes.add(box)
-            }
-        }
-
-        return selectedBoxes
-    }
-
-    /**
      * Calculate Intersection over Union
      */
     private fun calculateIoU(box1: RectF, box2: RectF): Float {
@@ -420,91 +513,107 @@ class CameraViewModel(
      * Process detected faces
      */
     private suspend fun processFaces(faceBoxes: List<RectF>, bitmap: Bitmap) {
-        if (faceBoxes.isEmpty()) {
-            _state.value = _state.value.copy(
-                isProcessing = false,
-                scanningMode = ScanningMode.IDLE,
-                detectedFaces = emptyList(),
-                statusMessage = "🔍 Scanning for faces..."
-            )
-            return
-        }
-
-        _state.value = _state.value.copy(scanningMode = ScanningMode.ANALYZING)
-
-        val detectedFaces = mutableListOf<DetectedFace>()
-        var hasUnknown = false
-        var identifiedCount = 0
-
-        for (boundingBox in faceBoxes) {
-            try {
-                // Convert RectF to Rect for cropping
-                val rect = android.graphics.Rect(
-                    boundingBox.left.toInt(),
-                    boundingBox.top.toInt(),
-                    boundingBox.right.toInt(),
-                    boundingBox.bottom.toInt()
+        try {
+            if (faceBoxes.isEmpty()) {
+                _state.value = _state.value.copy(
+                    isProcessing = false,
+                    scanningMode = ScanningMode.IDLE,
+                    detectedFaces = emptyList(),
+                    statusMessage = "🔍 Scanning for faces..."
                 )
+                return
+            }
 
-                val croppedFace = BitmapUtils.cropRectFromBitmap(bitmap, rect)
-                val faceEmbedding = faceNetModel?.getFaceEmbedding(croppedFace) ?: continue
+            _state.value = _state.value.copy(scanningMode = ScanningMode.ANALYZING)
 
-                val matchResult = findBestMatch(faceEmbedding)
+            val detectedFaces = mutableListOf<DetectedFace>()
+            var hasUnknown = false
+            var identifiedCount = 0
 
-                if (matchResult != null) {
-                    identifiedCount++
-                } else {
-                    hasUnknown = true
-                }
+            for (boundingBox in faceBoxes) {
+                try {
+                    val rect = android.graphics.Rect(
+                        boundingBox.left.toInt(),
+                        boundingBox.top.toInt(),
+                        boundingBox.right.toInt(),
+                        boundingBox.bottom.toInt()
+                    )
 
-                saveCapturedFace(
-                    originalBitmap = bitmap,
-                    croppedFace = croppedFace,
-                    faceEmbedding = faceEmbedding,
-                    matchedPersonId = matchResult?.personId,
-                    matchedPersonName = matchResult?.personName,
-                    confidence = matchResult?.confidence ?: 0f,
-                    distance = matchResult?.distance ?: 0f
-                )
+                    val croppedFace = BitmapUtils.cropRectFromBitmap(bitmap, rect)
+                    val faceEmbedding = faceNetModel?.getFaceEmbedding(croppedFace)
 
-                detectedFaces.add(
-                    DetectedFace(
-                        boundingBox = boundingBox,
-                        personId = matchResult?.personId,
-                        personName = matchResult?.personName,
+                    if (faceEmbedding == null) {
+                        Log.w("CameraViewModel", "⚠️ Could not get face embedding")
+                        continue
+                    }
+
+                    val matchResult = findBestMatch(faceEmbedding)
+
+                    if (matchResult != null) {
+                        identifiedCount++
+                        Log.d("CameraViewModel", "✅ Face recognized: ${matchResult.personName} (${(matchResult.confidence * 100).toInt()}%)")
+                    } else {
+                        hasUnknown = true
+                        Log.d("CameraViewModel", "⚠️ Unknown face detected")
+                    }
+
+                    saveCapturedFace(
+                        originalBitmap = bitmap,
+                        croppedFace = croppedFace,
+                        faceEmbedding = faceEmbedding,
+                        matchedPersonId = matchResult?.personId,
+                        matchedPersonName = matchResult?.personName,
                         confidence = matchResult?.confidence ?: 0f,
                         distance = matchResult?.distance ?: 0f
                     )
-                )
 
-            } catch (e: Exception) {
-                Log.e("CameraViewModel", "Error processing face: ${e.message}", e)
-                continue
+                    detectedFaces.add(
+                        DetectedFace(
+                            boundingBox = boundingBox,
+                            personId = matchResult?.personId,
+                            personName = matchResult?.personName,
+                            confidence = matchResult?.confidence ?: 0f,
+                            distance = matchResult?.distance ?: 0f
+                        )
+                    )
+
+                } catch (e: Exception) {
+                    Log.e("CameraViewModel", "❌ Error processing individual face: ${e.message}", e)
+                    continue
+                }
             }
-        }
 
-        val statusMessage = when {
-            identifiedCount > 0 && !hasUnknown ->
-                "✅ ${identifiedCount} IDENTIFIED"
-            hasUnknown && identifiedCount > 0 ->
-                "⚠️ ${identifiedCount} KNOWN • ${detectedFaces.size - identifiedCount} UNKNOWN"
-            hasUnknown ->
-                "⚠️ ${detectedFaces.size} UNKNOWN SUBJECT${if (detectedFaces.size > 1) "S" else ""}"
-            else -> "🔍 ANALYZING..."
-        }
+            val statusMessage = when {
+                identifiedCount > 0 && !hasUnknown ->
+                    "✅ ${identifiedCount} IDENTIFIED"
+                hasUnknown && identifiedCount > 0 ->
+                    "⚠️ ${identifiedCount} KNOWN • ${detectedFaces.size - identifiedCount} UNKNOWN"
+                hasUnknown ->
+                    "⚠️ ${detectedFaces.size} UNKNOWN SUBJECT${if (detectedFaces.size > 1) "S" else ""}"
+                else -> "🔍 ANALYZING..."
+            }
 
-        val scanningMode = when {
-            identifiedCount > 0 -> ScanningMode.IDENTIFIED
-            hasUnknown -> ScanningMode.UNKNOWN
-            else -> ScanningMode.ANALYZING
-        }
+            val scanningMode = when {
+                identifiedCount > 0 -> ScanningMode.IDENTIFIED
+                hasUnknown -> ScanningMode.UNKNOWN
+                else -> ScanningMode.ANALYZING
+            }
 
-        _state.value = _state.value.copy(
-            isProcessing = false,
-            scanningMode = scanningMode,
-            detectedFaces = detectedFaces,
-            statusMessage = statusMessage
-        )
+            _state.value = _state.value.copy(
+                isProcessing = false,
+                scanningMode = scanningMode,
+                detectedFaces = detectedFaces,
+                statusMessage = statusMessage
+            )
+
+        } catch (e: Exception) {
+            Log.e("CameraViewModel", "❌ Error in processFaces: ${e.message}", e)
+            _state.value = _state.value.copy(
+                isProcessing = false,
+                scanningMode = ScanningMode.IDLE,
+                statusMessage = "⚠️ Processing error"
+            )
+        }
     }
 
     private data class MatchResult(
@@ -516,6 +625,7 @@ class CameraViewModel(
 
     private fun findBestMatch(faceEmbedding: FloatArray): MatchResult? {
         if (knownEmbeddingsCache.isEmpty()) {
+            Log.d("CameraViewModel", "ℹ️ No known embeddings in cache")
             return null
         }
 
@@ -569,11 +679,12 @@ class CameraViewModel(
             )
         }
 
+        Log.d("CameraViewModel", "❌ No match found. Best distance: $bestDistance, threshold: $l2Threshold")
         return null
     }
 
     private fun l2Distance(embedding1: FloatArray, embedding2: FloatArray): Float {
-        require(embedding1.size == embedding2.size) { "Embeddings must have same size" }
+        require(embedding1.size == embedding2.size)
         return sqrt(
             embedding1.indices.sumOf { i ->
                 (embedding1[i] - embedding2[i]).toDouble().pow(2.0)
@@ -582,7 +693,7 @@ class CameraViewModel(
     }
 
     private fun cosineSimilarity(embedding1: FloatArray, embedding2: FloatArray): Float {
-        require(embedding1.size == embedding2.size) { "Embeddings must have same size" }
+        require(embedding1.size == embedding2.size)
 
         var dotProduct = 0f
         var norm1 = 0f
@@ -609,13 +720,20 @@ class CameraViewModel(
     ) {
         viewModelScope.launch {
             try {
-                val locationData = locationManager?.getCurrentLocation()
+                Log.d("CameraViewModel", "💾 Starting to save captured face...")
 
+                val locationData = locationManager?.getCurrentLocation()
+                Log.d("CameraViewModel", "📍 Location data: $locationData")
+
+                // Convert face embedding to map with proper field names
                 val faceFeatures = faceEmbedding.mapIndexed { index, value ->
                     "dim_$index" to value
                 }.toMap()
 
-                capturedFacesRepository.saveCapturedFace(
+                Log.d("CameraViewModel", "📊 Face features size: ${faceFeatures.size}")
+                Log.d("CameraViewModel", "👤 Recognition info: isRecognized=${matchedPersonId != null}, person=$matchedPersonName, confidence=$confidence")
+
+                val result = capturedFacesRepository.saveCapturedFace(
                     originalBitmap = originalBitmap,
                     croppedFaceBitmap = croppedFace,
                     faceFeatures = faceFeatures,
@@ -629,9 +747,42 @@ class CameraViewModel(
                     address = locationData?.address
                 )
 
-                Log.d("CameraViewModel", "✅ Saved face - ${matchedPersonName ?: "Unknown"} (confidence: $confidence, distance: $distance)")
+                when (result) {
+                    is Result.Success -> {
+                        Log.d("CameraViewModel", "✅ Face saved successfully with ID: ${result.data}")
+                    }
+                    is Result.Error -> {
+                        Log.e("CameraViewModel", "❌ Failed to save face: ${result.exception.message}")
+                    }
+                    is Result.Loading -> {
+                        // Handle loading state if needed
+                        Log.d("CameraViewModel", "🔄 Saving face...")
+                    }
+                }
+
             } catch (e: Exception) {
-                Log.e("CameraViewModel", "Failed to save face: ${e.message}", e)
+                Log.e("CameraViewModel", "❌ Error in saveCapturedFace: ${e.message}", e)
+            }
+        }
+    }
+
+    /**
+     * Debug function to check Firestore data
+     */
+    fun debugCheckFirestoreData() {
+        viewModelScope.launch {
+            Log.d("CameraViewModel", "🔍 DEBUG: Checking Firestore data...")
+            val result = capturedFacesRepository.debugCheckFirestoreData()
+            when (result) {
+                is Result.Success -> {
+                    Log.d("CameraViewModel", "✅ DEBUG: Found ${result.data.size} documents")
+                }
+                is Result.Error -> {
+                    Log.e("CameraViewModel", "❌ DEBUG Error: ${result.exception.message}")
+                }
+                is Result.Loading -> {
+                    Log.d("CameraViewModel", "🔄 DEBUG: Loading Firestore data...")
+                }
             }
         }
     }
@@ -640,6 +791,5 @@ class CameraViewModel(
         super.onCleared()
         blazeFaceInterpreter?.close()
         knownPeopleListener?.remove()
-        Log.d("CameraViewModel", "ViewModel cleared")
     }
 }

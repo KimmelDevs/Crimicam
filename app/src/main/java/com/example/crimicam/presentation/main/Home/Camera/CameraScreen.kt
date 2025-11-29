@@ -7,6 +7,7 @@ import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.YuvImage
 import android.os.Build
+import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -61,14 +62,17 @@ fun CameraScreen(
     val locationPermissionState = rememberPermissionState(Manifest.permission.ACCESS_FINE_LOCATION)
 
     LaunchedEffect(Unit) {
+        Log.d("CameraScreen", "Initializing camera screen...")
         viewModel.initDetector(context)
         viewModel.initLocationManager(context)
 
         if (!cameraPermissionState.status.isGranted) {
+            Log.d("CameraScreen", "Requesting camera permission...")
             cameraPermissionState.launchPermissionRequest()
         }
 
         if (!locationPermissionState.status.isGranted) {
+            Log.d("CameraScreen", "Requesting location permission...")
             locationPermissionState.launchPermissionRequest()
         }
     }
@@ -115,33 +119,39 @@ fun CameraPreviewView(
         ) {
             val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
             cameraProviderFuture.addListener({
-                val cameraProvider = cameraProviderFuture.get()
+                try {
+                    val cameraProvider = cameraProviderFuture.get()
+                    Log.d("CameraScreen", "Camera provider obtained")
 
-                val preview = Preview.Builder().build().also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
-                }
-
-                val imageAnalyzer = ImageAnalysis.Builder()
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build()
-                    .also {
-                        it.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->
-                            processImageProxy(imageProxy, viewModel)
-                        }
+                    val preview = Preview.Builder().build().also {
+                        it.setSurfaceProvider(previewView.surfaceProvider)
                     }
 
-                val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+                    val imageAnalyzer = ImageAnalysis.Builder()
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .build()
+                        .also {
+                            it.setAnalyzer(ContextCompat.getMainExecutor(context)) { imageProxy ->
+                                processImageProxy(imageProxy, viewModel)
+                            }
+                        }
 
-                try {
-                    cameraProvider.unbindAll()
-                    cameraProvider.bindToLifecycle(
-                        lifecycleOwner,
-                        cameraSelector,
-                        preview,
-                        imageAnalyzer
-                    )
+                    val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+
+                    try {
+                        cameraProvider.unbindAll()
+                        cameraProvider.bindToLifecycle(
+                            lifecycleOwner,
+                            cameraSelector,
+                            preview,
+                            imageAnalyzer
+                        )
+                        Log.d("CameraScreen", "✅ Camera bound successfully")
+                    } catch (e: Exception) {
+                        Log.e("CameraScreen", "❌ Error binding camera: ${e.message}", e)
+                    }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    Log.e("CameraScreen", "❌ Error getting camera provider: ${e.message}", e)
                 }
             }, ContextCompat.getMainExecutor(context))
         }
@@ -716,36 +726,52 @@ fun RequestCameraPermissionContent(onRequestPermission: () -> Unit) {
 
 @androidx.annotation.OptIn(ExperimentalGetImage::class)
 private fun processImageProxy(imageProxy: ImageProxy, viewModel: CameraViewModel) {
-    val mediaImage = imageProxy.image
-    if (mediaImage != null) {
-        val bitmap = imageProxyToBitmap(imageProxy)
-        if (bitmap != null) {
-            viewModel.processFrame(bitmap)
+    try {
+        val mediaImage = imageProxy.image
+        if (mediaImage != null) {
+            val bitmap = imageProxyToBitmap(imageProxy)
+            if (bitmap != null) {
+                viewModel.processFrame(bitmap)
+            } else {
+                Log.w("CameraScreen", "Failed to convert ImageProxy to Bitmap")
+            }
+        } else {
+            Log.w("CameraScreen", "MediaImage is null")
         }
+    } catch (e: Exception) {
+        Log.e("CameraScreen", "Error in processImageProxy: ${e.message}", e)
+    } finally {
+        imageProxy.close()
     }
-    imageProxy.close()
 }
 
 @androidx.annotation.OptIn(ExperimentalGetImage::class)
 private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
-    val image = imageProxy.image ?: return null
-    val yBuffer = image.planes[0].buffer
-    val uBuffer = image.planes[1].buffer
-    val vBuffer = image.planes[2].buffer
+    return try {
+        val image = imageProxy.image ?: return null
+        val yBuffer = image.planes[0].buffer
+        val uBuffer = image.planes[1].buffer
+        val vBuffer = image.planes[2].buffer
 
-    val ySize = yBuffer.remaining()
-    val uSize = uBuffer.remaining()
-    val vSize = vBuffer.remaining()
+        val ySize = yBuffer.remaining()
+        val uSize = uBuffer.remaining()
+        val vSize = vBuffer.remaining()
 
-    val nv21 = ByteArray(ySize + uSize + vSize)
-    yBuffer.get(nv21, 0, ySize)
-    vBuffer.get(nv21, ySize, vSize)
-    uBuffer.get(nv21, ySize + vSize, uSize)
+        val nv21 = ByteArray(ySize + uSize + vSize)
+        yBuffer.get(nv21, 0, ySize)
+        vBuffer.get(nv21, ySize, vSize)
+        uBuffer.get(nv21, ySize + vSize, uSize)
 
-    val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
-    val out = ByteArrayOutputStream()
-    yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 100, out)
-    val imageBytes = out.toByteArray()
+        val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
+        val out = ByteArrayOutputStream()
+        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 100, out)
+        val imageBytes = out.toByteArray()
 
-    return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+        val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+        Log.d("CameraScreen", "Bitmap created: ${bitmap?.width}x${bitmap?.height}")
+        bitmap
+    } catch (e: Exception) {
+        Log.e("CameraScreen", "Error converting ImageProxy to Bitmap: ${e.message}", e)
+        null
+    }
 }

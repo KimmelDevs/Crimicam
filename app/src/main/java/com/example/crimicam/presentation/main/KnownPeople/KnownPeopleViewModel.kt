@@ -2,6 +2,7 @@ package com.example.crimicam.presentation.main.KnownPeople
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.RectF
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -12,16 +13,26 @@ import com.example.crimicam.facerecognitionnetface.BitmapUtils
 import com.example.crimicam.facerecognitionnetface.models.FaceNetModel
 import com.example.crimicam.facerecognitionnetface.models.Models
 import com.example.crimicam.util.Result
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.face.FaceDetection
-import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
+import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.support.common.FileUtil
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlin.math.exp
+import kotlin.math.max
+import kotlin.math.min
+
+// Anchor data class for BlazeFace
+data class Anchor(
+    val x_center: Float,
+    val y_center: Float,
+    val w: Float,
+    val h: Float
+)
 
 class KnownPeopleViewModel(
     private val repository: KnownPeopleRepository = KnownPeopleRepository()
@@ -30,31 +41,44 @@ class KnownPeopleViewModel(
     private val _state = MutableStateFlow(KnownPeopleState())
     val state: StateFlow<KnownPeopleState> = _state.asStateFlow()
 
-    // Use the SAME FaceNet model as CameraViewModel
-    private var faceNetModel: FaceNetModel? = null
+    // BlazeFace Model (same as CameraViewModel)
+    private var blazeFaceInterpreter: Interpreter? = null
 
-    // Use ML Kit for face detection (same as CameraViewModel)
-    private val faceDetectorOptions = FaceDetectorOptions.Builder()
-        .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
-        .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
-        .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
-        .setMinFaceSize(0.15f)
-        .build()
-    private val faceDetector = FaceDetection.getClient(faceDetectorOptions)
+    // BlazeFace anchor-based detection parameters
+    private val anchors = mutableListOf<Anchor>()
+    private val inputSize = 128
+    private val numBoxes = 896
+    private val NUM_COORDS = 16
+    private val X_SCALE = 128.0f
+    private val Y_SCALE = 128.0f
+    private val H_SCALE = 128.0f
+    private val W_SCALE = 128.0f
+    private val MIN_SCORE_THRESH = 0.75f
+    private val iouThreshold = 0.3f
+
+    // FaceNet Model (same as CameraViewModel)
+    private var faceNetModel: FaceNetModel? = null
 
     init {
         loadKnownPeople()
     }
 
     /**
-     * Initialize FaceNet model (call this from your Fragment/Activity)
+     * Initialize BlazeFace and FaceNet models
      */
     fun initFaceNetModel(context: Context) {
         viewModelScope.launch {
             try {
-                // Use the SAME model as CameraViewModel
-                val modelInfo = Models.FACENET // 128-dim embeddings
+                Log.d("KnownPeopleVM", "🔄 Starting model initialization...")
 
+                // Initialize BlazeFace
+                initBlazeFace(context)
+
+                // Generate anchors (CRITICAL!)
+                generateAnchors()
+
+                // Initialize FaceNet (same as CameraViewModel)
+                val modelInfo = Models.FACENET
                 faceNetModel = FaceNetModel(
                     context = context,
                     model = modelInfo,
@@ -62,14 +86,85 @@ class KnownPeopleViewModel(
                     useXNNPack = true
                 )
 
-                Log.d("KnownPeopleVM", "✅ FaceNet Model Initialized")
+                Log.d("KnownPeopleVM", "✅ BlazeFace & FaceNet Models Initialized")
             } catch (e: Exception) {
-                Log.e("KnownPeopleVM", "Failed to initialize FaceNet: ${e.message}", e)
+                Log.e("KnownPeopleVM", "Failed to initialize models: ${e.message}", e)
                 _state.value = _state.value.copy(
                     errorMessage = "Failed to initialize face recognition model"
                 )
             }
         }
+    }
+
+    /**
+     * Initialize BlazeFace TFLite model
+     */
+    private fun initBlazeFace(context: Context) {
+        try {
+            val modelPath = "blaze_face_short_range.tflite"
+            Log.d("KnownPeopleVM", "Loading BlazeFace model from: $modelPath")
+
+            val options = Interpreter.Options()
+            options.setNumThreads(4)
+
+            try {
+                options.setUseXNNPACK(true)
+                blazeFaceInterpreter = Interpreter(FileUtil.loadMappedFile(context, modelPath), options)
+                Log.d("KnownPeopleVM", "✅ BlazeFace initialized with XNNPack")
+            } catch (e: Exception) {
+                Log.w("KnownPeopleVM", "XNNPack failed, trying CPU-only: ${e.message}")
+                val cpuOptions = Interpreter.Options()
+                cpuOptions.setNumThreads(4)
+                blazeFaceInterpreter = Interpreter(FileUtil.loadMappedFile(context, modelPath), cpuOptions)
+                Log.d("KnownPeopleVM", "✅ BlazeFace initialized with CPU-only")
+            }
+
+        } catch (e: Exception) {
+            Log.e("KnownPeopleVM", "❌ Failed to init BlazeFace: ${e.message}", e)
+            throw e
+        }
+    }
+
+    /**
+     * Generate anchors for BlazeFace-ShortRange
+     */
+    private fun generateAnchors() {
+        anchors.clear()
+
+        // BlazeFace-ShortRange anchor configuration
+        val strides = listOf(8, 16)
+        val anchorOffsets = listOf(0.5f, 0.5f)
+
+        var layerId = 0
+        while (layerId < strides.size) {
+            val stride = strides[layerId]
+            val offset = anchorOffsets[layerId]
+
+            val featureMapHeight = (inputSize / stride)
+            val featureMapWidth = (inputSize / stride)
+
+            for (y in 0 until featureMapHeight) {
+                for (x in 0 until featureMapWidth) {
+                    // Each location has 2 anchors (aspect ratios 1:1)
+                    repeat(2) {
+                        val x_center = (x + offset) / featureMapWidth
+                        val y_center = (y + offset) / featureMapHeight
+
+                        anchors.add(
+                            Anchor(
+                                x_center = x_center,
+                                y_center = y_center,
+                                w = 1.0f,
+                                h = 1.0f
+                            )
+                        )
+                    }
+                }
+            }
+            layerId++
+        }
+
+        Log.d("KnownPeopleVM", "✅ Generated ${anchors.size} anchors")
     }
 
     fun loadKnownPeople() {
@@ -97,6 +192,173 @@ class KnownPeopleViewModel(
     }
 
     /**
+     * Detect faces using BlazeFace with anchor-based decoding
+     */
+    private fun detectFacesWithBlazeFace(bitmap: Bitmap): List<RectF> {
+        return try {
+            val interpreter = blazeFaceInterpreter ?: run {
+                Log.e("KnownPeopleVM", "❌ BlazeFace interpreter is null")
+                return emptyList()
+            }
+
+            if (anchors.isEmpty()) {
+                Log.e("KnownPeopleVM", "❌ Anchors not generated!")
+                return emptyList()
+            }
+
+            // Resize and normalize input
+            val resizedBitmap = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
+            val inputBuffer = bitmapToByteBuffer(resizedBitmap)
+
+            // BlazeFace outputs:
+            // regressors: [1, 896, 16] - bounding box coordinates + keypoints
+            // classificators: [1, 896, 1] - face confidence scores
+            val outputRegressors = Array(1) { Array(numBoxes) { FloatArray(NUM_COORDS) } }
+            val outputScores = Array(1) { Array(numBoxes) { FloatArray(1) } }
+
+            val outputs = mapOf(
+                0 to outputRegressors,
+                1 to outputScores
+            )
+
+            // Run inference
+            interpreter.runForMultipleInputsOutputs(arrayOf(inputBuffer), outputs)
+
+            // Decode detections using anchors
+            val detections = decodeDetections(
+                outputRegressors[0],
+                outputScores[0],
+                bitmap.width,
+                bitmap.height
+            )
+
+            Log.d("KnownPeopleVM", "✅ Found ${detections.size} faces after decoding")
+            return detections
+
+        } catch (e: Exception) {
+            Log.e("KnownPeopleVM", "❌ Error in detectFacesWithBlazeFace: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * Decode anchor-based predictions into bounding boxes
+     */
+    private fun decodeDetections(
+        rawBoxes: Array<FloatArray>,
+        rawScores: Array<FloatArray>,
+        imageWidth: Int,
+        imageHeight: Int
+    ): List<RectF> {
+        val detections = mutableListOf<Pair<RectF, Float>>()
+
+        for (i in rawScores.indices) {
+            val score = 1.0f / (1.0f + exp(-rawScores[i][0])) // Sigmoid activation
+
+            if (score < MIN_SCORE_THRESH) continue
+
+            val anchor = anchors[i]
+            val rawBox = rawBoxes[i]
+
+            // Decode box coordinates from anchor-relative predictions
+            val y_center = rawBox[0] / Y_SCALE * anchor.h + anchor.y_center
+            val x_center = rawBox[1] / X_SCALE * anchor.w + anchor.x_center
+            val h = exp(rawBox[2] / H_SCALE) * anchor.h
+            val w = exp(rawBox[3] / W_SCALE) * anchor.w
+
+            // Convert to corner coordinates
+            val ymin = (y_center - h / 2.0f) * imageHeight
+            val xmin = (x_center - w / 2.0f) * imageWidth
+            val ymax = (y_center + h / 2.0f) * imageHeight
+            val xmax = (x_center + w / 2.0f) * imageWidth
+
+            // Clamp to image bounds
+            val box = RectF(
+                xmin.coerceIn(0f, imageWidth.toFloat()),
+                ymin.coerceIn(0f, imageHeight.toFloat()),
+                xmax.coerceIn(0f, imageWidth.toFloat()),
+                ymax.coerceIn(0f, imageHeight.toFloat())
+            )
+
+            detections.add(Pair(box, score))
+        }
+
+        Log.d("KnownPeopleVM", "Decoded ${detections.size} detections above threshold")
+
+        // Apply NMS
+        return weightedNonMaxSuppression(detections)
+    }
+
+    /**
+     * Weighted Non-Maximum Suppression (as used by BlazeFace)
+     */
+    private fun weightedNonMaxSuppression(
+        detections: List<Pair<RectF, Float>>,
+        iouThreshold: Float = 0.3f
+    ): List<RectF> {
+        if (detections.isEmpty()) return emptyList()
+
+        val sortedDetections = detections.sortedByDescending { it.second }.toMutableList()
+        val outputBoxes = mutableListOf<RectF>()
+
+        while (sortedDetections.isNotEmpty()) {
+            val best = sortedDetections.removeAt(0)
+            outputBoxes.add(best.first)
+
+            sortedDetections.removeAll { candidate ->
+                calculateIoU(best.first, candidate.first) > iouThreshold
+            }
+        }
+
+        return outputBoxes
+    }
+
+    /**
+     * Convert bitmap to ByteBuffer for BlazeFace input
+     */
+    private fun bitmapToByteBuffer(bitmap: Bitmap): ByteBuffer {
+        val byteBuffer = ByteBuffer.allocateDirect(4 * inputSize * inputSize * 3)
+        byteBuffer.order(ByteOrder.nativeOrder())
+
+        val intValues = IntArray(inputSize * inputSize)
+        bitmap.getPixels(intValues, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+
+        var pixel = 0
+        for (i in 0 until inputSize) {
+            for (j in 0 until inputSize) {
+                val value = intValues[pixel++]
+
+                // Normalize to [-1, 1]
+                byteBuffer.putFloat(((value shr 16 and 0xFF) / 127.5f - 1.0f))
+                byteBuffer.putFloat(((value shr 8 and 0xFF) / 127.5f - 1.0f))
+                byteBuffer.putFloat(((value and 0xFF) / 127.5f - 1.0f))
+            }
+        }
+
+        return byteBuffer
+    }
+
+    /**
+     * Calculate Intersection over Union
+     */
+    private fun calculateIoU(box1: RectF, box2: RectF): Float {
+        val intersectionLeft = max(box1.left, box2.left)
+        val intersectionTop = max(box1.top, box2.top)
+        val intersectionRight = min(box1.right, box2.right)
+        val intersectionBottom = min(box1.bottom, box2.bottom)
+
+        val intersectionArea = max(0f, intersectionRight - intersectionLeft) *
+                max(0f, intersectionBottom - intersectionTop)
+
+        val box1Area = (box1.right - box1.left) * (box1.bottom - box1.top)
+        val box2Area = (box2.right - box2.left) * (box2.bottom - box2.top)
+
+        val unionArea = box1Area + box2Area - intersectionArea
+
+        return if (unionArea > 0) intersectionArea / unionArea else 0f
+    }
+
+    /**
      * Add a new person with their first image
      */
     fun processAndAddPerson(
@@ -106,7 +368,7 @@ class KnownPeopleViewModel(
         description: String
     ) {
         viewModelScope.launch {
-            if (faceNetModel == null) {
+            if (blazeFaceInterpreter == null || faceNetModel == null) {
                 _state.value = _state.value.copy(
                     errorMessage = "Face recognition model not initialized"
                 )
@@ -129,28 +391,11 @@ class KnownPeopleViewModel(
                     return@launch
                 }
 
-                // Stage 2: Detecting Face with ML Kit
+                // Stage 2: Detecting Face with BlazeFace
                 updateProgress(ProcessingStage.DETECTING_FACE, 0.3f)
                 delay(500)
 
-                val inputImage = InputImage.fromBitmap(bitmap, 0)
-
-                // Use suspendCoroutine to convert Task to suspend function
-                val faces = try {
-                    kotlinx.coroutines.suspendCancellableCoroutine<List<com.google.mlkit.vision.face.Face>> { continuation ->
-                        faceDetector.process(inputImage)
-                            .addOnSuccessListener { detectedFaces ->
-                                continuation.resume(detectedFaces) {}
-                            }
-                            .addOnFailureListener { e ->
-                                Log.e("KnownPeopleVM", "Face detection failed: ${e.message}", e)
-                                continuation.resume(emptyList()) {}
-                            }
-                    }
-                } catch (e: Exception) {
-                    Log.e("KnownPeopleVM", "Face detection error: ${e.message}", e)
-                    emptyList()
-                }
+                val faces = detectFacesWithBlazeFace(bitmap)
 
                 if (faces.isEmpty()) {
                     _state.value = _state.value.copy(
@@ -160,12 +405,19 @@ class KnownPeopleViewModel(
                     return@launch
                 }
 
-                val face = faces.first()
-                val boundingBox = face.boundingBox
+                val faceBox = faces.first()
 
                 // Stage 3: Cropping Face
                 updateProgress(ProcessingStage.CROPPING_FACE, 0.5f)
                 delay(300)
+
+                // Convert RectF to Rect for cropping
+                val boundingBox = android.graphics.Rect(
+                    faceBox.left.toInt(),
+                    faceBox.top.toInt(),
+                    faceBox.right.toInt(),
+                    faceBox.bottom.toInt()
+                )
 
                 val croppedFace = BitmapUtils.cropRectFromBitmap(bitmap, boundingBox)
 
@@ -239,7 +491,7 @@ class KnownPeopleViewModel(
         imageUri: Uri
     ) {
         viewModelScope.launch {
-            if (faceNetModel == null) {
+            if (blazeFaceInterpreter == null || faceNetModel == null) {
                 _state.value = _state.value.copy(
                     errorMessage = "Face recognition model not initialized"
                 )
@@ -264,22 +516,7 @@ class KnownPeopleViewModel(
                 updateProgress(ProcessingStage.DETECTING_FACE, 0.3f)
                 delay(500)
 
-                val inputImage = InputImage.fromBitmap(bitmap, 0)
-
-                val faces = try {
-                    kotlinx.coroutines.suspendCancellableCoroutine<List<com.google.mlkit.vision.face.Face>> { continuation ->
-                        faceDetector.process(inputImage)
-                            .addOnSuccessListener { detectedFaces ->
-                                continuation.resume(detectedFaces) {}
-                            }
-                            .addOnFailureListener { e ->
-                                Log.e("KnownPeopleVM", "Face detection failed: ${e.message}", e)
-                                continuation.resume(emptyList()) {}
-                            }
-                    }
-                } catch (e: Exception) {
-                    emptyList()
-                }
+                val faces = detectFacesWithBlazeFace(bitmap)
 
                 if (faces.isEmpty()) {
                     _state.value = _state.value.copy(
@@ -289,11 +526,17 @@ class KnownPeopleViewModel(
                     return@launch
                 }
 
-                val face = faces.first()
-                val boundingBox = face.boundingBox
+                val faceBox = faces.first()
 
                 updateProgress(ProcessingStage.CROPPING_FACE, 0.5f)
                 delay(300)
+
+                val boundingBox = android.graphics.Rect(
+                    faceBox.left.toInt(),
+                    faceBox.top.toInt(),
+                    faceBox.right.toInt(),
+                    faceBox.bottom.toInt()
+                )
 
                 val croppedFace = BitmapUtils.cropRectFromBitmap(bitmap, boundingBox)
 
@@ -401,7 +644,7 @@ class KnownPeopleViewModel(
 
     override fun onCleared() {
         super.onCleared()
-        faceDetector.close()
+        blazeFaceInterpreter?.close()
         Log.d("KnownPeopleVM", "ViewModel cleared")
     }
 }

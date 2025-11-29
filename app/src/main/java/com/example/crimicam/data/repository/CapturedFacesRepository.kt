@@ -1,13 +1,14 @@
 package com.example.crimicam.data.repository
 
 import android.graphics.Bitmap
-import com.example.crimicam.data.model.CapturedFace
+import android.util.Log
 import com.example.crimicam.util.ImageCompressor
 import com.example.crimicam.util.Result
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
 import kotlinx.coroutines.tasks.await
+import java.util.*
 
 class CapturedFacesRepository {
     private val auth = FirebaseAuth.getInstance()
@@ -20,13 +21,12 @@ class CapturedFacesRepository {
     }
 
     /**
-     * Enhanced save method that handles multi-modal detection scenarios
-     * Now supports saving detections even when face is not available
+     * Save captured face to Firestore with proper field names
      */
     suspend fun saveCapturedFace(
         originalBitmap: Bitmap,
         croppedFaceBitmap: Bitmap? = null,
-        faceFeatures: Map<String, Any> = emptyMap(),  // Changed from Map<String, Float> to Map<String, Any>
+        faceFeatures: Map<String, Float> = emptyMap(),
         isRecognized: Boolean = false,
         matchedPersonId: String? = null,
         matchedPersonName: String? = null,
@@ -34,90 +34,68 @@ class CapturedFacesRepository {
         latitude: Double? = null,
         longitude: Double? = null,
         locationAccuracy: Float? = null,
-        address: String? = null,
-        detectionMode: String? = null,
-        hasVisibleFace: Boolean = true,
-        poseDetected: Boolean = false,
-        yoloDetected: Boolean = false
-    ): Result<CapturedFace> {
+        address: String? = null
+    ): Result<String> {
         return try {
             val userId = auth.currentUser?.uid
                 ?: return Result.Error(Exception("User not logged in"))
 
-            val collection = getUserCapturedFacesCollection()
-                ?: return Result.Error(Exception("Unable to access user collection"))
+            val collection = firestore.collection("users")
+                .document(userId)
+                .collection("captured_faces")
 
-            // Compress original image (smaller for storage)
+            Log.d("CapturedFacesRepository", "🔄 Starting to save face for user: $userId")
+
+            // Compress and convert images to base64
             val compressedOriginal = ImageCompressor.compressBitmap(
                 originalBitmap,
                 maxWidth = 640,
                 maxHeight = 640
             )
             val originalBase64 = ImageCompressor.bitmapToBase64(compressedOriginal, quality = 50)
+            Log.d("CapturedFacesRepository", "✅ Original image compressed: ${originalBase64?.take(50)}...")
 
-            // Compress face crop ONLY if available (higher quality for recognition)
-            val faceBase64 = croppedFaceBitmap?.let { faceBitmap ->
+            val croppedFaceBase64 = croppedFaceBitmap?.let { faceBitmap ->
                 val compressedFace = ImageCompressor.compressFaceCrop(faceBitmap)
-                ImageCompressor.bitmapToBase64(compressedFace, quality = 70)
+                val base64 = ImageCompressor.bitmapToBase64(compressedFace, quality = 70)
+                Log.d("CapturedFacesRepository", "✅ Face crop compressed: ${base64?.take(50)}...")
+                base64
             }
 
-            // Generate new document ID
-            val docId = collection.document().id
-
-            // Determine detection category
-            val detectionCategory = when {
-                !hasVisibleFace && poseDetected -> "face_covered"
-                !hasVisibleFace && yoloDetected -> "distance_detection"
-                hasVisibleFace && poseDetected -> "full_detection"
-                hasVisibleFace && !poseDetected -> "face_only"
-                else -> "unknown"
-            }
-
-            // Convert Map<String, Any> to Map<String, Float> for the data model
-            val floatFeatures = faceFeatures.mapValues { (_, value) ->
-                when (value) {
-                    is Float -> value
-                    is Double -> value.toFloat()
-                    is Int -> value.toFloat()
-                    is Long -> value.toFloat()
-                    else -> 0f
-                }
-            }
-
-            val capturedFace = CapturedFace(
-                id = docId,
-                userId = userId,
-                originalImageBase64 = originalBase64,
-                croppedFaceBase64 = faceBase64,
-                faceFeatures = floatFeatures,
-                timestamp = System.currentTimeMillis(),
-                isRecognized = isRecognized,
-                matchedPersonId = matchedPersonId,
-                matchedPersonName = matchedPersonName,
-                confidence = confidence,
-                latitude = latitude,
-                longitude = longitude,
-                locationAccuracy = locationAccuracy,
-                address = address,
-                detectionMode = detectionMode,
-                detectionCategory = detectionCategory,
-                hasVisibleFace = hasVisibleFace,
-                poseDetected = poseDetected,
-                yoloDetected = yoloDetected
+            // Create data map with field names that match what HomeViewModel expects
+            val faceData = hashMapOf<String, Any>(
+                "timestamp" to com.google.firebase.Timestamp.now(),
+                "is_recognized" to isRecognized,
+                "confidence" to confidence,
+                "face_features" to faceFeatures,
+                "user_id" to userId,
+                "original_image_base64" to (originalBase64 ?: "")
             )
 
-            // Save to Firestore under users/{userId}/captured_faces/{docId}
-            collection.document(docId)
-                .set(capturedFace)
-                .await()
+            // Add optional fields only if they have values
+            matchedPersonId?.let { faceData["matched_person_id"] = it }
+            matchedPersonName?.let { faceData["matched_person_name"] = it }
+            latitude?.let { faceData["latitude"] = it }
+            longitude?.let { faceData["longitude"] = it }
+            locationAccuracy?.let { faceData["location_accuracy"] = it }
+            address?.let { faceData["address"] = it }
+            croppedFaceBase64?.let { faceData["cropped_face_base64"] = it }
 
-            Result.Success(capturedFace)
+            Log.d("CapturedFacesRepository", "📊 Face data keys: ${faceData.keys}")
+            Log.d("CapturedFacesRepository", "🔍 Face features size: ${faceFeatures.size}")
+
+            // Add the document and get the ID
+            val docRef = collection.add(faceData).await()
+
+            Log.d("CapturedFacesRepository", "✅ Face saved successfully with ID: ${docRef.id}")
+            Result.Success(docRef.id)
         } catch (e: Exception) {
+            Log.e("CapturedFacesRepository", "❌ Failed to save face: ${e.message}", e)
             Result.Error(e)
         }
     }
 
-    suspend fun getCapturedFaces(limit: Int = 50): Result<List<CapturedFace>> {
+    suspend fun getCapturedFaces(limit: Int = 50): Result<List<Map<String, Any>>> {
         return try {
             val collection = getUserCapturedFacesCollection()
                 ?: return Result.Error(Exception("User not logged in"))
@@ -128,140 +106,86 @@ class CapturedFacesRepository {
                 .get()
                 .await()
 
-            val faces = snapshot.documents.mapNotNull {
-                it.toObject(CapturedFace::class.java)
+            val faces = snapshot.documents.map { doc ->
+                val data = doc.data ?: emptyMap()
+                data.toMutableMap().apply {
+                    put("id", doc.id) // Add document ID to the data
+                }
             }
+            Log.d("CapturedFacesRepository", "✅ Loaded ${faces.size} captured faces")
             Result.Success(faces)
         } catch (e: Exception) {
+            Log.e("CapturedFacesRepository", "❌ Error getting captured faces: ${e.message}", e)
             Result.Error(e)
         }
     }
 
-    suspend fun getUnrecognizedFaces(limit: Int = 50): Result<List<CapturedFace>> {
+    suspend fun getCapturedFaceById(faceId: String): Result<Map<String, Any>?> {
+        return try {
+            val collection = getUserCapturedFacesCollection()
+                ?: return Result.Error(Exception("User not logged in"))
+
+            val document = collection.document(faceId).get().await()
+            if (document.exists()) {
+                val data = document.data?.toMutableMap()?.apply {
+                    put("id", document.id)
+                }
+                Result.Success(data)
+            } else {
+                Result.Success(null)
+            }
+        } catch (e: Exception) {
+            Log.e("CapturedFacesRepository", "❌ Error getting face by ID: ${e.message}", e)
+            Result.Error(e)
+        }
+    }
+
+    suspend fun getUnrecognizedFaces(limit: Int = 50): Result<List<Map<String, Any>>> {
         return try {
             val collection = getUserCapturedFacesCollection()
                 ?: return Result.Error(Exception("User not logged in"))
 
             val snapshot = collection
-                .whereEqualTo("isRecognized", false)
+                .whereEqualTo("is_recognized", false)
                 .orderBy("timestamp", Query.Direction.DESCENDING)
                 .limit(limit.toLong())
                 .get()
                 .await()
 
-            val faces = snapshot.documents.mapNotNull {
-                it.toObject(CapturedFace::class.java)
+            val faces = snapshot.documents.map { doc ->
+                val data = doc.data ?: emptyMap()
+                data.toMutableMap().apply {
+                    put("id", doc.id)
+                }
             }
             Result.Success(faces)
         } catch (e: Exception) {
+            Log.e("CapturedFacesRepository", "❌ Error getting unrecognized faces: ${e.message}", e)
             Result.Error(e)
         }
     }
 
-    suspend fun getRecognizedFaces(limit: Int = 50): Result<List<CapturedFace>> {
+    suspend fun getRecognizedFaces(limit: Int = 50): Result<List<Map<String, Any>>> {
         return try {
             val collection = getUserCapturedFacesCollection()
                 ?: return Result.Error(Exception("User not logged in"))
 
             val snapshot = collection
-                .whereEqualTo("isRecognized", true)
+                .whereEqualTo("is_recognized", true)
                 .orderBy("timestamp", Query.Direction.DESCENDING)
                 .limit(limit.toLong())
                 .get()
                 .await()
 
-            val faces = snapshot.documents.mapNotNull {
-                it.toObject(CapturedFace::class.java)
+            val faces = snapshot.documents.map { doc ->
+                val data = doc.data ?: emptyMap()
+                data.toMutableMap().apply {
+                    put("id", doc.id)
+                }
             }
             Result.Success(faces)
         } catch (e: Exception) {
-            Result.Error(e)
-        }
-    }
-
-    suspend fun getCoveredFaces(limit: Int = 50): Result<List<CapturedFace>> {
-        return try {
-            val collection = getUserCapturedFacesCollection()
-                ?: return Result.Error(Exception("User not logged in"))
-
-            val snapshot = collection
-                .whereEqualTo("detectionCategory", "face_covered")
-                .orderBy("timestamp", Query.Direction.DESCENDING)
-                .limit(limit.toLong())
-                .get()
-                .await()
-
-            val faces = snapshot.documents.mapNotNull {
-                it.toObject(CapturedFace::class.java)
-            }
-            Result.Success(faces)
-        } catch (e: Exception) {
-            Result.Error(e)
-        }
-    }
-
-    suspend fun getFullDetections(limit: Int = 50): Result<List<CapturedFace>> {
-        return try {
-            val collection = getUserCapturedFacesCollection()
-                ?: return Result.Error(Exception("User not logged in"))
-
-            val snapshot = collection
-                .whereEqualTo("detectionCategory", "full_detection")
-                .orderBy("timestamp", Query.Direction.DESCENDING)
-                .limit(limit.toLong())
-                .get()
-                .await()
-
-            val faces = snapshot.documents.mapNotNull {
-                it.toObject(CapturedFace::class.java)
-            }
-            Result.Success(faces)
-        } catch (e: Exception) {
-            Result.Error(e)
-        }
-    }
-
-    suspend fun getDetectionsByCategory(
-        category: String,
-        limit: Int = 50
-    ): Result<List<CapturedFace>> {
-        return try {
-            val collection = getUserCapturedFacesCollection()
-                ?: return Result.Error(Exception("User not logged in"))
-
-            val snapshot = collection
-                .whereEqualTo("detectionCategory", category)
-                .orderBy("timestamp", Query.Direction.DESCENDING)
-                .limit(limit.toLong())
-                .get()
-                .await()
-
-            val faces = snapshot.documents.mapNotNull {
-                it.toObject(CapturedFace::class.java)
-            }
-            Result.Success(faces)
-        } catch (e: Exception) {
-            Result.Error(e)
-        }
-    }
-
-    suspend fun getFacesByPerson(personId: String, limit: Int = 50): Result<List<CapturedFace>> {
-        return try {
-            val collection = getUserCapturedFacesCollection()
-                ?: return Result.Error(Exception("User not logged in"))
-
-            val snapshot = collection
-                .whereEqualTo("matchedPersonId", personId)
-                .orderBy("timestamp", Query.Direction.DESCENDING)
-                .limit(limit.toLong())
-                .get()
-                .await()
-
-            val faces = snapshot.documents.mapNotNull {
-                it.toObject(CapturedFace::class.java)
-            }
-            Result.Success(faces)
-        } catch (e: Exception) {
+            Log.e("CapturedFacesRepository", "❌ Error getting recognized faces: ${e.message}", e)
             Result.Error(e)
         }
     }
@@ -271,55 +195,11 @@ class CapturedFacesRepository {
             val collection = getUserCapturedFacesCollection()
                 ?: return Result.Error(Exception("User not logged in"))
 
-            collection.document(faceId)
-                .delete()
-                .await()
-
+            collection.document(faceId).delete().await()
+            Log.d("CapturedFacesRepository", "✅ Deleted face: $faceId")
             Result.Success(Unit)
         } catch (e: Exception) {
-            Result.Error(e)
-        }
-    }
-
-    suspend fun deleteAllCapturedFaces(): Result<Int> {
-        return try {
-            val collection = getUserCapturedFacesCollection()
-                ?: return Result.Error(Exception("User not logged in"))
-
-            val snapshot = collection.get().await()
-
-            var deletedCount = 0
-            snapshot.documents.forEach { doc ->
-                doc.reference.delete().await()
-                deletedCount++
-            }
-
-            Result.Success(deletedCount)
-        } catch (e: Exception) {
-            Result.Error(e)
-        }
-    }
-
-    suspend fun deleteOldCapturedFaces(daysOld: Int = 7): Result<Int> {
-        return try {
-            val collection = getUserCapturedFacesCollection()
-                ?: return Result.Error(Exception("User not logged in"))
-
-            val cutoffTime = System.currentTimeMillis() - (daysOld * 24 * 60 * 60 * 1000L)
-
-            val snapshot = collection
-                .whereLessThan("timestamp", cutoffTime)
-                .get()
-                .await()
-
-            var deletedCount = 0
-            snapshot.documents.forEach { doc ->
-                doc.reference.delete().await()
-                deletedCount++
-            }
-
-            Result.Success(deletedCount)
-        } catch (e: Exception) {
+            Log.e("CapturedFacesRepository", "❌ Error deleting face: ${e.message}", e)
             Result.Error(e)
         }
     }
@@ -332,89 +212,43 @@ class CapturedFacesRepository {
             val snapshot = collection.get().await()
             Result.Success(snapshot.size())
         } catch (e: Exception) {
+            Log.e("CapturedFacesRepository", "❌ Error getting faces count: ${e.message}", e)
             Result.Error(e)
         }
     }
 
-    suspend fun getUnrecognizedFacesCount(): Result<Int> {
+    /**
+     * Debug function to check what's in Firestore
+     */
+    suspend fun debugCheckFirestoreData(): Result<List<Map<String, Any>>> {
         return try {
-            val collection = getUserCapturedFacesCollection()
+            val userId = auth.currentUser?.uid
                 ?: return Result.Error(Exception("User not logged in"))
 
-            val snapshot = collection
-                .whereEqualTo("isRecognized", false)
+            Log.d("CapturedFacesRepository", "🔍 DEBUG: Checking Firestore for user: $userId")
+
+            val snapshot = firestore.collection("users")
+                .document(userId)
+                .collection("captured_faces")
                 .get()
                 .await()
 
-            Result.Success(snapshot.size())
-        } catch (e: Exception) {
-            Result.Error(e)
-        }
-    }
+            Log.d("CapturedFacesRepository", "📊 DEBUG: Found ${snapshot.documents.size} documents")
 
-    suspend fun getCoveredFacesCount(): Result<Int> {
-        return try {
-            val collection = getUserCapturedFacesCollection()
-                ?: return Result.Error(Exception("User not logged in"))
-
-            val snapshot = collection
-                .whereEqualTo("detectionCategory", "face_covered")
-                .get()
-                .await()
-
-            Result.Success(snapshot.size())
-        } catch (e: Exception) {
-            Result.Error(e)
-        }
-    }
-
-    suspend fun getDetectionStatistics(): Result<DetectionStats> {
-        return try {
-            val collection = getUserCapturedFacesCollection()
-                ?: return Result.Error(Exception("User not logged in"))
-
-            val snapshot = collection.get().await()
-            val faces = snapshot.documents.mapNotNull {
-                it.toObject(CapturedFace::class.java)
+            val documents = snapshot.documents.map { doc ->
+                Log.d("CapturedFacesRepository", "📄 DEBUG Document ${doc.id}:")
+                doc.data?.forEach { (key, value) ->
+                    Log.d("CapturedFacesRepository", "   $key: ${value.toString().take(100)}")
+                }
+                doc.data?.toMutableMap()?.apply {
+                    put("id", doc.id)
+                } ?: emptyMap()
             }
 
-            val stats = DetectionStats(
-                totalDetections = faces.size,
-                recognizedCount = faces.count { it.isRecognized },
-                unrecognizedCount = faces.count { !it.isRecognized },
-                coveredFaceCount = faces.count { it.detectionCategory == "face_covered" },
-                fullDetectionCount = faces.count { it.detectionCategory == "full_detection" },
-                faceOnlyCount = faces.count { it.detectionCategory == "face_only" },
-                distanceDetectionCount = faces.count { it.detectionCategory == "distance_detection" },
-                poseDetectedCount = faces.count { it.poseDetected == true },
-                yoloDetectedCount = faces.count { it.yoloDetected == true }
-            )
-
-            Result.Success(stats)
+            Result.Success(documents)
         } catch (e: Exception) {
+            Log.e("CapturedFacesRepository", "❌ DEBUG Error: ${e.message}", e)
             Result.Error(e)
         }
     }
-}
-
-data class DetectionStats(
-    val totalDetections: Int = 0,
-    val recognizedCount: Int = 0,
-    val unrecognizedCount: Int = 0,
-    val coveredFaceCount: Int = 0,
-    val fullDetectionCount: Int = 0,
-    val faceOnlyCount: Int = 0,
-    val distanceDetectionCount: Int = 0,
-    val poseDetectedCount: Int = 0,
-    val yoloDetectedCount: Int = 0
-) {
-    val recognitionRate: Float
-        get() = if (totalDetections > 0) {
-            (recognizedCount.toFloat() / totalDetections) * 100
-        } else 0f
-
-    val coveredFaceRate: Float
-        get() = if (totalDetections > 0) {
-            (coveredFaceCount.toFloat() / totalDetections) * 100
-        } else 0f
 }
