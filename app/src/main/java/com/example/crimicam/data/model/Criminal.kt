@@ -6,6 +6,8 @@ import com.google.firebase.firestore.PropertyName
 // CRIMINAL MODEL
 // ============================================
 data class Criminal(
+    @PropertyName("image_count") val imageCount: Int = 0,
+
     @PropertyName("id") val id: String = "",
     @PropertyName("subject_id") val subjectId: String = "",
 

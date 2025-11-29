@@ -7,17 +7,18 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -25,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
 import com.example.crimicam.data.model.Criminal
 
 @Composable
@@ -77,7 +79,7 @@ fun AdminScreen(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "${state.criminals.size} criminals available",
+                        text = "${state.criminals.size} criminals • ${state.criminals.sumOf { it.imageCount }} images",
                         fontSize = 14.sp,
                         color = Color.Gray
                     )
@@ -106,13 +108,13 @@ fun AdminScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text(
-                                text = "Add criminal records to the central database",
+                                text = "Add criminal records with multiple photos",
                                 fontSize = 13.sp,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "💡 Include clear mugshot photos for identification",
+                                text = "💡 Add multiple photos from different angles for better identification",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = MaterialTheme.colorScheme.primary
@@ -182,10 +184,10 @@ fun AdminScreen(
         if (showAddDialog) {
             AddCriminalDialog(
                 onDismiss = { showAddDialog = false },
-                onAdd = { imageUri, criminalData ->
+                onAdd = { imageUris, criminalData ->
                     viewModel.addCriminal(
                         context = context,
-                        imageUri = imageUri,
+                        imageUris = imageUris,
                         firstName = criminalData.firstName,
                         lastName = criminalData.lastName,
                         middleName = criminalData.middleName,
@@ -228,7 +230,7 @@ fun CriminalCard(criminal: Criminal) {
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Avatar with first letter - FIXED: Handle empty names
+            // Avatar with first letter
             Box(
                 modifier = Modifier
                     .size(56.dp)
@@ -290,29 +292,30 @@ fun CriminalCard(criminal: Criminal) {
                         )
                     }
 
-                    // Risk level badge
+                    // Image count badge
                     Box(
                         modifier = Modifier
                             .background(
-                                color = when (criminal.riskLevel) {
-                                    "High", "Extreme" -> Color.Red.copy(alpha = 0.1f)
-                                    "Medium" -> Color.Yellow.copy(alpha = 0.1f)
-                                    else -> Color.Green.copy(alpha = 0.1f)
-                                },
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
                                 shape = RoundedCornerShape(8.dp)
                             )
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
-                        Text(
-                            text = criminal.riskLevel.ifEmpty { "Unknown" },
-                            fontSize = 12.sp,
-                            color = when (criminal.riskLevel) {
-                                "High", "Extreme" -> Color.Red
-                                "Medium" -> Color.Yellow
-                                else -> Color.Green
-                            },
-                            fontWeight = FontWeight.Medium
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.PhotoLibrary,
+                                contentDescription = null,
+                                modifier = Modifier.size(12.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "${criminal.imageCount}",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
                     }
                 }
             }
@@ -320,30 +323,12 @@ fun CriminalCard(criminal: Criminal) {
     }
 }
 
-// Helper function to safely get first initial
-private fun getFirstInitial(firstName: String, lastName: String): String {
-    return when {
-        firstName.isNotEmpty() -> firstName.first().uppercase()
-        lastName.isNotEmpty() -> lastName.first().uppercase()
-        else -> "?"
-    }
-}
-
-// Helper function to safely display age
-private fun getAgeDisplay(criminal: Criminal): String {
-    return when {
-        criminal.dateOfBirth.isNotEmpty() -> "${criminal.age} years • ${criminal.gender.ifEmpty { "Unknown" }}"
-        criminal.gender.isNotEmpty() -> criminal.gender
-        else -> "No information"
-    }
-}
-
 @Composable
 fun AddCriminalDialog(
     onDismiss: () -> Unit,
-    onAdd: (Uri, CriminalData) -> Unit
+    onAdd: (List<Uri>, CriminalData) -> Unit
 ) {
-    var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
+    var selectedImageUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var firstName by remember { mutableStateOf("") }
     var lastName by remember { mutableStateOf("") }
     var middleName by remember { mutableStateOf("") }
@@ -369,7 +354,7 @@ fun AddCriminalDialog(
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
-        selectedImageUri = uri
+        uri?.let { selectedImageUris = selectedImageUris + it }
     }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -393,12 +378,63 @@ fun AddCriminalDialog(
 
                     Spacer(modifier = Modifier.height(20.dp))
 
-                    // Image Picker Button
+                    // Image Album Section
+                    Text(
+                        text = "Criminal Photos",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Selected Images Grid
+                    if (selectedImageUris.isNotEmpty()) {
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            items(selectedImageUris) { uri ->
+                                Box(
+                                    modifier = Modifier
+                                        .size(80.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color.LightGray.copy(alpha = 0.3f))
+                                ) {
+                                    AsyncImage(
+                                        model = uri,
+                                        contentDescription = "Selected image",
+                                        modifier = Modifier
+                                            .size(80.dp)
+                                            .clip(RoundedCornerShape(8.dp)),
+                                        contentScale = ContentScale.Crop
+                                    )
+
+                                    // Remove button
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Remove image",
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .align(Alignment.TopEnd)
+                                            .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
+                                            .padding(2.dp)
+                                            .clickable {
+                                                selectedImageUris = selectedImageUris - uri
+                                            },
+                                        tint = Color.White
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+
+                    // Add Image Button
                     OutlinedButton(
                         onClick = { imagePickerLauncher.launch("image/*") },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(120.dp),
+                            .height(80.dp),
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Column(
@@ -406,21 +442,30 @@ fun AddCriminalDialog(
                             verticalArrangement = Arrangement.Center
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Person,
+                                imageVector = Icons.Default.AddAPhoto,
                                 contentDescription = null,
-                                modifier = Modifier.size(40.dp)
+                                modifier = Modifier.size(30.dp)
                             )
-                            Spacer(modifier = Modifier.height(8.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = if (selectedImageUri != null) "Mugshot Selected ✓" else "Select Mugshot Photo",
+                                text = if (selectedImageUris.isNotEmpty()) "Add More Photos" else "Select Photos",
                                 fontSize = 14.sp
                             )
+                            if (selectedImageUris.isNotEmpty()) {
+                                Text(
+                                    text = "${selectedImageUris.size} photo${if (selectedImageUris.size != 1) "s" else ""} selected",
+                                    fontSize = 11.sp,
+                                    color = Color.Gray
+                                )
+                            }
                         }
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
                 }
 
+                // Rest of the form remains the same...
+                // [Keep all the existing form fields from your previous code]
                 // Personal Information Section
                 item {
                     Text(
@@ -711,49 +756,49 @@ fun AddCriminalDialog(
 
                         Button(
                             onClick = {
-                                selectedImageUri?.let { uri ->
+                                if (selectedImageUris.isNotEmpty()) {
                                     val criminalData = CriminalData(
-                                        firstName = firstName,
-                                        lastName = lastName,
-                                        middleName = middleName,
-                                        dateOfBirth = dateOfBirth,
-                                        gender = gender,
-                                        nationality = nationality,
-                                        nationalId = nationalId,
+                                        firstName = firstName.trim(),
+                                        lastName = lastName.trim(),
+                                        middleName = middleName.trim(),
+                                        dateOfBirth = dateOfBirth.trim(),
+                                        gender = gender.trim(),
+                                        nationality = nationality.trim(),
+                                        nationalId = nationalId.trim(),
                                         height = height.toIntOrNull() ?: 0,
                                         weight = weight.toIntOrNull() ?: 0,
-                                        eyeColor = eyeColor,
-                                        hairColor = hairColor,
-                                        build = build,
-                                        skinTone = skinTone,
-                                        lastKnownAddress = lastKnownAddress,
-                                        currentCity = currentCity,
-                                        currentProvince = currentProvince,
-                                        status = status,
-                                        riskLevel = riskLevel,
+                                        eyeColor = eyeColor.trim(),
+                                        hairColor = hairColor.trim(),
+                                        build = build.trim(),
+                                        skinTone = skinTone.trim(),
+                                        lastKnownAddress = lastKnownAddress.trim(),
+                                        currentCity = currentCity.trim(),
+                                        currentProvince = currentProvince.trim(),
+                                        status = status.trim(),
+                                        riskLevel = riskLevel.trim(),
                                         isArmed = isArmed,
                                         isDangerous = isDangerous,
-                                        notes = notes
+                                        notes = notes.trim()
                                     )
-                                    onAdd(uri, criminalData)
+                                    onAdd(selectedImageUris, criminalData)
                                 }
                             },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(12.dp),
-                            enabled = selectedImageUri != null &&
-                                    firstName.isNotBlank() &&
-                                    lastName.isNotBlank() &&
-                                    dateOfBirth.isNotBlank() &&
-                                    gender.isNotBlank() &&
-                                    nationality.isNotBlank() &&
-                                    height.isNotBlank() &&
-                                    weight.isNotBlank() &&
-                                    eyeColor.isNotBlank() &&
-                                    hairColor.isNotBlank() &&
-                                    build.isNotBlank() &&
-                                    skinTone.isNotBlank() &&
-                                    status.isNotBlank() &&
-                                    riskLevel.isNotBlank()
+                            enabled = selectedImageUris.isNotEmpty() &&
+                                    firstName.trim().isNotBlank() &&
+                                    lastName.trim().isNotBlank() &&
+                                    dateOfBirth.trim().isNotBlank() &&
+                                    gender.trim().isNotBlank() &&
+                                    nationality.trim().isNotBlank() &&
+                                    height.trim().isNotBlank() &&
+                                    weight.trim().isNotBlank() &&
+                                    eyeColor.trim().isNotBlank() &&
+                                    hairColor.trim().isNotBlank() &&
+                                    build.trim().isNotBlank() &&
+                                    skinTone.trim().isNotBlank() &&
+                                    status.trim().isNotBlank() &&
+                                    riskLevel.trim().isNotBlank()
                         ) {
                             Text("Add Criminal")
                         }
@@ -799,6 +844,24 @@ fun EmptyStateView() {
                 textAlign = TextAlign.Center
             )
         }
+    }
+}
+
+// Helper function to safely get first initial
+private fun getFirstInitial(firstName: String, lastName: String): String {
+    return when {
+        firstName.isNotEmpty() -> firstName.first().uppercase()
+        lastName.isNotEmpty() -> lastName.first().uppercase()
+        else -> "?"
+    }
+}
+
+// Helper function to safely display age
+private fun getAgeDisplay(criminal: Criminal): String {
+    return when {
+        criminal.dateOfBirth.isNotEmpty() -> "${criminal.age} years • ${criminal.gender.ifEmpty { "Unknown" }}"
+        criminal.gender.isNotEmpty() -> criminal.gender
+        else -> "No information"
     }
 }
 

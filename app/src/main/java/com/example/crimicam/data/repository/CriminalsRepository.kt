@@ -3,6 +3,7 @@ package com.example.crimicam.data.repository
 import android.graphics.Bitmap
 import com.example.crimicam.data.model.Criminal
 import com.example.crimicam.data.model.Crime
+import com.example.crimicam.data.model.CriminalImage
 import com.example.crimicam.data.model.Warrant
 import com.example.crimicam.util.ImageCompressor
 import com.example.crimicam.util.Result
@@ -159,6 +160,229 @@ class CriminalsRepository {
                 .await()
 
             Result.Success(updatedCriminal)
+        } catch (e: Exception) {
+            Result.Error(e)
+        }
+    }
+
+    private fun getCriminalImagesCollection(criminalId: String) =
+        criminalsCollection.document(criminalId).collection("images")
+
+    suspend fun addCriminalWithImages(
+        // Personal Information
+        firstName: String,
+        lastName: String,
+        middleName: String = "",
+        aliases: List<String> = emptyList(),
+        dateOfBirth: String,
+        gender: String,
+        nationality: String,
+        nationalId: String = "",
+
+        // Physical Description
+        height: Int,
+        weight: Int,
+        eyeColor: String,
+        hairColor: String,
+        build: String,
+        skinTone: String,
+        distinguishingMarks: String = "",
+        tattooDescriptions: List<String> = emptyList(),
+
+        // Contact & Location
+        lastKnownAddress: String = "",
+        currentCity: String = "",
+        currentProvince: String = "",
+        phoneNumbers: List<String> = emptyList(),
+
+        // Status
+        status: String,
+        riskLevel: String,
+        gangAffiliation: String = "",
+        isArmed: Boolean = false,
+        isDangerous: Boolean = false,
+
+        // Images
+        imageBitmaps: List<Bitmap>,
+
+        // Admin
+        notes: String = ""
+    ): Result<Criminal> {
+        return try {
+            val officerId = auth.currentUser?.uid
+                ?: return Result.Error(Exception("Officer not logged in"))
+
+            // Generate new criminal ID
+            val docId = criminalsCollection.document().id
+            val subjectId = "SUB-${System.currentTimeMillis()}-${docId.take(6).uppercase()}"
+
+            val criminal = Criminal(
+                id = docId,
+                subjectId = subjectId,
+
+                // Personal Info
+                firstName = firstName,
+                lastName = lastName,
+                middleName = middleName,
+                aliases = aliases,
+                dateOfBirth = dateOfBirth,
+                gender = gender,
+                nationality = nationality,
+                nationalId = nationalId,
+
+                // Physical Description
+                height = height,
+                weight = weight,
+                eyeColor = eyeColor,
+                hairColor = hairColor,
+                build = build,
+                skinTone = skinTone,
+                distinguishingMarks = distinguishingMarks,
+                tattooDescriptions = tattooDescriptions,
+
+                // Contact & Location
+                lastKnownAddress = lastKnownAddress,
+                currentCity = currentCity,
+                currentProvince = currentProvince,
+                phoneNumbers = phoneNumbers,
+
+                // Status
+                status = status,
+                riskLevel = riskLevel,
+                gangAffiliation = gangAffiliation,
+                isArmed = isArmed,
+                isDangerous = isDangerous,
+
+                // Images count
+                imageCount = imageBitmaps.size,
+
+                // Admin
+                createdByOfficerId = officerId,
+                lastUpdatedByOfficerId = officerId,
+                notes = notes,
+                createdAt = System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis()
+            )
+
+            // Save criminal document first
+            criminalsCollection.document(docId)
+                .set(criminal)
+                .await()
+
+            // Save all images to subcollection
+            imageBitmaps.forEachIndexed { index, bitmap ->
+                addCriminalImageInternal(docId, bitmap, officerId, if (index == 0) "primary" else "additional")
+            }
+
+            Result.Success(criminal)
+        } catch (e: Exception) {
+            Result.Error(e)
+        }
+    }
+
+    /**
+     * Add a single image to existing criminal
+     */
+    suspend fun addImageToCriminal(
+        criminalId: String,
+        imageBitmap: Bitmap
+    ): Result<CriminalImage> {
+        return try {
+            val officerId = auth.currentUser?.uid
+                ?: return Result.Error(Exception("Officer not logged in"))
+
+            val image = addCriminalImageInternal(criminalId, imageBitmap, officerId, "additional")
+
+            // Update criminal's image count
+            val criminalDoc = criminalsCollection.document(criminalId).get().await()
+            val currentCount = criminalDoc.getLong("image_count")?.toInt() ?: 0
+
+            criminalsCollection.document(criminalId).update(
+                mapOf(
+                    "image_count" to currentCount + 1,
+                    "updated_at" to System.currentTimeMillis()
+                )
+            ).await()
+
+            Result.Success(image)
+        } catch (e: Exception) {
+            Result.Error(e)
+        }
+    }
+
+    private suspend fun addCriminalImageInternal(
+        criminalId: String,
+        bitmap: Bitmap,
+        officerId: String,
+        imageType: String
+    ): CriminalImage {
+        val imagesCollection = getCriminalImagesCollection(criminalId)
+
+        // Compress image
+        val compressedImage = ImageCompressor.compressBitmap(bitmap, maxWidth = 800, maxHeight = 800, quality = 70)
+        val imageBase64 = ImageCompressor.bitmapToBase64(compressedImage, quality = 70)
+
+        // Generate image document ID
+        val imageDocId = imagesCollection.document().id
+
+        val criminalImage = CriminalImage(
+            id = imageDocId,
+            criminalId = criminalId,
+            imageBase64 = imageBase64,
+            imageType = imageType,
+            createdByOfficerId = officerId,
+            createdAt = System.currentTimeMillis()
+        )
+
+        // Save to subcollection
+        imagesCollection.document(imageDocId)
+            .set(criminalImage)
+            .await()
+
+        return criminalImage
+    }
+
+    /**
+     * Get all images for a criminal
+     */
+    suspend fun getCriminalImages(criminalId: String): Result<List<CriminalImage>> {
+        return try {
+            val collection = getCriminalImagesCollection(criminalId)
+
+            val snapshot = collection
+                .orderBy("created_at", Query.Direction.ASCENDING)
+                .get()
+                .await()
+
+            val images = snapshot.documents.mapNotNull {
+                it.toObject(CriminalImage::class.java)
+            }
+
+            Result.Success(images)
+        } catch (e: Exception) {
+            Result.Error(e)
+        }
+    }
+
+    /**
+     * Get primary image for a criminal (first image)
+     */
+    suspend fun getCriminalPrimaryImage(criminalId: String): Result<CriminalImage?> {
+        return try {
+            val collection = getCriminalImagesCollection(criminalId)
+
+            val snapshot = collection
+                .whereEqualTo("image_type", "primary")
+                .limit(1)
+                .get()
+                .await()
+
+            val image = snapshot.documents.firstOrNull()?.toObject(CriminalImage::class.java)
+                ?: getCriminalImages(criminalId).let { result ->
+                    if (result is Result.Success) result.data.firstOrNull() else null
+                }
+
+            Result.Success(image)
         } catch (e: Exception) {
             Result.Error(e)
         }
