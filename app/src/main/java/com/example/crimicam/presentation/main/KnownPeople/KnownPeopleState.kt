@@ -1,10 +1,10 @@
 package com.example.crimicam.presentation.main.KnownPeople
 
-import com.example.crimicam.data.model.KnownPerson
+import com.example.crimicam.facerecognitionnetface.models.data.PersonRecord
 
 data class KnownPeopleState(
     val isLoading: Boolean = false,
-    val people: List<KnownPerson> = emptyList(),
+    val people: List<PersonRecord> = emptyList(),
     val errorMessage: String? = null,
     val isProcessing: Boolean = false,
     val processingProgress: ProcessingProgress? = null

@@ -3,6 +3,9 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.google.gms.google.services)
+    id("com.google.devtools.ksp") version "2.0.21-1.0.25"
+
+
 }
 
 android {
@@ -56,11 +59,13 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation("com.google.firebase:firebase-firestore-ktx:25.1.1")
     implementation("androidx.compose.ui:ui")
+    implementation(libs.androidx.room.common.jvm)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.ui.test.junit4)
+
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
     implementation("androidx.compose.material:material-icons-extended:1.7.5")
@@ -70,6 +75,9 @@ dependencies {
     implementation(libs.androidx.credentials.play.services.auth)
 
     implementation(libs.androidx.foundation)
+    implementation("io.insert-koin:koin-annotations:1.3.0")
+    ksp("io.insert-koin:koin-ksp-compiler:1.3.0")
+
 
     implementation(libs.androidx.navigation.compose)
 
@@ -137,5 +145,13 @@ dependencies {
     implementation("org.tensorflow:tensorflow-lite-gpu-api:2.14.0")
     implementation("androidx.work:work-runtime-ktx:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
+    implementation("com.google.mediapipe:tasks-vision:0.10.14")
+
+
+    implementation("io.insert-koin:koin-android:3.5.6")
+
+    implementation("io.insert-koin:koin-androidx-compose:3.5.6")
+
+
 
 }
