@@ -50,6 +50,7 @@ class KnownPeopleViewModel(
 
     /**
      * Add a new person with their first image
+     * FIXED: Uses atomic increment instead of manual count update
      */
     fun processAndAddPerson(
         context: Context,
@@ -64,23 +65,25 @@ class KnownPeopleViewModel(
             try {
                 updateProgress(ProcessingStage.LOADING_IMAGE, 0.1f)
 
-                // Add person to database - returns String ID
+                // Step 1: Add person with initial count of 0
                 val personId = personUseCase.addPerson(
                     name = name,
-                    numImages = 1 // Starting with 1 image
+                    numImages = 0 // Start with 0, will increment after successful image add
                 )
 
                 updateProgress(ProcessingStage.DETECTING_FACE, 0.3f)
 
-                // Add image with face detection and embedding
-                // Use String personID directly (no conversion to Long)
+                // Step 2: Add image with face detection and embedding
                 val result = imageVectorUseCase.addImage(
-                    personID = personId, // Use String ID directly
+                    personID = personId,
                     personName = name,
                     imageUri = imageUri
                 )
 
                 if (result.isSuccess) {
+                    // Step 3: Atomically increment the person's image count
+                    personUseCase.incrementImageCount(personId)
+
                     updateProgress(ProcessingStage.COMPLETE, 1.0f)
 
                     _state.value = _state.value.copy(
@@ -118,6 +121,7 @@ class KnownPeopleViewModel(
 
     /**
      * Add another image to an existing person
+     * FIXED: Uses atomic increment
      */
     fun addImageToPerson(
         context: Context,
@@ -144,24 +148,17 @@ class KnownPeopleViewModel(
                 updateProgress(ProcessingStage.DETECTING_FACE, 0.4f)
 
                 // Add image with face detection and embedding
-                // Use String personID directly
                 val result = imageVectorUseCase.addImage(
-                    personID = personId, // Use String ID directly
+                    personID = personId,
                     personName = person.personName,
                     imageUri = imageUri
                 )
 
                 if (result.isSuccess) {
-                    updateProgress(ProcessingStage.COMPLETE, 1.0f)
+                    // Atomically increment the image count
+                    personUseCase.incrementImageCount(personId)
 
-                    // Update person's image count by creating a new person record
-                    // Note: This will create a new document with same name but different ID
-                    // You might want to update your PersonUseCase to have an update method
-                    val updatedPerson = person.copy(numImages = person.numImages + 1)
-                    personUseCase.addPerson(
-                        name = updatedPerson.personName,
-                        numImages = updatedPerson.numImages
-                    )
+                    updateProgress(ProcessingStage.COMPLETE, 1.0f)
 
                     _state.value = _state.value.copy(
                         isProcessing = false,
@@ -190,34 +187,19 @@ class KnownPeopleViewModel(
         }
     }
 
-    /**
-     * Update person's image count (helper method)
-     */
-    private suspend fun updatePersonImageCount(personId: String, newCount: Long) {
-        val person = _state.value.people.find { it.personID == personId }
-        person?.let {
-            // Create updated person record
-            val updatedPerson = it.copy(numImages = newCount)
-            // You might need to add an update method to your PersonUseCase
-            // For now, we'll remove and re-add with updated count
-            personUseCase.removePerson(personId)
-            personUseCase.addPerson(
-                name = updatedPerson.personName,
-                numImages = updatedPerson.numImages
-            )
-        }
-    }
-
     private fun updateProgress(stage: ProcessingStage, progress: Float) {
         _state.value = _state.value.copy(
             processingProgress = ProcessingProgress(stage, progress)
         )
     }
 
+    /**
+     * Delete a person and all their images
+     */
     fun deletePerson(personId: String) {
         viewModelScope.launch {
             try {
-                // Remove images first - use String ID
+                // Remove images first
                 imageVectorUseCase.removeImages(personId)
 
                 // Remove person

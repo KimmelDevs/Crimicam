@@ -19,7 +19,9 @@ data class PersonRecord(
 
     // Timestamps
     val createdAt: Timestamp = Timestamp.now(),
-    val updatedAt: Timestamp = Timestamp.now()
+    val updatedAt: Timestamp = Timestamp.now(),
+
+    val lastUpdated: Timestamp = Timestamp.now()
 ) {
     // Helper function to get display info
     @Exclude

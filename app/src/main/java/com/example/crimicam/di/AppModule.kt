@@ -1,13 +1,12 @@
 package com.example.crimicam.di
 
-import android.content.Context
 import com.example.crimicam.facerecognitionnetface.models.data.ImagesVectorDB
-import com.example.crimicam.facerecognitionnetface.models.data.PersonDB
 import com.example.crimicam.facerecognitionnetface.models.domain.ImageVectorUseCase
 import com.example.crimicam.facerecognitionnetface.models.domain.PersonUseCase
+import com.example.crimicam.facerecognitionnetface.models.domain.embeddings.FaceNet
 import com.example.crimicam.facerecognitionnetface.models.domain.embeddings.MediapipeFaceDetector
-import com.example.crimicam.facerecognitionnetface.models.domain.embeddings.FaceNet // Add this import
 import com.example.crimicam.facerecognitionnetface.models.domain.face_detection.FaceSpoofDetector
+import com.example.crimicam.presentation.main.Home.Camera.CameraViewModel
 import com.example.crimicam.presentation.main.KnownPeople.KnownPeopleViewModel
 import org.koin.android.ext.koin.androidContext
 import org.koin.androidx.viewmodel.dsl.viewModel
@@ -15,32 +14,38 @@ import org.koin.dsl.module
 
 val appModule = module {
 
-    // Database
-    single { PersonDB() }
+    // Database layers
     single { ImagesVectorDB() }
 
     // Face Detection & Recognition Dependencies
     single {
         MediapipeFaceDetector(
-            context = androidContext() // or get<Context>() if you prefer
+            context = androidContext()
         )
     }
 
-    // Add these missing dependencies that ImageVectorUseCase requires
     single {
         FaceNet(
-            context = androidContext()
+            context = androidContext(),
+            useGpu = true,  // Enable GPU acceleration if available
+            useXNNPack = true  // Enable XNNPACK delegate
         )
     }
 
     single {
         FaceSpoofDetector(
-            context = androidContext()
+            context = androidContext(),
+            useGpu = false,  // Set based on your preference
+            useXNNPack = true,
+            useNNAPI = false
         )
     }
 
     // Use Cases
-    single { PersonUseCase(get()) }
+    single {
+        PersonUseCase()  // PersonUseCase doesn't take parameters based on your code
+    }
+
     single {
         ImageVectorUseCase(
             mediapipeFaceDetector = get(),
@@ -50,9 +55,16 @@ val appModule = module {
         )
     }
 
-    // ViewModel
+    // ViewModels
     viewModel {
         KnownPeopleViewModel(
+            personUseCase = get(),
+            imageVectorUseCase = get()
+        )
+    }
+
+    viewModel {
+        CameraViewModel(
             personUseCase = get(),
             imageVectorUseCase = get()
         )
