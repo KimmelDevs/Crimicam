@@ -1,13 +1,16 @@
 package com.example.crimicam.di
 
 import com.example.crimicam.auth.UserSessionManager
+import com.example.crimicam.facerecognitionnetface.models.data.CriminalDB
 import com.example.crimicam.facerecognitionnetface.models.data.ImagesVectorDB
 import com.example.crimicam.facerecognitionnetface.models.data.PersonDB
+import com.example.crimicam.facerecognitionnetface.models.domain.CriminalUseCase
 import com.example.crimicam.facerecognitionnetface.models.domain.ImageVectorUseCase
 import com.example.crimicam.facerecognitionnetface.models.domain.PersonUseCase
 import com.example.crimicam.facerecognitionnetface.models.domain.embeddings.FaceNet
 import com.example.crimicam.facerecognitionnetface.models.domain.embeddings.MediapipeFaceDetector
 import com.example.crimicam.facerecognitionnetface.models.domain.face_detection.FaceSpoofDetector
+import com.example.crimicam.presentation.main.Admin.AdminViewModel
 import com.example.crimicam.presentation.main.Home.Camera.CameraViewModel
 import com.example.crimicam.presentation.main.KnownPeople.KnownPeopleViewModel
 import org.koin.android.ext.koin.androidContext
@@ -16,14 +19,20 @@ import org.koin.dsl.module
 
 val appModule = module {
 
-    // User Session Manager (Singleton)
+    // ============================================
+    // User Session Management
+    // ============================================
+
     single { UserSessionManager.getInstance() }
 
-    // Provide current user ID
-    // This will throw exception if user is not logged in
+    // Provide current user ID (throws exception if not logged in)
     factory { get<UserSessionManager>().getCurrentUserId() }
 
-    // Database layers - inject user ID dynamically
+    // ============================================
+    // Database Layers
+    // ============================================
+
+    // User-specific collections (subcollections under users/{userId})
     factory {
         PersonDB(currentUserId = get<UserSessionManager>().getCurrentUserId())
     }
@@ -32,7 +41,14 @@ val appModule = module {
         ImagesVectorDB(currentUserId = get<UserSessionManager>().getCurrentUserId())
     }
 
-    // Face Detection & Recognition Dependencies (Singletons)
+    // Global collection (top-level collection, not user-specific)
+    single { CriminalDB() }
+    single { CriminalImagesVectorDB() }
+
+    // ============================================
+    // Face Detection & Recognition (Singletons)
+    // ============================================
+
     single {
         MediapipeFaceDetector(
             context = androidContext()
@@ -42,21 +58,25 @@ val appModule = module {
     single {
         FaceNet(
             context = androidContext(),
-            useGpu = true,  // Enable GPU acceleration if available
-            useXNNPack = true  // Enable XNNPACK delegate
+            useGpu = true,
+            useXNNPack = true
         )
     }
 
     single {
         FaceSpoofDetector(
             context = androidContext(),
-            useGpu = false,  // Set based on your preference
+            useGpu = false,
             useXNNPack = true,
             useNNAPI = false
         )
     }
 
-    // Use Cases - inject user ID dynamically
+    // ============================================
+    // Use Cases
+    // ============================================
+
+    // User-specific use cases
     factory {
         PersonUseCase(currentUserId = get<UserSessionManager>().getCurrentUserId())
     }
@@ -70,7 +90,20 @@ val appModule = module {
         )
     }
 
+    // Global criminal use case (not user-specific)
+    single {
+        CriminalUseCase(
+            criminalDB = get(),
+            criminalImagesVectorDB = get(),
+            faceNet = get(),
+            mediapipeFaceDetector = get()
+        )
+    }
+
+    // ============================================
     // ViewModels
+    // ============================================
+
     viewModel {
         KnownPeopleViewModel(
             personUseCase = get(),
@@ -84,23 +117,44 @@ val appModule = module {
             imageVectorUseCase = get()
         )
     }
+
+    viewModel {
+        AdminViewModel(
+            criminalUseCase = get()
+        )
+    }
 }
 
 /**
+ * FIRESTORE STRUCTURE:
+ *
+ * 1. USER-SPECIFIC DATA (Subcollections):
+ *    users/{userId}/
+ *      ├── persons/{personId}           // Known people for this user
+ *      └── face_images/{imageId}        // Face embeddings for this user's people
+ *
+ * 2. GLOBAL DATA (Top-level Collections):
+ *    criminals/{criminalId}             // Criminal records (accessible by all)
+ *    criminal_face_images/{imageId}     // Face embeddings for criminals (accessible by all)
+ *
  * IMPORTANT NOTES:
  *
- * 1. User MUST be logged in before accessing camera or known people screens
- * 2. PersonDB and ImagesVectorDB are now factories (not singletons) because they
- *    depend on current user ID which can change
- * 3. Add authentication check in your navigation:
+ * 1. Authentication Required:
+ *    - User MUST be logged in to access user-specific features (Known People, Camera)
+ *    - Check authentication before navigation:
+ *      if (userSessionManager.isUserLoggedIn()) {
+ *          // Navigate to protected screens
+ *      } else {
+ *          // Navigate to login
+ *      }
  *
- *    if (userSessionManager.isUserLoggedIn()) {
- *        // Navigate to camera/known people
- *    } else {
- *        // Navigate to login
- *    }
+ * 2. Criminal Database:
+ *    - Stored in top-level collection (not user-specific)
+ *    - All users can view/search criminals
+ *    - Only admins should be able to add/edit criminals (implement role-based access)
  *
- * 4. New Firestore structure:
- *    users/{userId}/persons/{personId}
- *    users/{userId}/face_images/{imageId}
+ * 3. Face Recognition:
+ *    - Camera searches both user's known people AND criminals
+ *    - User-specific face embeddings are isolated per user
+ *    - Criminal face embeddings are shared across all users
  */
