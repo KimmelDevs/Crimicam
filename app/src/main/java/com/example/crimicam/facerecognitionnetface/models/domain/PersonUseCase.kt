@@ -2,6 +2,7 @@ package com.example.crimicam.facerecognitionnetface.models.domain
 
 import com.example.crimicam.facerecognitionnetface.models.data.PersonRecord
 import com.google.firebase.Timestamp
+import com.google.firebase.firestore.CollectionReference
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
@@ -14,9 +15,18 @@ import kotlinx.coroutines.withContext
 import org.koin.core.annotation.Single
 
 @Single
-class PersonUseCase {
+class PersonUseCase(
+    private val currentUserId: String
+) {
     private val firestore = FirebaseFirestore.getInstance()
-    private val personsCollection = firestore.collection("persons")
+
+    // Dynamic subcollection path based on current user
+    private fun getPersonsCollection(): CollectionReference {
+        return firestore
+            .collection("users")
+            .document(currentUserId)
+            .collection("persons")
+    }
 
     // Cache for count to avoid repeated queries
     private var cachedCount: Long = 0L
@@ -41,7 +51,7 @@ class PersonUseCase {
                     lastUpdated = Timestamp.now()
                 )
 
-                val docRef = personsCollection.add(personRecord).await()
+                val docRef = getPersonsCollection().add(personRecord).await()
                 invalidateCountCache()
                 docRef.id
             } catch (e: Exception) {
@@ -63,7 +73,7 @@ class PersonUseCase {
                 val updatesWithTimestamp = updates.toMutableMap()
                 updatesWithTimestamp["lastUpdated"] = Timestamp.now()
 
-                personsCollection.document(personId)
+                getPersonsCollection().document(personId)
                     .update(updatesWithTimestamp)
                     .await()
             } catch (e: Exception) {
@@ -79,7 +89,7 @@ class PersonUseCase {
     suspend fun incrementImageCount(personId: String) {
         withContext(Dispatchers.IO) {
             try {
-                personsCollection.document(personId).update(
+                getPersonsCollection().document(personId).update(
                     mapOf(
                         "numImages" to FieldValue.increment(1),
                         "lastUpdated" to Timestamp.now()
@@ -98,7 +108,7 @@ class PersonUseCase {
     suspend fun decrementImageCount(personId: String) {
         withContext(Dispatchers.IO) {
             try {
-                personsCollection.document(personId).update(
+                getPersonsCollection().document(personId).update(
                     mapOf(
                         "numImages" to FieldValue.increment(-1),
                         "lastUpdated" to Timestamp.now()
@@ -117,7 +127,7 @@ class PersonUseCase {
     suspend fun getPerson(personId: String): PersonRecord? {
         return withContext(Dispatchers.IO) {
             try {
-                val document = personsCollection.document(personId).get().await()
+                val document = getPersonsCollection().document(personId).get().await()
                 document.toObject(PersonRecord::class.java)?.copy(
                     personID = document.id
                 )
@@ -132,7 +142,7 @@ class PersonUseCase {
      * Get all persons as a Flow (reactive)
      */
     fun getAll(): Flow<List<PersonRecord>> = callbackFlow {
-        val listenerRegistration = personsCollection
+        val listenerRegistration = getPersonsCollection()
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     close(error)
@@ -165,7 +175,7 @@ class PersonUseCase {
     suspend fun getAllOnce(): List<PersonRecord> {
         return withContext(Dispatchers.IO) {
             try {
-                val snapshot = personsCollection.get().await()
+                val snapshot = getPersonsCollection().get().await()
                 val persons = snapshot.documents.mapNotNull { document ->
                     document.toObject(PersonRecord::class.java)?.copy(
                         personID = document.id
@@ -207,7 +217,7 @@ class PersonUseCase {
     suspend fun refreshCount(): Long {
         return withContext(Dispatchers.IO) {
             try {
-                val snapshot = personsCollection.get().await()
+                val snapshot = getPersonsCollection().get().await()
                 cachedCount = snapshot.size().toLong()
                 lastCountUpdate = System.currentTimeMillis()
                 cachedCount
@@ -224,7 +234,7 @@ class PersonUseCase {
     suspend fun removePerson(personId: String) {
         withContext(Dispatchers.IO) {
             try {
-                personsCollection.document(personId).delete().await()
+                getPersonsCollection().document(personId).delete().await()
                 invalidateCountCache()
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -239,7 +249,7 @@ class PersonUseCase {
     suspend fun searchByName(name: String): List<PersonRecord> {
         return withContext(Dispatchers.IO) {
             try {
-                val snapshot = personsCollection
+                val snapshot = getPersonsCollection()
                     .whereEqualTo("personName", name)
                     .get()
                     .await()
@@ -262,7 +272,7 @@ class PersonUseCase {
     suspend fun existsByName(name: String): Boolean {
         return withContext(Dispatchers.IO) {
             try {
-                val snapshot = personsCollection
+                val snapshot = getPersonsCollection()
                     .whereEqualTo("personName", name)
                     .limit(1)
                     .get()
@@ -282,7 +292,7 @@ class PersonUseCase {
     suspend fun clearAll() {
         withContext(Dispatchers.IO) {
             try {
-                val snapshot = personsCollection.get().await()
+                val snapshot = getPersonsCollection().get().await()
 
                 // Delete in batches of 500 (Firestore limit)
                 val batches = snapshot.documents.chunked(500)

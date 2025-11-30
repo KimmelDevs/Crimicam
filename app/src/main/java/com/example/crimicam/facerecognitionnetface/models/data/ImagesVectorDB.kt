@@ -1,6 +1,7 @@
 package com.example.crimicam.facerecognitionnetface.models.data
 
 import com.google.firebase.Timestamp
+import com.google.firebase.firestore.CollectionReference
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -15,19 +16,28 @@ import org.koin.core.annotation.Single
 import kotlin.math.sqrt
 
 @Single
-class ImagesVectorDB {
+class ImagesVectorDB(
+    private val currentUserId: String
+) {
     private val firestore = FirebaseFirestore.getInstance()
-    private val imagesCollection = firestore.collection("face_images")
+
+    // Dynamic subcollection path based on current user
+    private fun getImagesCollection(): CollectionReference {
+        return firestore
+            .collection("users")
+            .document(currentUserId)
+            .collection("face_images")
+    }
 
     suspend fun addFaceImageRecord(record: FaceImageRecord): String {
         return withContext(Dispatchers.IO) {
             try {
                 if (record.recordID.isEmpty()) {
                     // Auto-generate ID and return it
-                    val docRef = imagesCollection.add(record).await()
+                    val docRef = getImagesCollection().add(record).await()
                     docRef.id
                 } else {
-                    imagesCollection.document(record.recordID).set(record).await()
+                    getImagesCollection().document(record.recordID).set(record).await()
                     record.recordID
                 }
             } catch (e: Exception) {
@@ -118,7 +128,7 @@ class ImagesVectorDB {
 
     private suspend fun getAllFaceImageRecords(): List<FaceImageRecord> {
         return try {
-            imagesCollection
+            getImagesCollection()
                 .get()
                 .await()
                 .documents
@@ -134,7 +144,7 @@ class ImagesVectorDB {
     }
 
     fun getAllFaceImageRecordsFlow(): Flow<List<FaceImageRecord>> = callbackFlow {
-        val listenerRegistration = imagesCollection.addSnapshotListener { snapshot, error ->
+        val listenerRegistration = getImagesCollection().addSnapshotListener { snapshot, error ->
             if (error != null) {
                 close(error)
                 return@addSnapshotListener
@@ -158,7 +168,7 @@ class ImagesVectorDB {
     suspend fun getFaceRecordsByPersonID(personID: String): List<FaceImageRecord> {
         return withContext(Dispatchers.IO) {
             try {
-                imagesCollection
+                getImagesCollection()
                     .whereEqualTo("personID", personID)
                     .get()
                     .await()
@@ -178,8 +188,8 @@ class ImagesVectorDB {
     suspend fun removeFaceRecordsWithPersonID(personID: String) {
         withContext(Dispatchers.IO) {
             try {
-                val querySnapshot = imagesCollection
-                    .whereEqualTo("personID", personID) // Changed to match String field name
+                val querySnapshot = getImagesCollection()
+                    .whereEqualTo("personID", personID)
                     .get()
                     .await()
 
@@ -199,7 +209,7 @@ class ImagesVectorDB {
     suspend fun removeFaceRecord(recordID: String) {
         withContext(Dispatchers.IO) {
             try {
-                imagesCollection.document(recordID).delete().await()
+                getImagesCollection().document(recordID).delete().await()
             } catch (e: Exception) {
                 e.printStackTrace()
                 throw e
@@ -210,7 +220,7 @@ class ImagesVectorDB {
     suspend fun clearAllFaceRecords() {
         withContext(Dispatchers.IO) {
             try {
-                val allRecords = imagesCollection.get().await()
+                val allRecords = getImagesCollection().get().await()
 
                 // Delete in batches of 500 (Firestore limit)
                 val batches = allRecords.documents.chunked(500)
@@ -244,7 +254,7 @@ class ImagesVectorDB {
     suspend fun getFaceRecordCount(): Long {
         return withContext(Dispatchers.IO) {
             try {
-                imagesCollection.get().await().size().toLong()
+                getImagesCollection().get().await().size().toLong()
             } catch (e: Exception) {
                 e.printStackTrace()
                 0L
@@ -255,7 +265,7 @@ class ImagesVectorDB {
     suspend fun getPersonFaceRecordCount(personID: String): Long {
         return withContext(Dispatchers.IO) {
             try {
-                imagesCollection
+                getImagesCollection()
                     .whereEqualTo("personID", personID)
                     .get()
                     .await()

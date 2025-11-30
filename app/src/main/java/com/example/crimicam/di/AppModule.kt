@@ -1,6 +1,8 @@
 package com.example.crimicam.di
 
+import com.example.crimicam.auth.UserSessionManager
 import com.example.crimicam.facerecognitionnetface.models.data.ImagesVectorDB
+import com.example.crimicam.facerecognitionnetface.models.data.PersonDB
 import com.example.crimicam.facerecognitionnetface.models.domain.ImageVectorUseCase
 import com.example.crimicam.facerecognitionnetface.models.domain.PersonUseCase
 import com.example.crimicam.facerecognitionnetface.models.domain.embeddings.FaceNet
@@ -14,10 +16,23 @@ import org.koin.dsl.module
 
 val appModule = module {
 
-    // Database layers
-    single { ImagesVectorDB() }
+    // User Session Manager (Singleton)
+    single { UserSessionManager.getInstance() }
 
-    // Face Detection & Recognition Dependencies
+    // Provide current user ID
+    // This will throw exception if user is not logged in
+    factory { get<UserSessionManager>().getCurrentUserId() }
+
+    // Database layers - inject user ID dynamically
+    factory {
+        PersonDB(currentUserId = get<UserSessionManager>().getCurrentUserId())
+    }
+
+    factory {
+        ImagesVectorDB(currentUserId = get<UserSessionManager>().getCurrentUserId())
+    }
+
+    // Face Detection & Recognition Dependencies (Singletons)
     single {
         MediapipeFaceDetector(
             context = androidContext()
@@ -41,9 +56,9 @@ val appModule = module {
         )
     }
 
-    // Use Cases
-    single {
-        PersonUseCase()  // PersonUseCase doesn't take parameters based on your code
+    // Use Cases - inject user ID dynamically
+    factory {
+        PersonUseCase(currentUserId = get<UserSessionManager>().getCurrentUserId())
     }
 
     single {
@@ -70,3 +85,22 @@ val appModule = module {
         )
     }
 }
+
+/**
+ * IMPORTANT NOTES:
+ *
+ * 1. User MUST be logged in before accessing camera or known people screens
+ * 2. PersonDB and ImagesVectorDB are now factories (not singletons) because they
+ *    depend on current user ID which can change
+ * 3. Add authentication check in your navigation:
+ *
+ *    if (userSessionManager.isUserLoggedIn()) {
+ *        // Navigate to camera/known people
+ *    } else {
+ *        // Navigate to login
+ *    }
+ *
+ * 4. New Firestore structure:
+ *    users/{userId}/persons/{personId}
+ *    users/{userId}/face_images/{imageId}
+ */
