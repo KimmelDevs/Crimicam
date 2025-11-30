@@ -13,7 +13,6 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.koin.core.annotation.Single
 
-@Single
 class CriminalDB {
     private val firestore = FirebaseFirestore.getInstance()
     private val criminalsCollection = firestore.collection("criminals")

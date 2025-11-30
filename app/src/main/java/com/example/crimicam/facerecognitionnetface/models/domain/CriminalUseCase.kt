@@ -1,6 +1,9 @@
 package com.example.crimicam.facerecognitionnetface.models.domain
 
+import android.content.Context
 import android.graphics.Bitmap
+import android.net.Uri
+import androidx.core.net.toUri
 import com.example.crimicam.data.model.Criminal
 import com.example.crimicam.facerecognitionnetface.models.data.CriminalDB
 import com.example.crimicam.facerecognitionnetface.models.data.CriminalImagesVectorDB
@@ -12,8 +15,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import org.koin.core.annotation.Single
+import java.io.File
+import java.io.FileOutputStream
 
-@Single
 class CriminalUseCase(
     private val criminalDB: CriminalDB,
     private val criminalImagesVectorDB: CriminalImagesVectorDB,
@@ -28,6 +32,9 @@ class CriminalUseCase(
     /**
      * Add a new criminal to the database with face images
      * Returns the auto-generated criminal ID
+     *
+     * Note: This method processes images directly without Uri conversion.
+     * For best results, use addCriminalWithEmbeddings if you have pre-processed embeddings.
      */
     suspend fun addCriminal(
         criminal: Criminal,
@@ -43,16 +50,9 @@ class CriminalUseCase(
 
                 for (bitmap in imageBitmaps) {
                     try {
-                        // Detect face
-                        val faces = mediapipeFaceDetector.detectFaces(bitmap)
-                        if (faces.isEmpty()) continue
-
-                        // Use the first detected face
-                        val face = faces.first()
-
-                        // Generate embedding
-                        val embedding = faceNet.getFaceEmbedding(bitmap, face)
-                        if (embedding == null) continue
+                        // Generate embedding directly from bitmap
+                        // (skipping MediapipeFaceDetector since it expects Uri)
+                        val embedding = faceNet.getFaceEmbedding(bitmap)
 
                         // Create face image record
                         val faceRecord = FaceImageRecord(
@@ -60,7 +60,7 @@ class CriminalUseCase(
                             personID = criminalId,
                             personName = criminal.fullName,
                             faceEmbedding = embedding.toList(),
-                            timestamp = Timestamp.now()
+                            createdAt = Timestamp.now()
                         )
 
                         // Add to criminal vector database
@@ -77,6 +77,165 @@ class CriminalUseCase(
                     criminalDB.updateCriminal(
                         criminalId,
                         mapOf("imageCount" to successfulImages)
+                    )
+                }
+
+                invalidateCountCache()
+                criminalId
+            } catch (e: Exception) {
+                e.printStackTrace()
+                throw e
+            }
+        }
+    }
+
+    /**
+     * Add criminal with face detection and cropping (requires Context)
+     * This version uses MediapipeFaceDetector properly with Uri
+     */
+    suspend fun addCriminalWithFaceDetection(
+        context: Context,
+        criminal: Criminal,
+        imageUris: List<Uri>
+    ): String {
+        return withContext(Dispatchers.IO) {
+            try {
+                // 1. Add criminal to database
+                val criminalId = criminalDB.addCriminal(criminal)
+
+                // 2. Process and add face images with proper face detection
+                var successfulImages = 0
+
+                for (uri in imageUris) {
+                    try {
+                        // Detect and crop face using MediapipeFaceDetector
+                        val croppedFaceResult = mediapipeFaceDetector.getCroppedFace(uri)
+
+                        if (croppedFaceResult.isFailure) {
+                            continue
+                        }
+
+                        val croppedFace = croppedFaceResult.getOrNull() ?: continue
+
+                        // Generate embedding using FaceNet
+                        val embedding = faceNet.getFaceEmbedding(croppedFace)
+
+                        // Create face image record
+                        val faceRecord = FaceImageRecord(
+                            recordID = "",
+                            personID = criminalId,
+                            personName = criminal.fullName,
+                            faceEmbedding = embedding.toList(),
+                            createdAt = Timestamp.now()
+                        )
+
+                        // Add to criminal vector database
+                        criminalImagesVectorDB.addFaceImageRecord(faceRecord)
+                        successfulImages++
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        // Continue with next image
+                    }
+                }
+
+                // 3. Update criminal with actual image count
+                if (successfulImages > 0) {
+                    criminalDB.updateCriminal(
+                        criminalId,
+                        mapOf("imageCount" to successfulImages)
+                    )
+                }
+
+                invalidateCountCache()
+                criminalId
+            } catch (e: Exception) {
+                e.printStackTrace()
+                throw e
+            }
+        }
+    }
+
+    /**
+     * Helper: Convert Bitmap to temporary Uri
+     * Use this if you need to process Bitmaps with MediapipeFaceDetector
+     */
+    private suspend fun bitmapToTempUri(context: Context, bitmap: Bitmap): Uri {
+        return withContext(Dispatchers.IO) {
+            val tempFile = File.createTempFile("temp_criminal_", ".jpg", context.cacheDir)
+            FileOutputStream(tempFile).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+            }
+            tempFile.toUri()
+        }
+    }
+
+    /**
+     * Add criminal with Bitmap to Uri conversion (slower but uses proper face detection)
+     */
+    suspend fun addCriminalWithBitmaps(
+        context: Context,
+        criminal: Criminal,
+        imageBitmaps: List<Bitmap>
+    ): String {
+        return withContext(Dispatchers.IO) {
+            try {
+                // Convert bitmaps to temp URIs
+                val tempUris = imageBitmaps.map { bitmap ->
+                    bitmapToTempUri(context, bitmap)
+                }
+
+                // Use the Uri-based method
+                val result = addCriminalWithFaceDetection(context, criminal, tempUris)
+
+                // Clean up temp files
+                tempUris.forEach { uri ->
+                    try {
+                        val file = File(uri.path ?: "")
+                        if (file.exists()) file.delete()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+
+                result
+            } catch (e: Exception) {
+                e.printStackTrace()
+                throw e
+            }
+        }
+    }
+
+    /**
+     * Add criminal with direct face embedding processing
+     * (When you already have cropped faces and embeddings)
+     * This is the fastest method if embeddings are pre-computed
+     */
+    suspend fun addCriminalWithEmbeddings(
+        criminal: Criminal,
+        faceEmbeddings: List<FloatArray>
+    ): String {
+        return withContext(Dispatchers.IO) {
+            try {
+                // 1. Add criminal to database
+                val criminalId = criminalDB.addCriminal(criminal)
+
+                // 2. Add face embeddings directly
+                faceEmbeddings.forEach { embedding ->
+                    val faceRecord = FaceImageRecord(
+                        recordID = "",
+                        personID = criminalId,
+                        personName = criminal.fullName,
+                        faceEmbedding = embedding.toList(),
+                        createdAt = Timestamp.now()
+                    )
+                    criminalImagesVectorDB.addFaceImageRecord(faceRecord)
+                }
+
+                // 3. Update image count
+                if (faceEmbeddings.isNotEmpty()) {
+                    criminalDB.updateCriminal(
+                        criminalId,
+                        mapOf("imageCount" to faceEmbeddings.size)
                     )
                 }
 
@@ -107,7 +266,7 @@ class CriminalUseCase(
     }
 
     /**
-     * Add additional face images to an existing criminal
+     * Add additional face images to an existing criminal (from Bitmaps)
      */
     suspend fun addCriminalImages(
         criminalId: String,
@@ -122,19 +281,65 @@ class CriminalUseCase(
 
                 for (bitmap in imageBitmaps) {
                     try {
-                        val faces = mediapipeFaceDetector.detectFaces(bitmap)
-                        if (faces.isEmpty()) continue
-
-                        val face = faces.first()
-                        val embedding = faceNet.getFaceEmbedding(bitmap, face)
-                        if (embedding == null) continue
+                        // Generate embedding directly
+                        val embedding = faceNet.getFaceEmbedding(bitmap)
 
                         val faceRecord = FaceImageRecord(
                             recordID = "",
                             personID = criminalId,
                             personName = criminal.fullName,
                             faceEmbedding = embedding.toList(),
-                            timestamp = Timestamp.now()
+                            createdAt = Timestamp.now()
+                        )
+
+                        criminalImagesVectorDB.addFaceImageRecord(faceRecord)
+                        criminalDB.incrementImageCount(criminalId)
+                        successfulImages++
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+
+                successfulImages
+            } catch (e: Exception) {
+                e.printStackTrace()
+                throw e
+            }
+        }
+    }
+
+    /**
+     * Add additional face images to an existing criminal (from Uris with face detection)
+     */
+    suspend fun addCriminalImagesFromUris(
+        context: Context,
+        criminalId: String,
+        imageUris: List<Uri>
+    ): Int {
+        return withContext(Dispatchers.IO) {
+            try {
+                val criminal = criminalDB.getCriminal(criminalId)
+                    ?: throw Exception("Criminal not found")
+
+                var successfulImages = 0
+
+                for (uri in imageUris) {
+                    try {
+                        // Detect and crop face
+                        val croppedFaceResult = mediapipeFaceDetector.getCroppedFace(uri)
+                        if (croppedFaceResult.isFailure) continue
+
+                        val croppedFace = croppedFaceResult.getOrNull() ?: continue
+
+                        // Generate embedding
+                        val embedding = faceNet.getFaceEmbedding(croppedFace)
+
+                        val faceRecord = FaceImageRecord(
+                            recordID = "",
+                            personID = criminalId,
+                            personName = criminal.fullName,
+                            faceEmbedding = embedding.toList(),
+                            createdAt = Timestamp.now()
                         )
 
                         criminalImagesVectorDB.addFaceImageRecord(faceRecord)

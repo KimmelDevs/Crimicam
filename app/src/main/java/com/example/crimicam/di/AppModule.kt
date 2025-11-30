@@ -1,7 +1,9 @@
 package com.example.crimicam.di
 
 import com.example.crimicam.auth.UserSessionManager
+import com.example.crimicam.data.repository.CriminalsRepository
 import com.example.crimicam.facerecognitionnetface.models.data.CriminalDB
+import com.example.crimicam.facerecognitionnetface.models.data.CriminalImagesVectorDB
 import com.example.crimicam.facerecognitionnetface.models.data.ImagesVectorDB
 import com.example.crimicam.facerecognitionnetface.models.data.PersonDB
 import com.example.crimicam.facerecognitionnetface.models.domain.CriminalUseCase
@@ -20,19 +22,15 @@ import org.koin.dsl.module
 val appModule = module {
 
     // ============================================
-    // User Session Management
+    // USER SESSION & AUTH
     // ============================================
-
     single { UserSessionManager.getInstance() }
 
-    // Provide current user ID (throws exception if not logged in)
-    factory { get<UserSessionManager>().getCurrentUserId() }
-
     // ============================================
-    // Database Layers
+    // USER-SPECIFIC DATABASE LAYERS (Subcollections)
     // ============================================
 
-    // User-specific collections (subcollections under users/{userId})
+    // PersonDB and ImagesVectorDB are user-specific (for known people)
     factory {
         PersonDB(currentUserId = get<UserSessionManager>().getCurrentUserId())
     }
@@ -41,12 +39,19 @@ val appModule = module {
         ImagesVectorDB(currentUserId = get<UserSessionManager>().getCurrentUserId())
     }
 
-    // Global collection (top-level collection, not user-specific)
+    // ============================================
+    // GLOBAL DATABASE LAYERS (For Criminals - Shared)
+    // ============================================
+
+    // CriminalDB and CriminalImagesVectorDB are GLOBAL (shared across all officers)
     single { CriminalDB() }
     single { CriminalImagesVectorDB() }
 
+    // Criminals Repository (optional - if you want to keep your repository pattern)
+    single { CriminalsRepository() }
+
     // ============================================
-    // Face Detection & Recognition (Singletons)
+    // FACE DETECTION & RECOGNITION (Shared Singletons)
     // ============================================
 
     single {
@@ -73,14 +78,15 @@ val appModule = module {
     }
 
     // ============================================
-    // Use Cases
+    // USE CASES
     // ============================================
 
-    // User-specific use cases
+    // PersonUseCase - user-specific (for known people)
     factory {
         PersonUseCase(currentUserId = get<UserSessionManager>().getCurrentUserId())
     }
 
+    // ImageVectorUseCase - user-specific (for known people face recognition)
     single {
         ImageVectorUseCase(
             mediapipeFaceDetector = get(),
@@ -90,7 +96,7 @@ val appModule = module {
         )
     }
 
-    // Global criminal use case (not user-specific)
+    // CriminalUseCase - GLOBAL (for criminal database management)
     single {
         CriminalUseCase(
             criminalDB = get(),
@@ -101,7 +107,7 @@ val appModule = module {
     }
 
     // ============================================
-    // ViewModels
+    // VIEW MODELS
     // ============================================
 
     viewModel {
@@ -124,37 +130,3 @@ val appModule = module {
         )
     }
 }
-
-/**
- * FIRESTORE STRUCTURE:
- *
- * 1. USER-SPECIFIC DATA (Subcollections):
- *    users/{userId}/
- *      ├── persons/{personId}           // Known people for this user
- *      └── face_images/{imageId}        // Face embeddings for this user's people
- *
- * 2. GLOBAL DATA (Top-level Collections):
- *    criminals/{criminalId}             // Criminal records (accessible by all)
- *    criminal_face_images/{imageId}     // Face embeddings for criminals (accessible by all)
- *
- * IMPORTANT NOTES:
- *
- * 1. Authentication Required:
- *    - User MUST be logged in to access user-specific features (Known People, Camera)
- *    - Check authentication before navigation:
- *      if (userSessionManager.isUserLoggedIn()) {
- *          // Navigate to protected screens
- *      } else {
- *          // Navigate to login
- *      }
- *
- * 2. Criminal Database:
- *    - Stored in top-level collection (not user-specific)
- *    - All users can view/search criminals
- *    - Only admins should be able to add/edit criminals (implement role-based access)
- *
- * 3. Face Recognition:
- *    - Camera searches both user's known people AND criminals
- *    - User-specific face embeddings are isolated per user
- *    - Criminal face embeddings are shared across all users
- */

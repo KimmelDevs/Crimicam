@@ -13,14 +13,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-data class AdminState(
-    val isLoading: Boolean = false,
-    val criminals: List<Criminal> = emptyList(),
-    val errorMessage: String? = null,
-    val isProcessing: Boolean = false,
-    val successMessage: String? = null,
-    val criminalCount: Long = 0L
-)
 
 class AdminViewModel(
     private val criminalUseCase: CriminalUseCase

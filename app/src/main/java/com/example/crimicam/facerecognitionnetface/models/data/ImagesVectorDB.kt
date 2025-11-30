@@ -15,7 +15,6 @@ import kotlinx.coroutines.withContext
 import org.koin.core.annotation.Single
 import kotlin.math.sqrt
 
-@Single
 class ImagesVectorDB(
     private val currentUserId: String
 ) {

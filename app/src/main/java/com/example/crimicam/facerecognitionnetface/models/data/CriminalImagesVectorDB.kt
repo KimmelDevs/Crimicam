@@ -18,7 +18,6 @@ import kotlin.math.sqrt
  * Manages face embeddings for criminals in a global collection
  * (not user-specific, accessible by all users)
  */
-@Single
 class CriminalImagesVectorDB {
     private val firestore = FirebaseFirestore.getInstance()
 

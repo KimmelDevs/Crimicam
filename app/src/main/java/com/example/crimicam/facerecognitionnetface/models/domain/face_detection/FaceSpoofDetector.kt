@@ -33,7 +33,6 @@ https://github.com/serengil/deepface/blob/master/deepface/models/spoofing/FasNet
 - An instance of this class is injected in ImageVectorUseCase.kt
 
 */
-@Single
 class FaceSpoofDetector(
     context: Context,
     useGpu: Boolean = false,
