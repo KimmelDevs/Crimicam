@@ -1,6 +1,7 @@
 package com.example.crimicam.presentation.main.Home.Camera.components
 
 import android.annotation.SuppressLint
+import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -8,15 +9,19 @@ import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RectF
+import android.provider.MediaStore
+import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.widget.FrameLayout
 import androidx.camera.core.AspectRatio
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.*
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.toRectF
@@ -28,6 +33,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.*
 import java.util.concurrent.Executors
 
 @SuppressLint("ViewConstructor")
@@ -91,13 +98,17 @@ class FaceDetectionOverlay(
 
                 frameAnalyzer.setAnalyzer(Executors.newSingleThreadExecutor(), analyzer)
 
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
-                    lifecycleOwner,
-                    cameraSelector,
-                    preview,
-                    frameAnalyzer
-                )
+                try {
+                    cameraProvider.unbindAll()
+                    cameraProvider.bindToLifecycle(
+                        lifecycleOwner,
+                        cameraSelector,
+                        preview,
+                        frameAnalyzer
+                    )
+                } catch (exc: Exception) {
+                    Log.e("Camera", "Use case binding failed", exc)
+                }
             },
             executor
         )
@@ -208,10 +219,10 @@ class FaceDetectionOverlay(
                 detectedFaces.add(
                     DetectedFace(
                         boundingBox = box,
-                        personId = null, // Extract from your results if available
+                        personId = null,
                         personName = if (personName.isNotBlank()) personName else null,
-                        confidence = 0.85f, // Extract actual confidence from your results
-                        distance = 0f // Extract actual distance from your results
+                        confidence = 0.85f,
+                        distance = 0f
                     )
                 )
             }

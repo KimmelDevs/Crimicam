@@ -1,7 +1,8 @@
 package com.example.crimicam.presentation.main.Home.Camera
 
-import android.graphics.Bitmap
 import android.graphics.RectF
+import android.net.Uri
+import android.util.Log
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -13,6 +14,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.*
 
 data class DetectedFace(
     val boundingBox: RectF,
@@ -20,6 +23,15 @@ data class DetectedFace(
     val personName: String? = null,
     val confidence: Float,
     val distance: Float = 0f
+)
+
+// Video recording states
+data class RecordingState(
+    val isRecording: Boolean = false,
+    val recordingTime: String = "00:00",
+    val outputUri: Uri? = null,
+    val recordingError: String? = null,
+    val recordingSaved: Boolean = false
 )
 
 data class CameraState(
@@ -30,7 +42,8 @@ data class CameraState(
     val hasLocationPermission: Boolean = false,
     val knownPeople: List<KnownPerson> = emptyList(),
     val modelInitialized: Boolean = false,
-    val peopleCount: Long = 0L
+    val peopleCount: Long = 0L,
+    val recordingState: RecordingState = RecordingState()
 )
 
 enum class ScanningMode {
@@ -51,28 +64,150 @@ class CameraViewModel(
 
     val faceDetectionMetricsState = mutableStateOf<RecognitionMetrics?>(null)
 
+    // Video recording properties
+    private var recordingStartTime: Long = 0
+    private val timerFormat = SimpleDateFormat("mm:ss", Locale.getDefault())
+    private var recordingJob: kotlinx.coroutines.Job? = null
+
     init {
-        // Initialize people count
         refreshPeopleCount()
     }
 
-    // Get number of known people in database (synchronous - uses cached value)
+    // Video Recording Methods
+    fun startRecording() {
+        viewModelScope.launch {
+            if (_state.value.recordingState.isRecording) {
+                Log.w("CameraViewModel", "Already recording, ignoring start request")
+                return@launch
+            }
+
+            try {
+                Log.d("CameraViewModel", "Starting recording")
+
+                _state.value = _state.value.copy(
+                    recordingState = RecordingState(
+                        isRecording = true,
+                        recordingTime = "00:00",
+                        outputUri = null,
+                        recordingError = null,
+                        recordingSaved = false
+                    )
+                )
+                recordingStartTime = System.currentTimeMillis()
+                startRecordingTimer()
+
+            } catch (e: Exception) {
+                Log.e("CameraViewModel", "Failed to start recording", e)
+                _state.value = _state.value.copy(
+                    recordingState = RecordingState(
+                        isRecording = false,
+                        recordingError = "Failed to start recording: ${e.message}"
+                    )
+                )
+            }
+        }
+    }
+
+    fun stopRecording() {
+        if (_state.value.recordingState.isRecording) {
+            Log.d("CameraViewModel", "Stopping recording")
+
+            recordingJob?.cancel()
+            recordingJob = null
+
+            _state.value = _state.value.copy(
+                recordingState = _state.value.recordingState.copy(
+                    isRecording = false,
+                    recordingTime = "00:00"
+                )
+            )
+            recordingStartTime = 0
+
+        } else {
+            Log.w("CameraViewModel", "Stop recording called but not currently recording")
+        }
+    }
+
+    fun updateRecordingTime() {
+        if (_state.value.recordingState.isRecording && recordingStartTime > 0) {
+            val elapsedTime = System.currentTimeMillis() - recordingStartTime
+            val timeString = timerFormat.format(Date(elapsedTime))
+            _state.value = _state.value.copy(
+                recordingState = _state.value.recordingState.copy(
+                    recordingTime = timeString
+                )
+            )
+        }
+    }
+
+    private fun startRecordingTimer() {
+        recordingJob?.cancel()
+
+        recordingJob = viewModelScope.launch {
+            while (_state.value.recordingState.isRecording && recordingStartTime > 0) {
+                updateRecordingTime()
+                kotlinx.coroutines.delay(1000)
+            }
+        }
+    }
+
+    fun onRecordingSaved(uri: Uri?) {
+        Log.d("CameraViewModel", "Recording saved successfully: $uri")
+        _state.value = _state.value.copy(
+            recordingState = _state.value.recordingState.copy(
+                outputUri = uri,
+                recordingSaved = true
+            )
+        )
+        updateStatusMessage("✅ Recording saved to Gallery")
+    }
+
+    fun onRecordingFailed(error: String) {
+        Log.e("CameraViewModel", "Recording failed: $error")
+        _state.value = _state.value.copy(
+            recordingState = _state.value.recordingState.copy(
+                isRecording = false,
+                recordingError = error,
+                recordingSaved = false
+            )
+        )
+        recordingStartTime = 0
+        recordingJob?.cancel()
+        recordingJob = null
+    }
+
+    fun clearRecordingError() {
+        _state.value = _state.value.copy(
+            recordingState = _state.value.recordingState.copy(
+                recordingError = null
+            )
+        )
+    }
+
+    fun clearRecordingSaved() {
+        _state.value = _state.value.copy(
+            recordingState = _state.value.recordingState.copy(
+                recordingSaved = false
+            )
+        )
+    }
+
+    // Existing methods
     fun getNumPeople(): Long = _state.value.peopleCount
 
-    // Refresh people count from database
     fun refreshPeopleCount() {
         viewModelScope.launch {
             try {
                 val count = personUseCase.refreshCount()
                 _state.value = _state.value.copy(peopleCount = count)
+                Log.d("CameraViewModel", "Refreshed people count: $count")
             } catch (e: Exception) {
+                Log.e("CameraViewModel", "Failed to refresh people count", e)
                 e.printStackTrace()
-                // Keep current cached count on error
             }
         }
     }
 
-    // Update state with detected faces
     fun updateDetectedFaces(faces: List<DetectedFace>) {
         val newMode = when {
             faces.isEmpty() -> ScanningMode.IDLE
@@ -93,58 +228,62 @@ class CameraViewModel(
             scanningMode = newMode,
             statusMessage = statusMessage
         )
+
+        Log.d("CameraViewModel", "Updated detected faces: ${faces.size}, mode: $newMode")
     }
 
-    // Update scanning mode manually
     fun updateScanningMode(mode: ScanningMode) {
         _state.value = _state.value.copy(scanningMode = mode)
+        Log.d("CameraViewModel", "Scanning mode updated: $mode")
     }
 
-    // Update status message
     fun updateStatusMessage(message: String) {
         _state.value = _state.value.copy(statusMessage = message)
+        Log.d("CameraViewModel", "Status message updated: $message")
     }
 
-    // Update known people list
     fun updateKnownPeople(people: List<KnownPerson>) {
         _state.value = _state.value.copy(knownPeople = people)
+        Log.d("CameraViewModel", "Known people updated: ${people.size}")
     }
 
-    // Update model initialization status
     fun setModelInitialized(initialized: Boolean) {
         _state.value = _state.value.copy(modelInitialized = initialized)
+        Log.d("CameraViewModel", "Model initialized: $initialized")
     }
 
-    // Update processing status
     fun setProcessing(processing: Boolean) {
         _state.value = _state.value.copy(isProcessing = processing)
+        Log.d("CameraViewModel", "Processing state: $processing")
     }
 
-    // Update location permission status
     fun setLocationPermission(hasPermission: Boolean) {
         _state.value = _state.value.copy(hasLocationPermission = hasPermission)
+        Log.d("CameraViewModel", "Location permission: $hasPermission")
     }
 
-    // Clear all detected faces
     fun clearDetectedFaces() {
         _state.value = _state.value.copy(
             detectedFaces = emptyList(),
             scanningMode = ScanningMode.IDLE,
             statusMessage = "🔍 Scanning for faces..."
         )
+        Log.d("CameraViewModel", "Cleared detected faces")
     }
 
-    // Handle recognition error
     fun onRecognitionError(error: String) {
         _state.value = _state.value.copy(
             isProcessing = false,
             scanningMode = ScanningMode.IDLE,
             statusMessage = "⚠️ $error"
         )
+        Log.e("CameraViewModel", "Recognition error: $error")
     }
 
     override fun onCleared() {
         super.onCleared()
-        // Clean up if needed
+        recordingJob?.cancel()
+        recordingJob = null
+        Log.d("CameraViewModel", "ViewModel cleared")
     }
 }

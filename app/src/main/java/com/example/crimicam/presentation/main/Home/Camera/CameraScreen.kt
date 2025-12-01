@@ -1,14 +1,20 @@
 package com.example.crimicam.presentation.main.Home.Camera
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.camera.core.CameraSelector
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -25,16 +31,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.navigation.NavController
 import com.example.crimicam.presentation.main.Home.Camera.components.AppAlertDialog
 import com.example.crimicam.presentation.main.Home.Camera.components.DelayedVisibility
 import com.example.crimicam.presentation.main.Home.Camera.components.FaceDetectionOverlay
+import com.example.crimicam.presentation.main.Home.Camera.components.ScreenRecorderHelper
+import com.example.crimicam.presentation.main.Home.Camera.components.ScreenRecordingService
 import com.example.crimicam.presentation.main.Home.Camera.components.createAlertDialog
 import org.koin.androidx.compose.koinViewModel
 
 private val cameraPermissionStatus = mutableStateOf(false)
 private val cameraFacing = mutableIntStateOf(CameraSelector.LENS_FACING_FRONT)
 private lateinit var cameraPermissionLauncher: androidx.activity.compose.ManagedActivityResultLauncher<String, Boolean>
+private var screenRecorder: ScreenRecorderHelper? = null
 
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
@@ -54,28 +64,240 @@ fun CameraScreen(
     Box(modifier = Modifier.fillMaxSize()) {
         ScreenUI(viewModel)
 
-        // Floating camera switch button
+        // Top controls container - recording and camera switch side by side
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(16.dp),
+            contentAlignment = Alignment.TopEnd
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.End,
+                modifier = Modifier
+                    .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(24.dp))
+                    .padding(8.dp)
+            ) {
+                // Recording controls
+                RecordingControls(viewModel = viewModel)
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // Vertical divider
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .height(24.dp)
+                        .background(Color.White.copy(alpha = 0.3f))
+                )
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // Camera switch button
+                IconButton(
+                    onClick = {
+                        if (cameraFacing.intValue == CameraSelector.LENS_FACING_BACK) {
+                            cameraFacing.intValue = CameraSelector.LENS_FACING_FRONT
+                        } else {
+                            cameraFacing.intValue = CameraSelector.LENS_FACING_BACK
+                        }
+                    },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(Color.Transparent, CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Cameraswitch,
+                        contentDescription = "Switch Camera",
+                        tint = Color.Cyan,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun RecordingControls(
+    viewModel: CameraViewModel,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val activity = context as? Activity
+    val state by viewModel.state.collectAsState()
+    val recordingState = state.recordingState
+
+    // Initialize screen recorder
+    LaunchedEffect(Unit) {
+        if (screenRecorder == null) {
+            screenRecorder = ScreenRecorderHelper(
+                context = context,
+                onRecordingComplete = { uri ->
+                    viewModel.onRecordingSaved(uri)
+                },
+                onRecordingError = { error ->
+                    viewModel.onRecordingFailed(error)
+                }
+            )
+            // Share the helper with the service
+            ScreenRecordingService.screenRecorderHelper = screenRecorder
+        }
+    }
+
+    // Screen capture permission launcher
+    val screenCaptureLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        Log.d("CameraScreen", "Screen capture result: resultCode=${result.resultCode}, data=${result.data}")
+
+        if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            Log.d("CameraScreen", "Starting screen recording via foreground service...")
+
+            // Start the foreground service
+            val serviceIntent = Intent(context, ScreenRecordingService::class.java).apply {
+                action = ScreenRecordingService.ACTION_START
+                putExtra(ScreenRecordingService.EXTRA_RESULT_CODE, result.resultCode)
+                putExtra(ScreenRecordingService.EXTRA_DATA, result.data)
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceIntent)
+            } else {
+                context.startService(serviceIntent)
+            }
+
+            viewModel.startRecording()
+        } else {
+            Log.e("CameraScreen", "Screen recording permission denied")
+            viewModel.onRecordingFailed("Screen recording permission denied")
+        }
+    }
+
+    // Storage permission launcher for Android 9 and below
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            // Request screen capture permission
+            if (activity != null) {
+                val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
+                        as MediaProjectionManager
+                screenCaptureLauncher.launch(projectionManager.createScreenCaptureIntent())
+            }
+        } else {
+            viewModel.onRecognitionError("Storage permission required to save videos")
+        }
+    }
+
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        // Record button
         IconButton(
             onClick = {
-                if (cameraFacing.intValue == CameraSelector.LENS_FACING_BACK) {
-                    cameraFacing.intValue = CameraSelector.LENS_FACING_FRONT
+                Log.d("CameraScreen", "Record button clicked, isRecording=${recordingState.isRecording}")
+
+                if (recordingState.isRecording) {
+                    Log.d("CameraScreen", "Stopping recording via service...")
+
+                    // Stop recording via service
+                    val stopIntent = Intent(context, ScreenRecordingService::class.java).apply {
+                        action = ScreenRecordingService.ACTION_STOP
+                    }
+                    context.startService(stopIntent)
+                    viewModel.stopRecording()
                 } else {
-                    cameraFacing.intValue = CameraSelector.LENS_FACING_BACK
+                    Log.d("CameraScreen", "Starting recording flow...")
+                    // Check storage permission first (for Android 9 and below)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        // Android 10+ - No storage permission needed
+                        if (activity != null) {
+                            val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
+                                    as MediaProjectionManager
+                            val intent = projectionManager.createScreenCaptureIntent()
+                            Log.d("CameraScreen", "Launching screen capture intent")
+                            screenCaptureLauncher.launch(intent)
+                        } else {
+                            Log.e("CameraScreen", "Activity is null!")
+                        }
+                    } else {
+                        // Android 9 and below - need storage permission
+                        if (ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.WRITE_EXTERNAL_STORAGE
+                            ) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            if (activity != null) {
+                                val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
+                                        as MediaProjectionManager
+                                screenCaptureLauncher.launch(projectionManager.createScreenCaptureIntent())
+                            }
+                        } else {
+                            storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        }
+                    }
                 }
             },
             modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(16.dp)
+                .size(40.dp)
                 .background(
-                    Color.Black.copy(alpha = 0.6f),
-                    shape = RoundedCornerShape(50)
+                    if (recordingState.isRecording) Color.Red else Color.White,
+                    shape = CircleShape
                 )
         ) {
             Icon(
-                imageVector = Icons.Default.Cameraswitch,
-                contentDescription = "Switch Camera",
-                tint = Color.Cyan
+                imageVector = if (recordingState.isRecording) Icons.Default.Stop else Icons.Default.FiberManualRecord,
+                contentDescription = if (recordingState.isRecording) "Stop Recording" else "Start Recording",
+                tint = if (recordingState.isRecording) Color.White else Color.Red,
+                modifier = Modifier.size(16.dp)
             )
+        }
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        // Recording timer and status - compact version
+        Column(
+            horizontalAlignment = Alignment.Start
+        ) {
+            if (recordingState.isRecording) {
+                Text(
+                    text = recordingState.recordingTime,
+                    color = Color.Red,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                Text(
+                    text = "REC",
+                    color = Color.Red,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium,
+                    fontFamily = FontFamily.Monospace
+                )
+            } else {
+                Text(
+                    text = "READY",
+                    color = Color.Green,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+
+            // Show save location when not recording
+            if (!recordingState.isRecording) {
+                Text(
+                    text = "Gallery/CrimiCam",
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = 8.sp,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1
+                )
+            }
         }
     }
 }
@@ -88,12 +310,12 @@ private fun ScreenUI(viewModel: CameraViewModel) {
     Box(modifier = Modifier.fillMaxSize()) {
         Camera(viewModel)
 
-        // Show metrics when people are detected
+        // Show metrics when people are detected - adjusted padding for new layout
         DelayedVisibility(state.detectedFaces.isNotEmpty()) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp)
+                    .padding(top = 72.dp, start = 16.dp, end = 16.dp)
             ) {
                 Text(
                     text = "Recognition on ${state.detectedFaces.size} face(s)",
@@ -106,7 +328,7 @@ private fun ScreenUI(viewModel: CameraViewModel) {
 
                 Spacer(modifier = Modifier.weight(1f))
 
-                // Performance metrics
+                // Performance metrics - moved to bottom
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -127,9 +349,15 @@ private fun ScreenUI(viewModel: CameraViewModel) {
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Database: ${state.knownPeople.size} profiles\n" +
-                                    "Detected: ${state.detectedFaces.size}\n" +
-                                    "Identified: ${state.detectedFaces.count { it.personName != null }}",
+                            text = buildString {
+                                append("Database: ${state.knownPeople.size} profiles\n")
+                                append("Detected: ${state.detectedFaces.size}\n")
+                                append("Identified: ${state.detectedFaces.count { it.personName != null }}")
+                                if (state.recordingState.isRecording) {
+                                    append("\nRecording: ${state.recordingState.recordingTime}")
+                                }
+                                append("\nSave to: Gallery/CrimiCam")
+                            },
                             color = Color.White,
                             fontSize = 10.sp,
                             fontFamily = FontFamily.Monospace
@@ -146,7 +374,7 @@ private fun ScreenUI(viewModel: CameraViewModel) {
                 color = Color.White,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .padding(horizontal = 16.dp, vertical = 72.dp)
                     .background(Color.Red.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
                     .padding(12.dp),
                 textAlign = TextAlign.Center,
@@ -177,7 +405,7 @@ private fun Camera(viewModel: CameraViewModel) {
         if (isGranted) {
             cameraPermissionStatus.value = true
         } else {
-            cameraPermissionDialog()
+            cameraPermissionDialog(context)
         }
     }
 
@@ -253,7 +481,7 @@ fun RequestCameraPermissionContent(onRequestPermission: () -> Unit) {
     }
 }
 
-private fun cameraPermissionDialog() {
+private fun cameraPermissionDialog(context: Context) {
     createAlertDialog(
         "Camera Permission",
         "The facial recognition system cannot function without camera permission.",
@@ -263,7 +491,7 @@ private fun cameraPermissionDialog() {
             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         },
         onNegativeButtonClick = {
-            // Handle deny action - could close app or show info
+            // Handle deny action
         }
     )
 }
