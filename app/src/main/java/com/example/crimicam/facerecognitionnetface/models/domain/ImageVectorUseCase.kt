@@ -15,7 +15,6 @@ import kotlin.math.sqrt
 import kotlin.time.DurationUnit
 import kotlin.time.measureTimedValue
 
-@Single
 class ImageVectorUseCase(
     private val mediapipeFaceDetector: MediapipeFaceDetector,
     private val faceSpoofDetector: FaceSpoofDetector,

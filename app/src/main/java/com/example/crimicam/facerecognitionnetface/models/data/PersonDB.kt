@@ -13,7 +13,7 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.koin.core.annotation.Single
 
-@Single
+
 class PersonDB(
     private val currentUserId: String
 ) {

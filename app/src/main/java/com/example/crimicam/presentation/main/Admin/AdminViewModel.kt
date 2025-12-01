@@ -1,20 +1,21 @@
 package com.example.crimicam.presentation.main.Admin
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.crimicam.data.repository.CriminalsRepository
+import com.example.crimicam.data.model.Criminal
+import com.example.crimicam.facerecognitionnetface.models.domain.CriminalUseCase
 import com.example.crimicam.util.BitmapUtils
-import com.example.crimicam.util.Result
+import com.google.firebase.Timestamp
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+
 class AdminViewModel(
-    private val repository: CriminalsRepository = CriminalsRepository()
+    private val criminalUseCase: CriminalUseCase
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AdminState())
@@ -22,32 +23,55 @@ class AdminViewModel(
 
     init {
         loadCriminals()
+        refreshCriminalCount()
     }
 
-    fun loadCriminals() {
+    /**
+     * Get number of criminals in database
+     */
+    fun getNumCriminals(): Long = _state.value.criminalCount
+
+    /**
+     * Load all criminals with reactive updates
+     */
+    private fun loadCriminals() {
         viewModelScope.launch {
             _state.value = _state.value.copy(isLoading = true)
 
-            when (val result = repository.getAllCriminals()) {
-                is Result.Success -> {
+            try {
+                criminalUseCase.getAll().collect { criminals ->
                     _state.value = _state.value.copy(
                         isLoading = false,
-                        criminals = result.data
+                        criminals = criminals.sortedByDescending { it.createdAt },
+                        criminalCount = criminals.size.toLong()
                     )
                 }
-                is Result.Error -> {
-                    _state.value = _state.value.copy(
-                        isLoading = false,
-                        errorMessage = result.exception.message
-                    )
-                }
-                is Result.Loading -> {
-                    _state.value = _state.value.copy(isLoading = true)
-                }
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    errorMessage = e.message ?: "Failed to load criminals"
+                )
             }
         }
     }
 
+    /**
+     * Refresh criminal count from database
+     */
+    fun refreshCriminalCount() {
+        viewModelScope.launch {
+            try {
+                val count = criminalUseCase.refreshCount()
+                _state.value = _state.value.copy(criminalCount = count)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    /**
+     * Add a new criminal with face images
+     */
     fun addCriminal(
         context: Context,
         imageUris: List<Uri>,
@@ -77,7 +101,7 @@ class AdminViewModel(
             _state.value = _state.value.copy(isProcessing = true)
 
             try {
-                // Load all images from URIs
+                // 1. Load all images from URIs
                 val imageBitmaps = imageUris.mapNotNull { uri ->
                     BitmapUtils.getBitmapFromUri(context, uri)
                 }
@@ -90,8 +114,9 @@ class AdminViewModel(
                     return@launch
                 }
 
-                // Add criminal with multiple images
-                when (val result = repository.addCriminalWithImages(
+                // 2. Create Criminal object
+                val criminal = Criminal(
+                    id = "", // Will be auto-generated
                     firstName = firstName,
                     lastName = lastName,
                     middleName = middleName,
@@ -112,34 +137,197 @@ class AdminViewModel(
                     riskLevel = riskLevel,
                     isArmed = isArmed,
                     isDangerous = isDangerous,
-                    imageBitmaps = imageBitmaps,
-                    notes = notes
-                )) {
-                    is Result.Success -> {
-                        _state.value = _state.value.copy(
-                            isProcessing = false,
-                            criminals = listOf(result.data) + _state.value.criminals
-                        )
-                    }
-                    is Result.Error -> {
-                        _state.value = _state.value.copy(
-                            isProcessing = false,
-                            errorMessage = result.exception.message
-                        )
-                    }
-                    is Result.Loading -> {}
-                }
+                    notes = notes,
+                    imageCount = 0, // Will be updated after processing
+                    createdAt = Timestamp.now(),
+                    lastUpdated = Timestamp.now()
+                )
+
+                // 3. Add criminal with images
+                val criminalId = criminalUseCase.addCriminal(
+                    criminal = criminal,
+                    imageBitmaps = imageBitmaps
+                )
+
+                // Get updated criminal with correct image count
+                val addedCriminal = criminalUseCase.getCriminal(criminalId)
+
+                _state.value = _state.value.copy(
+                    isProcessing = false,
+                    successMessage = "Criminal added successfully with ${addedCriminal?.imageCount ?: 0} face images"
+                )
+                refreshCriminalCount()
 
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     isProcessing = false,
-                    errorMessage = e.message ?: "Unknown error occurred"
+                    errorMessage = e.message ?: "Failed to add criminal"
                 )
             }
         }
     }
 
+    /**
+     * Add additional images to an existing criminal
+     */
+    fun addCriminalImages(
+        context: Context,
+        criminalId: String,
+        imageUris: List<Uri>
+    ) {
+        viewModelScope.launch {
+            try {
+                val imageBitmaps = imageUris.mapNotNull { uri ->
+                    BitmapUtils.getBitmapFromUri(context, uri)
+                }
+
+                if (imageBitmaps.isEmpty()) {
+                    _state.value = _state.value.copy(
+                        errorMessage = "Failed to load images"
+                    )
+                    return@launch
+                }
+
+                val successfulImages = criminalUseCase.addCriminalImages(
+                    criminalId = criminalId,
+                    imageBitmaps = imageBitmaps
+                )
+
+                _state.value = _state.value.copy(
+                    successMessage = "Added $successfulImages new face images"
+                )
+
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    errorMessage = e.message ?: "Failed to add images"
+                )
+            }
+        }
+    }
+
+    /**
+     * Update criminal information
+     */
+    fun updateCriminal(criminalId: String, updates: Map<String, Any>) {
+        viewModelScope.launch {
+            try {
+                criminalUseCase.updateCriminal(criminalId, updates)
+                _state.value = _state.value.copy(
+                    successMessage = "Criminal updated successfully"
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    errorMessage = e.message ?: "Failed to update criminal"
+                )
+            }
+        }
+    }
+
+    /**
+     * Remove a criminal
+     */
+    fun removeCriminal(criminalId: String) {
+        viewModelScope.launch {
+            try {
+                criminalUseCase.removeCriminal(criminalId)
+                _state.value = _state.value.copy(
+                    successMessage = "Criminal removed successfully"
+                )
+                refreshCriminalCount()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    errorMessage = e.message ?: "Failed to remove criminal"
+                )
+            }
+        }
+    }
+
+    /**
+     * Search criminals by name
+     */
+    fun searchByName(firstName: String, lastName: String) {
+        viewModelScope.launch {
+            try {
+                val results = criminalUseCase.searchByName(firstName, lastName)
+                _state.value = _state.value.copy(criminals = results)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    errorMessage = e.message ?: "Search failed"
+                )
+            }
+        }
+    }
+
+    /**
+     * Filter by status
+     */
+    fun filterByStatus(status: String) {
+        viewModelScope.launch {
+            try {
+                val results = criminalUseCase.searchByStatus(status)
+                _state.value = _state.value.copy(criminals = results)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    errorMessage = e.message ?: "Filter failed"
+                )
+            }
+        }
+    }
+
+    /**
+     * Filter by risk level
+     */
+    fun filterByRiskLevel(riskLevel: String) {
+        viewModelScope.launch {
+            try {
+                val results = criminalUseCase.searchByRiskLevel(riskLevel)
+                _state.value = _state.value.copy(criminals = results)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    errorMessage = e.message ?: "Filter failed"
+                )
+            }
+        }
+    }
+
+    /**
+     * Reset filters (show all criminals)
+     */
+    fun resetFilters() {
+        loadCriminals()
+    }
+
+    /**
+     * Clear all criminals
+     */
+    fun clearAllCriminals() {
+        viewModelScope.launch {
+            try {
+                criminalUseCase.clearAll()
+                _state.value = _state.value.copy(
+                    successMessage = "All criminals cleared",
+                    criminals = emptyList(),
+                    criminalCount = 0L
+                )
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    errorMessage = e.message ?: "Failed to clear criminals"
+                )
+            }
+        }
+    }
+
+    /**
+     * Clear error message
+     */
     fun clearError() {
         _state.value = _state.value.copy(errorMessage = null)
+    }
+
+    /**
+     * Clear success message
+     */
+    fun clearSuccess() {
+        _state.value = _state.value.copy(successMessage = null)
     }
 }

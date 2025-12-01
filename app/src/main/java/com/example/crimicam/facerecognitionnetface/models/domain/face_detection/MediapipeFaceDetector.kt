@@ -22,7 +22,7 @@ import java.io.FileOutputStream
 
 // Utility class for interacting with Mediapipe's Face Detector
 // See https://ai.google.dev/edge/mediapipe/solutions/vision/face_detector/android
-@Single
+
 class MediapipeFaceDetector(
     private val context: Context,
 ) {

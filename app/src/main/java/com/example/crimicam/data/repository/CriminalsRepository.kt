@@ -1,16 +1,18 @@
 package com.example.crimicam.data.repository
 
 import android.graphics.Bitmap
-import com.example.crimicam.data.model.Criminal
 import com.example.crimicam.data.model.Crime
+import com.example.crimicam.data.model.Criminal
 import com.example.crimicam.data.model.CriminalImage
 import com.example.crimicam.data.model.Warrant
 import com.example.crimicam.util.ImageCompressor
 import com.example.crimicam.util.Result
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
 import kotlinx.coroutines.tasks.await
+import kotlin.math.sqrt
 
 class CriminalsRepository {
     private val auth = FirebaseAuth.getInstance()
@@ -53,8 +55,8 @@ class CriminalsRepository {
         phoneNumbers: List<String> = emptyList(),
 
         // Status
-        status: String, // Active, Arrested, Wanted, Released, Deceased
-        riskLevel: String, // Low, Medium, High, Extreme
+        status: String,
+        riskLevel: String,
         gangAffiliation: String = "",
         isArmed: Boolean = false,
         isDangerous: Boolean = false,
@@ -130,8 +132,8 @@ class CriminalsRepository {
                 createdByOfficerId = officerId,
                 lastUpdatedByOfficerId = officerId,
                 notes = notes,
-                createdAt = System.currentTimeMillis(),
-                updatedAt = System.currentTimeMillis()
+                createdAt = Timestamp.now(),
+                lastUpdated = Timestamp.now()
             )
 
             // Save to Firestore
@@ -152,7 +154,7 @@ class CriminalsRepository {
 
             val updatedCriminal = criminal.copy(
                 lastUpdatedByOfficerId = officerId,
-                updatedAt = System.currentTimeMillis()
+                lastUpdated = Timestamp.now()
             )
 
             criminalsCollection.document(criminal.id)
@@ -260,8 +262,8 @@ class CriminalsRepository {
                 createdByOfficerId = officerId,
                 lastUpdatedByOfficerId = officerId,
                 notes = notes,
-                createdAt = System.currentTimeMillis(),
-                updatedAt = System.currentTimeMillis()
+                createdAt = Timestamp.now(),
+                lastUpdated = Timestamp.now()
             )
 
             // Save criminal document first
@@ -295,12 +297,13 @@ class CriminalsRepository {
 
             // Update criminal's image count
             val criminalDoc = criminalsCollection.document(criminalId).get().await()
-            val currentCount = criminalDoc.getLong("image_count")?.toInt() ?: 0
+            val currentCount = criminalDoc.getLong("imageCount")?.toInt() ?: 0
 
             criminalsCollection.document(criminalId).update(
                 mapOf(
-                    "image_count" to currentCount + 1,
-                    "updated_at" to System.currentTimeMillis()
+                    "imageCount" to (currentCount + 1),
+                    "lastUpdated" to Timestamp.now(),
+                    "lastUpdatedByOfficerId" to officerId
                 )
             ).await()
 
@@ -331,7 +334,7 @@ class CriminalsRepository {
             imageBase64 = imageBase64,
             imageType = imageType,
             createdByOfficerId = officerId,
-            createdAt = System.currentTimeMillis()
+            createdAt = Timestamp.now()
         )
 
         // Save to subcollection
@@ -350,7 +353,7 @@ class CriminalsRepository {
             val collection = getCriminalImagesCollection(criminalId)
 
             val snapshot = collection
-                .orderBy("created_at", Query.Direction.ASCENDING)
+                .orderBy("createdAt", Query.Direction.ASCENDING)
                 .get()
                 .await()
 
@@ -372,7 +375,7 @@ class CriminalsRepository {
             val collection = getCriminalImagesCollection(criminalId)
 
             val snapshot = collection
-                .whereEqualTo("image_type", "primary")
+                .whereEqualTo("imageType", "primary")
                 .limit(1)
                 .get()
                 .await()
@@ -427,7 +430,12 @@ class CriminalsRepository {
                 query = query.whereEqualTo("firstName", firstName)
             }
 
-            val snapshot = query.limit(limit.toLong()).get().await()
+            val snapshot = query
+                .orderBy("lastUpdated", Query.Direction.DESCENDING)
+                .limit(limit.toLong())
+                .get()
+                .await()
+
             val criminals = snapshot.documents.mapNotNull {
                 it.toObject(Criminal::class.java)
             }
@@ -459,7 +467,7 @@ class CriminalsRepository {
             }
 
             val snapshot = query
-                .orderBy("updatedAt", Query.Direction.DESCENDING)
+                .orderBy("lastUpdated", Query.Direction.DESCENDING)
                 .get()
                 .await()
 
@@ -476,7 +484,7 @@ class CriminalsRepository {
     suspend fun getAllCriminals(limit: Int = 100): Result<List<Criminal>> {
         return try {
             val snapshot = criminalsCollection
-                .orderBy("updatedAt", Query.Direction.DESCENDING)
+                .orderBy("lastUpdated", Query.Direction.DESCENDING)
                 .limit(limit.toLong())
                 .get()
                 .await()
@@ -499,7 +507,7 @@ class CriminalsRepository {
         return try {
             val snapshot = criminalsCollection
                 .whereIn("riskLevel", listOf("High", "Extreme"))
-                .orderBy("updatedAt", Query.Direction.DESCENDING)
+                .orderBy("lastUpdated", Query.Direction.DESCENDING)
                 .get()
                 .await()
 
@@ -524,7 +532,7 @@ class CriminalsRepository {
         crimeCategory: String,
         description: String,
         criminalCodeSection: String = "",
-        severity: String, // Misdemeanor, Felony
+        severity: String,
 
         // Location & Time
         crimeDate: String,
@@ -542,7 +550,7 @@ class CriminalsRepository {
         caseNumber: String = "",
         arrestDate: String = "",
         arrestLocation: String = "",
-        status: String = "Under Investigation", // Under Investigation, Charged, Convicted
+        status: String = "Under Investigation",
 
         notes: String = ""
     ): Result<Crime> {
@@ -587,8 +595,8 @@ class CriminalsRepository {
 
                 notes = notes,
                 createdByOfficerId = officerId,
-                createdAt = System.currentTimeMillis(),
-                updatedAt = System.currentTimeMillis()
+                createdAt = Timestamp.now(),
+                updatedAt = Timestamp.now()
             )
 
             crimesCollection.document(docId)
@@ -621,7 +629,7 @@ class CriminalsRepository {
 
     suspend fun updateCrime(crime: Crime): Result<Crime> {
         return try {
-            val updatedCrime = crime.copy(updatedAt = System.currentTimeMillis())
+            val updatedCrime = crime.copy(updatedAt = Timestamp.now())
 
             crimesCollection.document(crime.id)
                 .set(updatedCrime)
@@ -641,7 +649,7 @@ class CriminalsRepository {
         criminalId: String,
         subjectId: String,
         crimeId: String,
-        warrantType: String, // Arrest Warrant, Search Warrant, Bench Warrant
+        warrantType: String,
         warrantNumber: String,
         issueDate: String,
         issuingCourt: String,
@@ -671,7 +679,8 @@ class CriminalsRepository {
                 bailAmount = bailAmount,
                 notes = notes,
                 createdByOfficerId = officerId,
-                createdAt = System.currentTimeMillis()
+                createdAt = Timestamp.now(),
+                updatedAt = Timestamp.now()
             )
 
             warrantsCollection.document(docId)
@@ -726,6 +735,34 @@ class CriminalsRepository {
         }
     }
 
+    suspend fun updateWarrantStatus(warrantId: String, newStatus: String): Result<Warrant> {
+        return try {
+            val officerId = auth.currentUser?.uid
+                ?: return Result.Error(Exception("Officer not logged in"))
+
+            val warrantDoc = warrantsCollection.document(warrantId).get().await()
+            val warrant = warrantDoc.toObject(Warrant::class.java)
+                ?: return Result.Error(Exception("Warrant not found"))
+
+            val updatedWarrant = warrant.copy(
+                warrantStatus = newStatus,
+                executingOfficerId = officerId,
+                executionDate = if (newStatus == "Executed") {
+                    java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date())
+                } else warrant.executionDate,
+                updatedAt = Timestamp.now()
+            )
+
+            warrantsCollection.document(warrantId)
+                .set(updatedWarrant)
+                .await()
+
+            Result.Success(updatedWarrant)
+        } catch (e: Exception) {
+            Result.Error(e)
+        }
+    }
+
     // ============================================
     // SEARCH AUDIT LOGGING
     // ============================================
@@ -743,22 +780,21 @@ class CriminalsRepository {
             val docId = searchAuditCollection.document().id
 
             val auditLog = hashMapOf(
-                "search_id" to docId,
-                "officer_id" to officerId,
-                "timestamp" to System.currentTimeMillis(),
-                "search_type" to searchType,
-                "search_parameters" to searchParams,
-                "results_count" to resultsCount,
-                "matched_subject_ids" to matchedSubjectIds,
-                "search_reason" to searchReason,
-                "case_number" to caseNumber
+                "searchId" to docId,
+                "officerId" to officerId,
+                "timestamp" to Timestamp.now(),
+                "searchType" to searchType,
+                "searchParameters" to searchParams,
+                "resultsCount" to resultsCount,
+                "matchedSubjectIds" to matchedSubjectIds,
+                "searchReason" to searchReason,
+                "caseNumber" to caseNumber
             )
 
             searchAuditCollection.document(docId)
                 .set(auditLog)
                 .await()
         } catch (e: Exception) {
-            // Log error but don't fail the main operation
             e.printStackTrace()
         }
     }
@@ -772,7 +808,7 @@ class CriminalsRepository {
                 .orderBy("timestamp", Query.Direction.DESCENDING)
 
             if (officerId != null) {
-                query = query.whereEqualTo("officer_id", officerId)
+                query = query.whereEqualTo("officerId", officerId)
             }
 
             val snapshot = query.limit(limit.toLong()).get().await()
@@ -793,9 +829,7 @@ class CriminalsRepository {
         threshold: Float = 0.85f
     ): Result<List<Pair<Criminal, Float>>> {
         return try {
-            // Get all criminals with face features
             val snapshot = criminalsCollection
-                .whereNotEqualTo("faceFeatures", null)
                 .get()
                 .await()
 
@@ -803,7 +837,6 @@ class CriminalsRepository {
                 it.toObject(Criminal::class.java)
             }
 
-            // Calculate similarity scores (cosine similarity)
             val matches = criminals.mapNotNull { criminal ->
                 val storedFeatures = criminal.faceFeatures
                 if (storedFeatures.isNotEmpty()) {
@@ -814,7 +847,6 @@ class CriminalsRepository {
                 } else null
             }.sortedByDescending { it.second }
 
-            // Log face recognition search
             logSearch(
                 searchType = "FACE_RECOGNITION",
                 searchParams = mapOf("threshold" to threshold.toString()),
@@ -836,7 +868,12 @@ class CriminalsRepository {
         var norm1 = 0f
         var norm2 = 0f
 
-        features1.forEach { (key, value1) ->
+        val commonKeys = features1.keys.intersect(features2.keys)
+
+        if (commonKeys.isEmpty()) return 0f
+
+        commonKeys.forEach { key ->
+            val value1 = features1[key] ?: 0f
             val value2 = features2[key] ?: 0f
             dotProduct += value1 * value2
             norm1 += value1 * value1
@@ -844,6 +881,37 @@ class CriminalsRepository {
         }
 
         return if (norm1 == 0f || norm2 == 0f) 0f
-        else dotProduct / (kotlin.math.sqrt(norm1) * kotlin.math.sqrt(norm2))
+        else dotProduct / (sqrt(norm1) * sqrt(norm2))
+    }
+
+    // ============================================
+    // STATISTICS & ANALYTICS
+    // ============================================
+
+    suspend fun getCriminalStats(): Result<Map<String, Any>> {
+        return try {
+            val wantedCount = getWantedCriminals().let {
+                if (it is Result.Success) it.data.size else 0
+            }
+            val highRiskCount = getHighRiskCriminals().let {
+                if (it is Result.Success) it.data.size else 0
+            }
+            val totalCount = getAllCriminals().let {
+                if (it is Result.Success) it.data.size else 0
+            }
+
+            val stats = mapOf(
+                "totalCriminals" to totalCount,
+                "wantedCriminals" to wantedCount,
+                "highRiskCriminals" to highRiskCount,
+                "activeWarrants" to getActiveWarrants().let {
+                    if (it is Result.Success) it.data.size else 0
+                }
+            )
+
+            Result.Success(stats)
+        } catch (e: Exception) {
+            Result.Error(e)
+        }
     }
 }

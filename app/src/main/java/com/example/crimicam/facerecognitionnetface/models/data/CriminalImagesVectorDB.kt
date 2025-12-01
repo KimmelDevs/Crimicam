@@ -1,7 +1,6 @@
 package com.example.crimicam.facerecognitionnetface.models.data
 
 import com.google.firebase.Timestamp
-import com.google.firebase.firestore.CollectionReference
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -15,28 +14,24 @@ import kotlinx.coroutines.withContext
 import org.koin.core.annotation.Single
 import kotlin.math.sqrt
 
-class ImagesVectorDB(
-    private val currentUserId: String
-) {
+/**
+ * Manages face embeddings for criminals in a global collection
+ * (not user-specific, accessible by all users)
+ */
+class CriminalImagesVectorDB {
     private val firestore = FirebaseFirestore.getInstance()
 
-    // Dynamic subcollection path based on current user
-    private fun getImagesCollection(): CollectionReference {
-        return firestore
-            .collection("users")
-            .document(currentUserId)
-            .collection("face_images")
-    }
+    // Global collection for criminal face images
+    private val imagesCollection = firestore.collection("criminal_face_images")
 
     suspend fun addFaceImageRecord(record: FaceImageRecord): String {
         return withContext(Dispatchers.IO) {
             try {
                 if (record.recordID.isEmpty()) {
-                    // Auto-generate ID and return it
-                    val docRef = getImagesCollection().add(record).await()
+                    val docRef = imagesCollection.add(record).await()
                     docRef.id
                 } else {
-                    getImagesCollection().document(record.recordID).set(record).await()
+                    imagesCollection.document(record.recordID).set(record).await()
                     record.recordID
                 }
             } catch (e: Exception) {
@@ -52,14 +47,13 @@ class ImagesVectorDB(
     ): FaceImageRecord? {
         return withContext(Dispatchers.IO) {
             try {
-                // Firestore doesn't support native vector search, so we always use linear search
                 val allRecords = getAllFaceImageRecords()
 
                 if (allRecords.isEmpty()) {
                     return@withContext null
                 }
 
-                // Use parallel processing for better performance with large datasets
+                // Use parallel processing for better performance
                 val numThreads = 4
                 val batchSize = if (allRecords.isEmpty()) 1 else allRecords.size / numThreads
                 val batches = allRecords.chunked(batchSize.coerceAtLeast(1))
@@ -68,7 +62,7 @@ class ImagesVectorDB(
                     .map { batch ->
                         async(Dispatchers.Default) {
                             var bestMatch: FaceImageRecord? = null
-                            var bestSimilarity = -1.0f // Cosine similarity ranges from -1 to 1
+                            var bestSimilarity = -1.0f
 
                             for (record in batch) {
                                 val recordEmbedding = record.faceEmbedding.toFloatArray()
@@ -83,11 +77,10 @@ class ImagesVectorDB(
                         }
                     }.awaitAll()
 
-                // Find the best match across all batches
                 val (bestRecord, bestScore) = results.maxByOrNull { it.second } ?: return@withContext null
 
-                // Apply confidence threshold (you can adjust this)
-                if (bestScore > 0.6f) { // 0.6 is a reasonable threshold for face recognition
+                // Criminal face recognition threshold (slightly higher for security)
+                if (bestScore > 0.65f) {
                     bestRecord
                 } else {
                     null
@@ -102,7 +95,7 @@ class ImagesVectorDB(
     suspend fun getNearestEmbeddings(
         embedding: FloatArray,
         limit: Int = 5,
-        minConfidence: Float = 0.5f
+        minConfidence: Float = 0.6f
     ): List<Pair<FaceImageRecord, Float>> {
         return withContext(Dispatchers.IO) {
             try {
@@ -127,13 +120,13 @@ class ImagesVectorDB(
 
     private suspend fun getAllFaceImageRecords(): List<FaceImageRecord> {
         return try {
-            getImagesCollection()
+            imagesCollection
                 .get()
                 .await()
                 .documents
                 .mapNotNull { document ->
                     document.toObject(FaceImageRecord::class.java)?.copy(
-                        recordID = document.id // Ensure the document ID is set
+                        recordID = document.id
                     )
                 }
         } catch (e: Exception) {
@@ -143,7 +136,7 @@ class ImagesVectorDB(
     }
 
     fun getAllFaceImageRecordsFlow(): Flow<List<FaceImageRecord>> = callbackFlow {
-        val listenerRegistration = getImagesCollection().addSnapshotListener { snapshot, error ->
+        val listenerRegistration = imagesCollection.addSnapshotListener { snapshot, error ->
             if (error != null) {
                 close(error)
                 return@addSnapshotListener
@@ -164,11 +157,11 @@ class ImagesVectorDB(
         }
     }.flowOn(Dispatchers.IO)
 
-    suspend fun getFaceRecordsByPersonID(personID: String): List<FaceImageRecord> {
+    suspend fun getFaceRecordsByPersonID(criminalId: String): List<FaceImageRecord> {
         return withContext(Dispatchers.IO) {
             try {
-                getImagesCollection()
-                    .whereEqualTo("personID", personID)
+                imagesCollection
+                    .whereEqualTo("personID", criminalId)
                     .get()
                     .await()
                     .documents
@@ -184,15 +177,14 @@ class ImagesVectorDB(
         }
     }
 
-    suspend fun removeFaceRecordsWithPersonID(personID: String) {
+    suspend fun removeFaceRecordsWithPersonID(criminalId: String) {
         withContext(Dispatchers.IO) {
             try {
-                val querySnapshot = getImagesCollection()
-                    .whereEqualTo("personID", personID)
+                val querySnapshot = imagesCollection
+                    .whereEqualTo("personID", criminalId)
                     .get()
                     .await()
 
-                // Batch delete for efficiency
                 val batch = firestore.batch()
                 querySnapshot.documents.forEach { document ->
                     batch.delete(document.reference)
@@ -208,7 +200,7 @@ class ImagesVectorDB(
     suspend fun removeFaceRecord(recordID: String) {
         withContext(Dispatchers.IO) {
             try {
-                getImagesCollection().document(recordID).delete().await()
+                imagesCollection.document(recordID).delete().await()
             } catch (e: Exception) {
                 e.printStackTrace()
                 throw e
@@ -219,9 +211,8 @@ class ImagesVectorDB(
     suspend fun clearAllFaceRecords() {
         withContext(Dispatchers.IO) {
             try {
-                val allRecords = getImagesCollection().get().await()
+                val allRecords = imagesCollection.get().await()
 
-                // Delete in batches of 500 (Firestore limit)
                 val batches = allRecords.documents.chunked(500)
 
                 batches.forEach { batch ->
@@ -238,22 +229,10 @@ class ImagesVectorDB(
         }
     }
 
-    suspend fun getAllUniquePersonNames(): List<String> {
-        return withContext(Dispatchers.IO) {
-            try {
-                val allRecords = getAllFaceImageRecords()
-                allRecords.map { it.personName }.distinct()
-            } catch (e: Exception) {
-                e.printStackTrace()
-                emptyList()
-            }
-        }
-    }
-
     suspend fun getFaceRecordCount(): Long {
         return withContext(Dispatchers.IO) {
             try {
-                getImagesCollection().get().await().size().toLong()
+                imagesCollection.get().await().size().toLong()
             } catch (e: Exception) {
                 e.printStackTrace()
                 0L
@@ -261,11 +240,11 @@ class ImagesVectorDB(
         }
     }
 
-    suspend fun getPersonFaceRecordCount(personID: String): Long {
+    suspend fun getPersonFaceRecordCount(criminalId: String): Long {
         return withContext(Dispatchers.IO) {
             try {
-                getImagesCollection()
-                    .whereEqualTo("personID", personID)
+                imagesCollection
+                    .whereEqualTo("personID", criminalId)
                     .get()
                     .await()
                     .size()
@@ -277,10 +256,7 @@ class ImagesVectorDB(
         }
     }
 
-    private fun cosineSimilarity(
-        x1: FloatArray,
-        x2: FloatArray,
-    ): Float {
+    private fun cosineSimilarity(x1: FloatArray, x2: FloatArray): Float {
         require(x1.size == x2.size) { "Embedding dimensions must match" }
 
         var dotProduct = 0.0f
@@ -301,24 +277,5 @@ class ImagesVectorDB(
         } else {
             0.0f
         }
-    }
-
-    private fun euclideanDistance(
-        x1: FloatArray,
-        x2: FloatArray,
-    ): Float {
-        require(x1.size == x2.size) { "Embedding dimensions must match" }
-
-        var sum = 0.0f
-        for (i in x1.indices) {
-            val diff = x1[i] - x2[i]
-            sum += diff * diff
-        }
-        return sqrt(sum)
-    }
-
-    // Utility function to convert distance to similarity score
-    private fun distanceToSimilarity(distance: Float, maxDistance: Float = 2.0f): Float {
-        return 1.0f - (distance / maxDistance).coerceIn(0.0f, 1.0f)
     }
 }
