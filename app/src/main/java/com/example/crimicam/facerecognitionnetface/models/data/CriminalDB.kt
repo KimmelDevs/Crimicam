@@ -1,7 +1,7 @@
 package com.example.crimicam.facerecognitionnetface.models.data
 
-import com.example.crimicam.data.model.Criminal
 import com.google.firebase.Timestamp
+import com.google.firebase.firestore.CollectionReference
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
@@ -13,87 +13,41 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.koin.core.annotation.Single
 
+/**
+ * Global criminal records database
+ * Uses collection: "criminals"
+ * Pairs with: CriminalImagesVectorDB (global "criminal_face_images")
+ */
+@Single
 class CriminalDB {
     private val firestore = FirebaseFirestore.getInstance()
-    private val criminalsCollection = firestore.collection("criminals")
+
+    // Global collection - NOT a subcollection
+    private fun getCriminalsCollection(): CollectionReference {
+        return firestore.collection("criminals")
+    }
 
     /**
-     * Add a new criminal to the database
-     * Returns the auto-generated criminal ID
+     * Add a new criminal record
+     * @return The auto-generated criminal ID
      */
-    suspend fun addCriminal(criminal: Criminal): String {
+    suspend fun addCriminalRecord(criminal: CriminalRecord): String {
         return withContext(Dispatchers.IO) {
             try {
-                val criminalWithTimestamp = criminal.copy(
-                    createdAt = criminal.createdAt ?: Timestamp.now(),
+                val criminalData = criminal.copy(
+                    createdAt = Timestamp.now(),
                     lastUpdated = Timestamp.now()
                 )
 
-                if (criminal.id.isEmpty()) {
+                if (criminal.criminalID.isEmpty()) {
                     // Auto-generate ID
-                    val docRef = criminalsCollection.add(criminalWithTimestamp).await()
+                    val docRef = getCriminalsCollection().add(criminalData).await()
                     docRef.id
                 } else {
-                    criminalsCollection.document(criminal.id).set(criminalWithTimestamp).await()
-                    criminal.id
+                    // Use provided ID
+                    getCriminalsCollection().document(criminal.criminalID).set(criminalData).await()
+                    criminal.criminalID
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                throw e
-            }
-        }
-    }
-
-    /**
-     * Update an existing criminal's data
-     */
-    suspend fun updateCriminal(criminalId: String, updates: Map<String, Any>) {
-        withContext(Dispatchers.IO) {
-            try {
-                val updatesWithTimestamp = updates.toMutableMap()
-                updatesWithTimestamp["lastUpdated"] = Timestamp.now()
-
-                criminalsCollection.document(criminalId)
-                    .update(updatesWithTimestamp)
-                    .await()
-            } catch (e: Exception) {
-                e.printStackTrace()
-                throw e
-            }
-        }
-    }
-
-    /**
-     * Increment the image count for a criminal atomically
-     */
-    suspend fun incrementImageCount(criminalId: String) {
-        withContext(Dispatchers.IO) {
-            try {
-                criminalsCollection.document(criminalId).update(
-                    mapOf(
-                        "imageCount" to FieldValue.increment(1),
-                        "lastUpdated" to Timestamp.now()
-                    )
-                ).await()
-            } catch (e: Exception) {
-                e.printStackTrace()
-                throw e
-            }
-        }
-    }
-
-    /**
-     * Decrement the image count for a criminal atomically
-     */
-    suspend fun decrementImageCount(criminalId: String) {
-        withContext(Dispatchers.IO) {
-            try {
-                criminalsCollection.document(criminalId).update(
-                    mapOf(
-                        "imageCount" to FieldValue.increment(-1),
-                        "lastUpdated" to Timestamp.now()
-                    )
-                ).await()
             } catch (e: Exception) {
                 e.printStackTrace()
                 throw e
@@ -104,13 +58,14 @@ class CriminalDB {
     /**
      * Get a single criminal by ID
      */
-    suspend fun getCriminal(criminalId: String): Criminal? {
+    suspend fun getCriminalRecord(criminalId: String): CriminalRecord? {
         return withContext(Dispatchers.IO) {
             try {
-                val document = criminalsCollection.document(criminalId).get().await()
-                document.toObject(Criminal::class.java)?.copy(
-                    id = document.id
-                )
+                getCriminalsCollection()
+                    .document(criminalId)
+                    .get()
+                    .await()
+                    .toObject(CriminalRecord::class.java)?.copy(criminalID = criminalId)
             } catch (e: Exception) {
                 e.printStackTrace()
                 null
@@ -119,25 +74,22 @@ class CriminalDB {
     }
 
     /**
-     * Get all criminals as a Flow (reactive)
+     * Get all criminals as a reactive Flow
      */
-    fun getAll(): Flow<List<Criminal>> = callbackFlow {
-        val listenerRegistration = criminalsCollection
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    close(error)
-                    return@addSnapshotListener
-                }
-
-                if (snapshot != null) {
-                    val criminals = snapshot.documents.mapNotNull { document ->
-                        document.toObject(Criminal::class.java)?.copy(
-                            id = document.id
-                        )
-                    }
-                    trySend(criminals)
-                }
+    fun getAll(): Flow<List<CriminalRecord>> = callbackFlow {
+        val listenerRegistration = getCriminalsCollection().addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                close(error)
+                return@addSnapshotListener
             }
+
+            if (snapshot != null) {
+                val criminals = snapshot.documents.mapNotNull { document ->
+                    document.toObject(CriminalRecord::class.java)?.copy(criminalID = document.id)
+                }
+                trySend(criminals)
+            }
+        }
 
         awaitClose {
             listenerRegistration.remove()
@@ -145,17 +97,18 @@ class CriminalDB {
     }.flowOn(Dispatchers.IO)
 
     /**
-     * Get all criminals as a list (one-time fetch)
+     * Get all criminals as a one-time fetch
      */
-    suspend fun getAllOnce(): List<Criminal> {
+    suspend fun getAllOnce(): List<CriminalRecord> {
         return withContext(Dispatchers.IO) {
             try {
-                val snapshot = criminalsCollection.get().await()
-                snapshot.documents.mapNotNull { document ->
-                    document.toObject(Criminal::class.java)?.copy(
-                        id = document.id
-                    )
-                }
+                getCriminalsCollection()
+                    .get()
+                    .await()
+                    .documents
+                    .mapNotNull { document ->
+                        document.toObject(CriminalRecord::class.java)?.copy(criminalID = document.id)
+                    }
             } catch (e: Exception) {
                 e.printStackTrace()
                 emptyList()
@@ -164,26 +117,18 @@ class CriminalDB {
     }
 
     /**
-     * Get the total count of criminals in the database
+     * Update a criminal record
      */
-    suspend fun getCount(): Long {
-        return withContext(Dispatchers.IO) {
-            try {
-                criminalsCollection.get().await().size().toLong()
-            } catch (e: Exception) {
-                e.printStackTrace()
-                0L
-            }
-        }
-    }
-
-    /**
-     * Remove a criminal from the database
-     */
-    suspend fun removeCriminal(criminalId: String) {
+    suspend fun updateCriminalRecord(criminalId: String, updates: Map<String, Any>) {
         withContext(Dispatchers.IO) {
             try {
-                criminalsCollection.document(criminalId).delete().await()
+                val updateMap = updates.toMutableMap()
+                updateMap["lastUpdated"] = Timestamp.now()
+
+                getCriminalsCollection()
+                    .document(criminalId)
+                    .update(updateMap)
+                    .await()
             } catch (e: Exception) {
                 e.printStackTrace()
                 throw e
@@ -192,22 +137,80 @@ class CriminalDB {
     }
 
     /**
-     * Search for criminals by name
+     * Increment the image count for a criminal
      */
-    suspend fun searchByName(firstName: String, lastName: String): List<Criminal> {
+    suspend fun incrementImageCount(criminalId: String) {
+        withContext(Dispatchers.IO) {
+            try {
+                getCriminalsCollection()
+                    .document(criminalId)
+                    .update(
+                        mapOf(
+                            "numImages" to FieldValue.increment(1), // Changed from imageCount to numImages
+                            "lastUpdated" to Timestamp.now()
+                        )
+                    )
+                    .await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                throw e
+            }
+        }
+    }
+
+    /**
+     * Decrement the image count for a criminal
+     */
+    suspend fun decrementImageCount(criminalId: String) {
+        withContext(Dispatchers.IO) {
+            try {
+                getCriminalsCollection()
+                    .document(criminalId)
+                    .update(
+                        mapOf(
+                            "numImages" to FieldValue.increment(-1), // Changed from imageCount to numImages
+                            "lastUpdated" to Timestamp.now()
+                        )
+                    )
+                    .await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                throw e
+            }
+        }
+    }
+
+    /**
+     * Remove a criminal record
+     */
+    suspend fun removeCriminalRecord(criminalId: String) {
+        withContext(Dispatchers.IO) {
+            try {
+                getCriminalsCollection()
+                    .document(criminalId)
+                    .delete()
+                    .await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                throw e
+            }
+        }
+    }
+
+    /**
+     * Search criminals by name (uses criminalName field)
+     */
+    suspend fun searchByName(criminalName: String): List<CriminalRecord> {
         return withContext(Dispatchers.IO) {
             try {
-                val snapshot = criminalsCollection
-                    .whereEqualTo("firstName", firstName)
-                    .whereEqualTo("lastName", lastName)
+                getCriminalsCollection()
+                    .whereEqualTo("criminalName", criminalName)
                     .get()
                     .await()
-
-                snapshot.documents.mapNotNull { document ->
-                    document.toObject(Criminal::class.java)?.copy(
-                        id = document.id
-                    )
-                }
+                    .documents
+                    .mapNotNull { document ->
+                        document.toObject(CriminalRecord::class.java)?.copy(criminalID = document.id)
+                    }
             } catch (e: Exception) {
                 e.printStackTrace()
                 emptyList()
@@ -216,44 +219,19 @@ class CriminalDB {
     }
 
     /**
-     * Search criminals by status
+     * Search criminals by danger level
      */
-    suspend fun searchByStatus(status: String): List<Criminal> {
+    suspend fun searchByDangerLevel(dangerLevel: String): List<CriminalRecord> {
         return withContext(Dispatchers.IO) {
             try {
-                val snapshot = criminalsCollection
-                    .whereEqualTo("status", status)
+                getCriminalsCollection()
+                    .whereEqualTo("dangerLevel", dangerLevel)
                     .get()
                     .await()
-
-                snapshot.documents.mapNotNull { document ->
-                    document.toObject(Criminal::class.java)?.copy(
-                        id = document.id
-                    )
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                emptyList()
-            }
-        }
-    }
-
-    /**
-     * Search criminals by risk level
-     */
-    suspend fun searchByRiskLevel(riskLevel: String): List<Criminal> {
-        return withContext(Dispatchers.IO) {
-            try {
-                val snapshot = criminalsCollection
-                    .whereEqualTo("riskLevel", riskLevel)
-                    .get()
-                    .await()
-
-                snapshot.documents.mapNotNull { document ->
-                    document.toObject(Criminal::class.java)?.copy(
-                        id = document.id
-                    )
-                }
+                    .documents
+                    .mapNotNull { document ->
+                        document.toObject(CriminalRecord::class.java)?.copy(criminalID = document.id)
+                    }
             } catch (e: Exception) {
                 e.printStackTrace()
                 emptyList()
@@ -264,16 +242,14 @@ class CriminalDB {
     /**
      * Check if a criminal with the given name exists
      */
-    suspend fun existsByName(firstName: String, lastName: String): Boolean {
+    suspend fun existsByName(criminalName: String): Boolean {
         return withContext(Dispatchers.IO) {
             try {
-                val snapshot = criminalsCollection
-                    .whereEqualTo("firstName", firstName)
-                    .whereEqualTo("lastName", lastName)
+                val snapshot = getCriminalsCollection()
+                    .whereEqualTo("criminalName", criminalName)
                     .limit(1)
                     .get()
                     .await()
-
                 !snapshot.isEmpty
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -283,15 +259,33 @@ class CriminalDB {
     }
 
     /**
-     * Clear all criminals from the database
+     * Get the total count of criminals
+     */
+    suspend fun getCount(): Long {
+        return withContext(Dispatchers.IO) {
+            try {
+                getCriminalsCollection()
+                    .get()
+                    .await()
+                    .size()
+                    .toLong()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                0L
+            }
+        }
+    }
+
+    /**
+     * Clear all criminal records
      */
     suspend fun clearAll() {
         withContext(Dispatchers.IO) {
             try {
-                val snapshot = criminalsCollection.get().await()
+                val allRecords = getCriminalsCollection().get().await()
 
                 // Delete in batches of 500 (Firestore limit)
-                val batches = snapshot.documents.chunked(500)
+                val batches = allRecords.documents.chunked(500)
 
                 batches.forEach { batch ->
                     val deleteBatch = firestore.batch()
@@ -303,6 +297,48 @@ class CriminalDB {
             } catch (e: Exception) {
                 e.printStackTrace()
                 throw e
+            }
+        }
+    }
+
+    /**
+     * Search criminals by active status
+     */
+    suspend fun searchByActiveStatus(isActive: Boolean): List<CriminalRecord> {
+        return withContext(Dispatchers.IO) {
+            try {
+                getCriminalsCollection()
+                    .whereEqualTo("isActive", isActive)
+                    .get()
+                    .await()
+                    .documents
+                    .mapNotNull { document ->
+                        document.toObject(CriminalRecord::class.java)?.copy(criminalID = document.id)
+                    }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                emptyList()
+            }
+        }
+    }
+
+    /**
+     * Get criminals by crime type
+     */
+    suspend fun searchByCrime(crime: String): List<CriminalRecord> {
+        return withContext(Dispatchers.IO) {
+            try {
+                getCriminalsCollection()
+                    .whereArrayContains("crimes", crime)
+                    .get()
+                    .await()
+                    .documents
+                    .mapNotNull { document ->
+                        document.toObject(CriminalRecord::class.java)?.copy(criminalID = document.id)
+                    }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                emptyList()
             }
         }
     }

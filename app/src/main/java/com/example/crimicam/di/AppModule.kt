@@ -1,11 +1,10 @@
 package com.example.crimicam.di
 
 import com.example.crimicam.auth.UserSessionManager
-import com.example.crimicam.data.repository.CriminalsRepository
 import com.example.crimicam.facerecognitionnetface.models.data.CriminalDB
 import com.example.crimicam.facerecognitionnetface.models.data.CriminalImagesVectorDB
 import com.example.crimicam.facerecognitionnetface.models.data.ImagesVectorDB
-import com.example.crimicam.facerecognitionnetface.models.data.PersonDB
+import com.example.crimicam.facerecognitionnetface.models.domain.CriminalImageVectorUseCase
 import com.example.crimicam.facerecognitionnetface.models.domain.CriminalUseCase
 import com.example.crimicam.facerecognitionnetface.models.domain.ImageVectorUseCase
 import com.example.crimicam.facerecognitionnetface.models.domain.PersonUseCase
@@ -30,25 +29,29 @@ val appModule = module {
     // USER-SPECIFIC DATABASE LAYERS (Subcollections)
     // ============================================
 
-    // PersonDB and ImagesVectorDB are user-specific (for known people)
+    // PersonUseCase - user-specific (for known people)
     factory {
-        PersonDB(currentUserId = get<UserSessionManager>().getCurrentUserId())
+        PersonUseCase(currentUserId = get<UserSessionManager>().getCurrentUserId())
     }
 
+    // ImagesVectorDB - user-specific (for known people face images)
     factory {
         ImagesVectorDB(currentUserId = get<UserSessionManager>().getCurrentUserId())
     }
 
     // ============================================
-    // GLOBAL DATABASE LAYERS (For Criminals - Shared)
+    // GLOBAL DATABASE LAYERS (For Criminals - Shared Across All Users)
     // ============================================
 
-    // CriminalDB and CriminalImagesVectorDB are GLOBAL (shared across all officers)
-    single { CriminalDB() }
-    single { CriminalImagesVectorDB() }
+    // CriminalDB - GLOBAL (criminal records database)
+    single {
+        CriminalDB()  // Uses global collection "criminals"
+    }
 
-    // Criminals Repository (optional - if you want to keep your repository pattern)
-    single { CriminalsRepository() }
+    // CriminalImagesVectorDB - GLOBAL (criminal face images)
+    single {
+        CriminalImagesVectorDB()  // Uses global collection "criminal_face_images"
+    }
 
     // ============================================
     // FACE DETECTION & RECOGNITION (Shared Singletons)
@@ -81,13 +84,8 @@ val appModule = module {
     // USE CASES
     // ============================================
 
-    // PersonUseCase - user-specific (for known people)
-    factory {
-        PersonUseCase(currentUserId = get<UserSessionManager>().getCurrentUserId())
-    }
-
     // ImageVectorUseCase - user-specific (for known people face recognition)
-    single {
+    factory {
         ImageVectorUseCase(
             mediapipeFaceDetector = get(),
             faceSpoofDetector = get(),
@@ -96,10 +94,19 @@ val appModule = module {
         )
     }
 
-    // CriminalUseCase - GLOBAL (for criminal database management)
+    // CriminalImageVectorUseCase - GLOBAL (for criminal face recognition)
+    single {
+        CriminalImageVectorUseCase(
+            mediapipeFaceDetector = get(),
+            criminalImagesVectorDB = get(),
+            faceNet = get(),
+            faceSpoofDetector = get()
+        )
+    }
+
+    // CriminalUseCase - GLOBAL (criminal database management)
     single {
         CriminalUseCase(
-            criminalDB = get(),
             criminalImagesVectorDB = get(),
             faceNet = get(),
             mediapipeFaceDetector = get()
@@ -126,7 +133,8 @@ val appModule = module {
 
     viewModel {
         AdminViewModel(
-            criminalUseCase = get()
+            criminalUseCase = get(),
+            criminalImageVectorUseCase = get()
         )
     }
 }
