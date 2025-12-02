@@ -2,7 +2,6 @@ package com.example.crimicam.facerecognitionnetface.models.data
 
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.PropertyName
-
 data class CriminalImageRecord(
     @PropertyName("recordID")
     val recordID: String = "",
@@ -16,7 +15,6 @@ data class CriminalImageRecord(
     @PropertyName("faceEmbedding")
     val faceEmbedding: List<Float> = emptyList(),
 
-
     @PropertyName("imageUri")
     val imageUri: String = "",
 
@@ -24,5 +22,13 @@ data class CriminalImageRecord(
     val dangerLevel: String = "LOW",
 
     @PropertyName("createdAt")
-    val createdAt: Timestamp = Timestamp.now()
-)
+    val createdAt: Any? = null // Changed to Any?
+) {
+    fun getCreatedAtTimestamp(): Timestamp {
+        return when (createdAt) {
+            is Timestamp -> createdAt
+            is Long -> Timestamp(createdAt / 1000, ((createdAt % 1000) * 1000000).toInt())
+            else -> Timestamp.now()
+        }
+    }
+}

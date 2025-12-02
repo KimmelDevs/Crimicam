@@ -14,7 +14,7 @@ data class CriminalRecord(
     val numImages: Long = 0,
 
     @PropertyName("dangerLevel")
-    val dangerLevel: String = "LOW", // LOW, MEDIUM, HIGH, CRITICAL
+    val dangerLevel: String = "LOW",
 
     @PropertyName("description")
     val description: String = "",
@@ -26,14 +26,31 @@ data class CriminalRecord(
     val lastSeen: Timestamp? = null,
 
     @PropertyName("createdAt")
-    val createdAt: Timestamp = Timestamp.now(),
+    val createdAt: Any? = null, // Changed to Any? to handle both Long and Timestamp
 
     @PropertyName("lastUpdated")
-    val lastUpdated: Timestamp = Timestamp.now(),
+    val lastUpdated: Any? = null, // Changed to Any? to handle both Long and Timestamp
 
     @PropertyName("isActive")
     val isActive: Boolean = true,
 
     @PropertyName("notes")
     val notes: String = ""
-)
+) {
+    // Helper functions to get proper Timestamp
+    fun getCreatedAtTimestamp(): Timestamp {
+        return when (createdAt) {
+            is Timestamp -> createdAt
+            is Long -> Timestamp(createdAt / 1000, ((createdAt % 1000) * 1000000).toInt())
+            else -> Timestamp.now()
+        }
+    }
+
+    fun getLastUpdatedTimestamp(): Timestamp {
+        return when (lastUpdated) {
+            is Timestamp -> lastUpdated
+            is Long -> Timestamp(lastUpdated / 1000, ((lastUpdated % 1000) * 1000000).toInt())
+            else -> Timestamp.now()
+        }
+    }
+}
