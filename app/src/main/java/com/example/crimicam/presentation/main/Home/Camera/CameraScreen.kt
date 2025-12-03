@@ -64,6 +64,27 @@ fun CameraScreen(
     Box(modifier = Modifier.fillMaxSize()) {
         ScreenUI(viewModel)
 
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(16.dp),
+            contentAlignment = Alignment.TopStart
+        ) {
+            IconButton(
+                onClick = { navController.popBackStack() },
+                modifier = Modifier
+                    .size(44.dp)
+                    .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ArrowBack,
+                    contentDescription = "Back",
+                    tint = Color.White
+                )
+            }
+        }
+
         // Top controls container - recording and camera switch side by side
         Box(
             modifier = Modifier

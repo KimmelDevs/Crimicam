@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.crimicam.presentation.login.LoginScreen
 import com.example.crimicam.presentation.main.Admin.AdminScreen
@@ -165,6 +166,9 @@ fun MainScreen(
     val bottomNavController = rememberNavController()
     val context = LocalContext.current
 
+    val navBackStackEntry by bottomNavController.currentBackStackEntryAsState()
+    val currentRoute = navBackStackEntry?.destination?.route
+
     var isAdmin by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -181,12 +185,23 @@ fun MainScreen(
         BottomNavItem.Profile
     )
 
+    val bottomNavRoutes = listOf(
+        BottomNavItem.Home.route,
+        BottomNavItem.Map.route,
+        BottomNavItem.KnownPeople.route,
+        BottomNavItem.Profile.route,
+        BottomNavItem.Admin.route
+    )
+
+    val isBottomNavRoute = currentRoute in bottomNavRoutes
+
     Scaffold(
         bottomBar = {
             BottomNavigationBar(
                 navController = bottomNavController,
                 items = allItems,
-                isAdmin = isAdmin
+                isAdmin = isAdmin,
+                shouldShowBottomNav = isBottomNavRoute
             )
         }
     ) { paddingValues ->
@@ -204,8 +219,6 @@ fun MainScreen(
                 MapScreen()
             }
             composable(BottomNavItem.KnownPeople.route) {
-                // ✅ Clean separation - KnownPeopleScreen works independently
-                // CameraViewModel listens to Firestore changes automatically
                 KnownPeopleScreen()
             }
             composable(BottomNavItem.Profile.route) {
@@ -223,7 +236,7 @@ fun MainScreen(
                 AdminScreen()
             }
 
-            // Home nested routes
+            // Home nested routes (these are NOT bottom nav routes)
             composable("camera") {
                 CameraScreen(navController = bottomNavController)
             }
@@ -234,7 +247,7 @@ fun MainScreen(
                 ActivityDetailScreen(navController = bottomNavController)
             }
 
-            // Profile nested routes
+            // Profile nested routes (these are NOT bottom nav routes)
             composable("view_profile") {
                 ViewProfileScreen(navController = bottomNavController)
             }
@@ -242,7 +255,7 @@ fun MainScreen(
                 LocationLabelScreen(navController = bottomNavController)
             }
 
-            // Stream viewer route
+            // Stream viewer route (this is NOT a bottom nav route)
             composable("stream_viewer/{sessionId}") { backStackEntry ->
                 val sessionId = backStackEntry.arguments?.getString("sessionId") ?: ""
                 StreamViewerScreen(

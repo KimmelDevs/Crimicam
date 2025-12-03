@@ -13,34 +13,36 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 fun BottomNavigationBar(
     navController: NavHostController,
     items: List<BottomNavItem>,
-    isAdmin: Boolean = false
+    isAdmin: Boolean = false,
+    shouldShowBottomNav: Boolean = true
 ) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
 
-    // Filter items based on admin status
     val filteredItems = if (isAdmin) {
-        items // Show all items including admin
+        items
     } else {
-        items.filter { it != BottomNavItem.Admin } // Exclude admin item
+        items.filter { it != BottomNavItem.Admin }
     }
 
-    NavigationBar {
-        filteredItems.forEach { item ->
-            NavigationBarItem(
-                icon = { Icon(item.icon, contentDescription = item.label) },
-                label = { Text(item.label) },
-                selected = currentRoute == item.route,
-                onClick = {
-                    navController.navigate(item.route) {
-                        popUpTo(navController.graph.startDestinationId) {
-                            saveState = true
+    if (filteredItems.isNotEmpty() && shouldShowBottomNav) {
+        NavigationBar {
+            filteredItems.forEach { item ->
+                NavigationBarItem(
+                    icon = { Icon(item.icon, contentDescription = item.label) },
+                    label = { Text(item.label) },
+                    selected = currentRoute == item.route,
+                    onClick = {
+                        navController.navigate(item.route) {
+                            popUpTo(navController.graph.startDestinationId) {
+                                saveState = true
+                            }
+                            launchSingleTop = true
+                            restoreState = true
                         }
-                        launchSingleTop = true
-                        restoreState = true
                     }
-                }
-            )
+                )
+            }
         }
     }
 }
