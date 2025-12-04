@@ -3,8 +3,6 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.google.gms.google.services)
-    id("com.google.devtools.ksp") version "2.0.21-1.0.25"
-
 
 }
 
@@ -47,8 +45,8 @@ android {
     }
 }
 
-dependencies {
 
+dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -75,25 +73,20 @@ dependencies {
     implementation(libs.androidx.credentials.play.services.auth)
 
     implementation(libs.androidx.foundation)
-    implementation("io.insert-koin:koin-annotations:1.3.0")
-    ksp("io.insert-koin:koin-ksp-compiler:1.3.0")
 
+    // Koin dependencies
+    implementation("io.insert-koin:koin-annotations:1.3.0")
+    implementation("io.insert-koin:koin-android:3.5.6")
+    implementation("io.insert-koin:koin-androidx-compose:3.5.6")
 
     implementation(libs.androidx.navigation.compose)
-
     implementation(libs.androidx.foundation.v160)
-
     implementation(libs.androidx.animation)
-
     implementation(libs.androidx.foundation.vversion)
-
-    implementation (libs.accompanist.flowlayout)
-
-    implementation (libs.androidx.lifecycle.viewmodel.compose)
-
+    implementation(libs.accompanist.flowlayout)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.firebase.firestore.ktx.v24103)
-
-    implementation (libs.androidx.datastore.preferences)
+    implementation(libs.androidx.datastore.preferences)
     implementation("com.google.accompanist:accompanist-permissions:0.32.0")
 
     // Camera dependencies
@@ -133,11 +126,10 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui-tooling-preview")
 
-    // ML Kit Pose Detection - FIXED VERSION
+    // ML Kit Pose Detection
     implementation("com.google.mlkit:pose-detection-accurate:18.0.0-beta5")
 
     // TensorFlow Lite
-
     implementation("org.tensorflow:tensorflow-lite:2.14.0")
     implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
     implementation("org.tensorflow:tensorflow-lite-gpu:2.14.0")
@@ -146,12 +138,4 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
     implementation("com.google.mediapipe:tasks-vision:0.10.14")
-
-
-    implementation("io.insert-koin:koin-android:3.5.6")
-
-    implementation("io.insert-koin:koin-androidx-compose:3.5.6")
-
-
-
 }
