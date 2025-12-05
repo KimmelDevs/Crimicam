@@ -123,12 +123,12 @@ val appModule = module {
             imageVectorUseCase = get()
         )
     }
-
     viewModel {
         CameraViewModel(
             personUseCase = get(),
             imageVectorUseCase = get(),
-            criminalImageVectorUseCase = get() // Add this
+            criminalImageVectorUseCase = get(),
+            context = androidContext()
         )
     }
 

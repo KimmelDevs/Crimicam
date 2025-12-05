@@ -1,17 +1,38 @@
 package com.example.crimicam.presentation.main.Home
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.crimicam.data.repository.NotificationRepository
 import com.example.crimicam.data.remote.FirestoreService
 import com.example.crimicam.util.Result
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import java.text.SimpleDateFormat
+import java.util.*
+
+data class RecentActivity(
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val timestamp: String,
+    val isCriminal: Boolean = false,
+    val dangerLevel: String? = null
+)
+
+data class HomeState(
+    val recentActivities: List<RecentActivity> = emptyList(),
+    val isLoadingActivities: Boolean = false,
+    val activitiesError: String? = null
+)
 
 class HomeViewModel : ViewModel() {
 
@@ -23,8 +44,122 @@ class HomeViewModel : ViewModel() {
         )
     )
 
+    private val db = FirebaseFirestore.getInstance()
+
     private val _notificationState = MutableStateFlow<NotificationState>(NotificationState.Idle)
     val notificationState: StateFlow<NotificationState> = _notificationState.asStateFlow()
+
+    private val _homeState = MutableStateFlow(HomeState())
+    val homeState: StateFlow<HomeState> = _homeState.asStateFlow()
+
+    init {
+        loadRecentActivities()
+    }
+
+    /**
+     * Load recent activities from Firestore
+     */
+    fun loadRecentActivities(limit: Int = 10) {
+        viewModelScope.launch {
+            _homeState.value = _homeState.value.copy(isLoadingActivities = true, activitiesError = null)
+
+            try {
+                val snapshot = db.collection("captured_faces")
+                    .orderBy("timestamp", Query.Direction.DESCENDING)
+                    .limit(limit.toLong())
+                    .get()
+                    .await()
+
+                val activities = snapshot.documents.mapNotNull { doc ->
+                    try {
+                        val data = doc.data ?: return@mapNotNull null
+
+                        val isCriminal = data["is_criminal"] as? Boolean ?: false
+                        val isRecognized = data["is_recognized"] as? Boolean ?: false
+                        val personName = data["matched_person_name"] as? String
+                        val dangerLevel = data["danger_level"] as? String
+                        val address = data["address"] as? String
+                        val timestamp = data["timestamp"] as? Timestamp
+
+                        // Format timestamp
+                        val timeString = timestamp?.toDate()?.let { date ->
+                            val now = Date()
+                            val diff = now.time - date.time
+                            val minutes = diff / (1000 * 60)
+                            val hours = diff / (1000 * 60 * 60)
+                            val days = diff / (1000 * 60 * 60 * 24)
+
+                            when {
+                                minutes < 1 -> "Just now"
+                                minutes < 60 -> "$minutes min ago"
+                                hours < 24 -> "$hours hr ago"
+                                days < 7 -> "$days days ago"
+                                else -> SimpleDateFormat("MMM dd", Locale.getDefault()).format(date)
+                            }
+                        } ?: "Unknown time"
+
+                        // Create title
+                        val title = when {
+                            isCriminal && dangerLevel != null -> {
+                                when (dangerLevel.uppercase()) {
+                                    "CRITICAL" -> "🚨 CRITICAL THREAT: ${personName ?: "Unknown Criminal"}"
+                                    "HIGH" -> "⚠️ HIGH DANGER: ${personName ?: "Unknown Criminal"}"
+                                    "MEDIUM" -> "⚠️ MEDIUM RISK: ${personName ?: "Unknown Criminal"}"
+                                    "LOW" -> "⚠️ LOW RISK: ${personName ?: "Unknown Criminal"}"
+                                    else -> "🚨 Criminal: ${personName ?: "Unknown"}"
+                                }
+                            }
+                            isRecognized && personName != null -> "✅ Identified: $personName"
+                            else -> "❓ Unknown Person Detected"
+                        }
+
+                        // Create subtitle
+                        val subtitle = buildString {
+                            append(timeString)
+                            if (address != null) {
+                                append(" • ")
+                                // Truncate long addresses
+                                val shortAddress = if (address.length > 40) {
+                                    address.take(37) + "..."
+                                } else {
+                                    address
+                                }
+                                append(shortAddress)
+                            }
+                        }
+
+                        RecentActivity(
+                            id = doc.id,
+                            title = title,
+                            subtitle = subtitle,
+                            timestamp = timeString,
+                            isCriminal = isCriminal,
+                            dangerLevel = dangerLevel
+                        )
+
+                    } catch (e: Exception) {
+                        Log.e("HomeViewModel", "Error parsing activity", e)
+                        null
+                    }
+                }
+
+                _homeState.value = _homeState.value.copy(
+                    recentActivities = activities,
+                    isLoadingActivities = false,
+                    activitiesError = null
+                )
+
+                Log.d("HomeViewModel", "Loaded ${activities.size} recent activities")
+
+            } catch (e: Exception) {
+                Log.e("HomeViewModel", "Error loading activities", e)
+                _homeState.value = _homeState.value.copy(
+                    isLoadingActivities = false,
+                    activitiesError = e.message ?: "Failed to load activities"
+                )
+            }
+        }
+    }
 
     fun triggerNotification() {
         viewModelScope.launch {
@@ -52,6 +187,13 @@ class HomeViewModel : ViewModel() {
                 }
             }
         }
+    }
+
+    /**
+     * Refresh activities
+     */
+    fun refreshActivities() {
+        loadRecentActivities()
     }
 }
 

@@ -1,12 +1,16 @@
 package com.example.crimicam.presentation.main.Home.Camera
 
+import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.RectF
+import android.location.Location
 import android.net.Uri
 import android.util.Log
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.crimicam.data.model.KnownPerson
+import com.example.crimicam.data.service.FirestoreCaptureService
 import com.example.crimicam.facerecognitionnetface.models.data.RecognitionMetrics
 import com.example.crimicam.facerecognitionnetface.models.domain.ImageVectorUseCase
 import com.example.crimicam.facerecognitionnetface.models.domain.PersonUseCase
@@ -27,7 +31,9 @@ data class DetectedFace(
     // Criminal-specific fields
     val isCriminal: Boolean = false,
     val dangerLevel: String? = null,
-    val spoofDetected: Boolean = false
+    val spoofDetected: Boolean = false,
+    // For saving to Firestore
+    val croppedBitmap: Bitmap? = null
 )
 
 // Video recording states
@@ -49,7 +55,9 @@ data class CameraState(
     val modelInitialized: Boolean = false,
     val peopleCount: Long = 0L,
     val criminalCount: Long = 0L,
-    val recordingState: RecordingState = RecordingState()
+    val recordingState: RecordingState = RecordingState(),
+    val currentLocation: Location? = null,
+    val lastSavedCaptureId: String? = null
 )
 
 enum class ScanningMode {
@@ -64,7 +72,8 @@ enum class ScanningMode {
 class CameraViewModel(
     val personUseCase: PersonUseCase,
     val imageVectorUseCase: ImageVectorUseCase,
-    val criminalImageVectorUseCase: CriminalImageVectorUseCase
+    val criminalImageVectorUseCase: CriminalImageVectorUseCase,
+    private val context: Context
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(CameraState())
@@ -72,10 +81,15 @@ class CameraViewModel(
 
     val faceDetectionMetricsState = mutableStateOf<RecognitionMetrics?>(null)
 
+    private val firestoreCaptureService = FirestoreCaptureService(context)
+
     // Video recording properties
     private var recordingStartTime: Long = 0
     private val timerFormat = SimpleDateFormat("mm:ss", Locale.getDefault())
     private var recordingJob: kotlinx.coroutines.Job? = null
+
+    // Store the last full frame for saving
+    private var lastFullFrameBitmap: Bitmap? = null
 
     init {
         refreshPeopleCount()
@@ -98,10 +112,13 @@ class CameraViewModel(
 
     /**
      * Process frame for both known people AND criminals
-     * Call this from your camera frame processor
+     * Also saves the full frame for later use
      */
-    fun processFrameForDetection(frameBitmap: android.graphics.Bitmap) {
+    fun processFrameForDetection(frameBitmap: Bitmap) {
         if (_state.value.isProcessing) return
+
+        // Store full frame for later saving
+        lastFullFrameBitmap = frameBitmap
 
         viewModelScope.launch {
             try {
@@ -131,6 +148,9 @@ class CameraViewModel(
                         criminalResult.boundingBox.bottom.toFloat()
                     )
 
+                    // Crop the face from the frame
+                    val croppedFace = cropBitmapFromBoundingBox(frameBitmap, boundingBox)
+
                     detectedFaces.add(
                         DetectedFace(
                             boundingBox = boundingBox,
@@ -139,9 +159,24 @@ class CameraViewModel(
                             confidence = criminalResult.confidence,
                             isCriminal = isCriminal,
                             dangerLevel = criminalResult.dangerLevel,
-                            spoofDetected = criminalResult.spoofResult?.isSpoof ?: false
+                            spoofDetected = criminalResult.spoofResult?.isSpoof ?: false,
+                            croppedBitmap = croppedFace
                         )
                     )
+
+                    // Auto-save criminal detections to Firestore
+                    if (isCriminal && croppedFace != null) {
+                        saveCaptureToFirestore(
+                            croppedFace = croppedFace,
+                            fullFrame = frameBitmap,
+                            isRecognized = true,
+                            isCriminal = true,
+                            personId = criminalResult.criminalID,
+                            personName = criminalResult.criminalName,
+                            confidence = criminalResult.confidence,
+                            dangerLevel = criminalResult.dangerLevel
+                        )
+                    }
                 }
 
                 // If no criminals detected, check for known people
@@ -161,13 +196,16 @@ class CameraViewModel(
                             personResult.boundingBox.bottom.toFloat()
                         )
 
+                        val croppedFace = cropBitmapFromBoundingBox(frameBitmap, boundingBox)
+
                         detectedFaces.add(
                             DetectedFace(
                                 boundingBox = boundingBox,
                                 personName = personResult.personName,
                                 confidence = personResult.confidence,
                                 isCriminal = false,
-                                spoofDetected = personResult.spoofResult?.isSpoof ?: false
+                                spoofDetected = personResult.spoofResult?.isSpoof ?: false,
+                                croppedBitmap = croppedFace
                             )
                         )
                     }
@@ -187,6 +225,116 @@ class CameraViewModel(
                 setProcessing(false)
             }
         }
+    }
+
+    /**
+     * Crop bitmap from bounding box
+     */
+    private fun cropBitmapFromBoundingBox(bitmap: Bitmap, boundingBox: RectF): Bitmap? {
+        return try {
+            val left = boundingBox.left.toInt().coerceIn(0, bitmap.width)
+            val top = boundingBox.top.toInt().coerceIn(0, bitmap.height)
+            val right = boundingBox.right.toInt().coerceIn(0, bitmap.width)
+            val bottom = boundingBox.bottom.toInt().coerceIn(0, bitmap.height)
+
+            val width = (right - left).coerceAtLeast(1)
+            val height = (bottom - top).coerceAtLeast(1)
+
+            Bitmap.createBitmap(bitmap, left, top, width, height)
+        } catch (e: Exception) {
+            Log.e("CameraViewModel", "Error cropping bitmap", e)
+            null
+        }
+    }
+
+    /**
+     * Save capture to Firestore
+     */
+    private fun saveCaptureToFirestore(
+        croppedFace: Bitmap,
+        fullFrame: Bitmap,
+        isRecognized: Boolean,
+        isCriminal: Boolean,
+        personId: String? = null,
+        personName: String? = null,
+        confidence: Float,
+        dangerLevel: String? = null
+    ) {
+        viewModelScope.launch {
+            try {
+                val result = firestoreCaptureService.saveCapturedFace(
+                    croppedFace = croppedFace,
+                    fullFrame = fullFrame,
+                    isRecognized = isRecognized,
+                    isCriminal = isCriminal,
+                    matchedPersonId = personId,
+                    matchedPersonName = personName,
+                    confidence = confidence,
+                    dangerLevel = dangerLevel,
+                    location = _state.value.currentLocation,
+                    deviceId = android.provider.Settings.Secure.getString(
+                        context.contentResolver,
+                        android.provider.Settings.Secure.ANDROID_ID
+                    )
+                )
+
+                result.onSuccess { captureId ->
+                    Log.d("CameraViewModel", "Saved capture to Firestore: $captureId")
+                    _state.value = _state.value.copy(lastSavedCaptureId = captureId)
+
+                    // Show success message
+                    updateStatusMessage("✅ Capture saved to database")
+                }.onFailure { e ->
+                    Log.e("CameraViewModel", "Failed to save capture", e)
+                }
+
+            } catch (e: Exception) {
+                Log.e("CameraViewModel", "Error saving capture", e)
+            }
+        }
+    }
+
+    /**
+     * Manually save current detection to Firestore
+     */
+    fun saveCurrentDetection() {
+        viewModelScope.launch {
+            val detectedFaces = _state.value.detectedFaces
+            val fullFrame = lastFullFrameBitmap
+
+            if (detectedFaces.isEmpty()) {
+                updateStatusMessage("⚠️ No faces detected to save")
+                return@launch
+            }
+
+            if (fullFrame == null) {
+                updateStatusMessage("⚠️ No frame available")
+                return@launch
+            }
+
+            detectedFaces.forEach { face ->
+                face.croppedBitmap?.let { croppedFace ->
+                    saveCaptureToFirestore(
+                        croppedFace = croppedFace,
+                        fullFrame = fullFrame,
+                        isRecognized = face.personName != null,
+                        isCriminal = face.isCriminal,
+                        personId = face.personId,
+                        personName = face.personName,
+                        confidence = face.confidence,
+                        dangerLevel = face.dangerLevel
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Update current location
+     */
+    fun updateLocation(location: Location) {
+        _state.value = _state.value.copy(currentLocation = location)
+        Log.d("CameraViewModel", "Location updated: ${location.latitude}, ${location.longitude}")
     }
 
     private fun updateDetectedFacesWithCriminals(faces: List<DetectedFace>, hasCriminal: Boolean) {
@@ -411,6 +559,8 @@ class CameraViewModel(
         super.onCleared()
         recordingJob?.cancel()
         recordingJob = null
+        lastFullFrameBitmap?.recycle()
+        lastFullFrameBitmap = null
         Log.d("CameraViewModel", "ViewModel cleared")
     }
 }
