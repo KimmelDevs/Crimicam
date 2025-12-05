@@ -127,7 +127,8 @@ val appModule = module {
     viewModel {
         CameraViewModel(
             personUseCase = get(),
-            imageVectorUseCase = get()
+            imageVectorUseCase = get(),
+            criminalImageVectorUseCase = get() // Add this
         )
     }
 

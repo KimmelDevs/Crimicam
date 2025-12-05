@@ -1,7 +1,6 @@
 package com.example.crimicam.presentation.main.Home.Camera.components
 
 import android.annotation.SuppressLint
-import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -9,19 +8,16 @@ import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RectF
-import android.provider.MediaStore
 import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.widget.FrameLayout
 import androidx.camera.core.AspectRatio
-import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.video.*
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.toRectF
@@ -33,8 +29,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.*
 import java.util.concurrent.Executors
 
 @SuppressLint("ViewConstructor")
@@ -45,8 +39,7 @@ class FaceDetectionOverlay(
     private val viewModel: CameraViewModel
 ) : FrameLayout(context) {
 
-    // Use flat search for precise cosine similarity calculation
-    private val flatSearch: Boolean = true
+    private val flatSearch: Boolean = false
     private var overlayWidth: Int = 0
     private var overlayHeight: Int = 0
 
@@ -189,47 +182,118 @@ class FaceDetectionOverlay(
             val predictions = ArrayList<Prediction>()
             val detectedFaces = mutableListOf<DetectedFace>()
 
-            // Use ImageVectorUseCase to detect and recognize faces
-            val (metrics, results) = viewModel.imageVectorUseCase.getNearestPersonName(
-                frameBitmap,
-                flatSearch
-            )
+            // FIRST: Check for criminals (higher priority)
+            val (criminalMetrics, criminalResults) =
+                viewModel.criminalImageVectorUseCase.getNearestCriminalName(
+                    frameBitmap = frameBitmap,
+                    flatSearch = flatSearch,
+                    confidenceThreshold = 0.6f
+                )
 
-            results.forEach { (name, boundingBox, spoofResult) ->
-                val box = boundingBox.toRectF()
-                var personName = name
+            var hasCriminal = false
 
-                // Check if database is empty
-                if (viewModel.getNumPeople() == 0L) {
-                    personName = ""
-                }
+            criminalResults.forEach { criminalResult ->
+                val isCriminal = criminalResult.criminalName != "Unknown"
+                if (isCriminal) hasCriminal = true
 
-                // Add spoof detection info if available
-                val displayLabel = if (spoofResult != null && spoofResult.isSpoof) {
-                    "$personName (SPOOF: ${(spoofResult.score * 100).toInt()}%)"
+                val box = criminalResult.boundingBox.toRectF()
+
+                // Build display label for criminal (danger level above name)
+                val displayLabel = if (isCriminal) {
+                    val spoofInfo = if (criminalResult.spoofResult?.isSpoof == true) {
+                        " (SPOOF)"
+                    } else ""
+                    "${criminalResult.dangerLevel}$spoofInfo\n${criminalResult.criminalName}"
                 } else {
-                    personName
+                    "" // Unknown face - will be checked against known people
                 }
 
                 // Transform box to overlay coordinates
                 boundingBoxTransform.mapRect(box)
-                predictions.add(Prediction(box, displayLabel))
+
+                predictions.add(
+                    Prediction(
+                        bbox = box,
+                        label = displayLabel,
+                        isCriminal = isCriminal,
+                        dangerLevel = if (isCriminal) criminalResult.dangerLevel else null,
+                        confidence = criminalResult.confidence,
+                        isSpoof = criminalResult.spoofResult?.isSpoof ?: false
+                    )
+                )
 
                 // Create DetectedFace for ViewModel state
                 detectedFaces.add(
                     DetectedFace(
                         boundingBox = box,
-                        personId = null,
-                        personName = if (personName.isNotBlank()) personName else null,
-                        confidence = 0.85f,
-                        distance = 0f
+                        personId = criminalResult.criminalID,
+                        personName = criminalResult.criminalName,
+                        confidence = criminalResult.confidence,
+                        isCriminal = isCriminal,
+                        dangerLevel = criminalResult.dangerLevel,
+                        spoofDetected = criminalResult.spoofResult?.isSpoof ?: false
                     )
                 )
             }
 
+            // SECOND: If no criminals detected, check for known people
+            if (!hasCriminal) {
+                val (peopleMetrics, peopleResults) =
+                    viewModel.imageVectorUseCase.getNearestPersonName(
+                        frameBitmap = frameBitmap,
+                        flatSearch = flatSearch,
+                        confidenceThreshold = 0.6f
+                    )
+
+                peopleResults.forEach { personResult ->
+                    val box = personResult.boundingBox.toRectF()
+                    var personName = personResult.personName
+
+                    // Check if database is empty
+                    if (viewModel.getNumPeople() == 0L) {
+                        personName = ""
+                    }
+
+                    // Add spoof detection info if available
+                    val displayLabel = if (personResult.spoofResult != null && personResult.spoofResult.isSpoof) {
+                        "$personName\n(SPOOF: ${(personResult.spoofResult.score * 100).toInt()}%)"
+                    } else {
+                        personName
+                    }
+
+                    // Transform box to overlay coordinates
+                    boundingBoxTransform.mapRect(box)
+
+                    predictions.add(
+                        Prediction(
+                            bbox = box,
+                            label = displayLabel,
+                            isCriminal = false,
+                            dangerLevel = null,
+                            confidence = personResult.confidence,
+                            isSpoof = personResult.spoofResult?.isSpoof ?: false
+                        )
+                    )
+
+                    // Create DetectedFace for ViewModel state
+                    detectedFaces.add(
+                        DetectedFace(
+                            boundingBox = box,
+                            personName = if (personName.isNotBlank()) personName else null,
+                            confidence = personResult.confidence,
+                            isCriminal = false,
+                            spoofDetected = personResult.spoofResult?.isSpoof ?: false
+                        )
+                    )
+                }
+
+                viewModel.faceDetectionMetricsState.value = peopleMetrics
+            } else {
+                viewModel.faceDetectionMetricsState.value = criminalMetrics
+            }
+
             withContext(Dispatchers.Main) {
-                // Update ViewModel with metrics and detected faces
-                viewModel.faceDetectionMetricsState.value = metrics
+                // Update ViewModel with detected faces
                 viewModel.updateDetectedFaces(detectedFaces)
 
                 // Update overlay UI
@@ -244,76 +308,132 @@ class FaceDetectionOverlay(
 
     data class Prediction(
         var bbox: RectF,
-        var label: String
+        var label: String,
+        var isCriminal: Boolean = false,
+        var dangerLevel: String? = null,
+        var confidence: Float = 0f,
+        var isSpoof: Boolean = false
     )
 
     inner class BoundingBoxOverlay(context: Context) :
         SurfaceView(context), SurfaceHolder.Callback {
 
-        // Semi-transparent green fill for recognized faces
+        // Criminal detection colors
+        private val criminalHighBoxPaint = Paint().apply {
+            color = Color.parseColor("#4DFF0000") // Red with alpha for HIGH danger
+            style = Paint.Style.FILL
+        }
+
+        private val criminalMediumBoxPaint = Paint().apply {
+            color = Color.parseColor("#4DFFA500") // Orange with alpha for MEDIUM danger
+            style = Paint.Style.FILL
+        }
+
+        private val criminalLowBoxPaint = Paint().apply {
+            color = Color.parseColor("#4DFFFF00") // Yellow with alpha for LOW danger
+            style = Paint.Style.FILL
+        }
+
+        // Criminal stroke colors
+        private val criminalHighStrokePaint = Paint().apply {
+            color = Color.parseColor("#FF0000") // Bright red
+            style = Paint.Style.STROKE
+            strokeWidth = 6f
+        }
+
+        private val criminalMediumStrokePaint = Paint().apply {
+            color = Color.parseColor("#FFA500") // Bright orange
+            style = Paint.Style.STROKE
+            strokeWidth = 5f
+        }
+
+        private val criminalLowStrokePaint = Paint().apply {
+            color = Color.parseColor("#FFFF00") // Bright yellow
+            style = Paint.Style.STROKE
+            strokeWidth = 4f
+        }
+
+        // Known people colors
         private val recognizedBoxPaint = Paint().apply {
             color = Color.parseColor("#4D00FF00") // Green with alpha
             style = Paint.Style.FILL
         }
 
-        // Semi-transparent red fill for unknown faces
         private val unknownBoxPaint = Paint().apply {
-            color = Color.parseColor("#4DFF0000") // Red with alpha
+            color = Color.parseColor("#4D808080") // Gray with alpha
             style = Paint.Style.FILL
         }
 
-        // Bright green stroke for recognized faces
         private val recognizedStrokePaint = Paint().apply {
             color = Color.parseColor("#00FF00") // Bright green
             style = Paint.Style.STROKE
             strokeWidth = 4f
         }
 
-        // Bright red stroke for unknown faces
         private val unknownStrokePaint = Paint().apply {
-            color = Color.parseColor("#FF0000") // Bright red
+            color = Color.parseColor("#808080") // Gray
             style = Paint.Style.STROKE
-            strokeWidth = 4f
+            strokeWidth = 3f
         }
 
         // Text paint for labels
         private val textPaint = Paint().apply {
             strokeWidth = 2.0f
-            textSize = 36f
+            textSize = 32f
             color = Color.WHITE
             isFakeBoldText = true
-            typeface = android.graphics.Typeface.MONOSPACE
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+
+        // Text paint for danger level (larger)
+        private val dangerTextPaint = Paint().apply {
+            strokeWidth = 2.5f
+            textSize = 38f
+            color = Color.WHITE
+            isFakeBoldText = true
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
         }
 
         // Background for text labels
         private val textBackgroundPaint = Paint().apply {
-            color = Color.parseColor("#CC000000") // Semi-transparent black
+            color = Color.parseColor("#DD000000") // More opaque black
+            style = Paint.Style.FILL
+        }
+
+        // Criminal alert background (more prominent)
+        private val criminalTextBackgroundPaint = Paint().apply {
+            color = Color.parseColor("#EE000000") // Almost opaque black
             style = Paint.Style.FILL
         }
 
         override fun surfaceCreated(holder: SurfaceHolder) {}
 
-        override fun surfaceChanged(
-            holder: SurfaceHolder,
-            format: Int,
-            width: Int,
-            height: Int
-        ) {}
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
 
         override fun surfaceDestroyed(holder: SurfaceHolder) {}
 
         override fun onDraw(canvas: Canvas) {
             predictions.forEach { prediction ->
-                // Determine if face is recognized or unknown
-                val isRecognized = prediction.label.isNotBlank() &&
-                        !prediction.label.contains("SPOOF", ignoreCase = true)
+                // Determine paint colors based on type
+                val (fillPaint, strokePaint) = when {
+                    prediction.isCriminal -> {
+                        when (prediction.dangerLevel) {
+                            "HIGH" -> Pair(criminalHighBoxPaint, criminalHighStrokePaint)
+                            "MEDIUM" -> Pair(criminalMediumBoxPaint, criminalMediumStrokePaint)
+                            "LOW" -> Pair(criminalLowBoxPaint, criminalLowStrokePaint)
+                            else -> Pair(criminalHighBoxPaint, criminalHighStrokePaint)
+                        }
+                    }
+                    prediction.label.isNotBlank() -> Pair(recognizedBoxPaint, recognizedStrokePaint)
+                    else -> Pair(unknownBoxPaint, unknownStrokePaint)
+                }
 
                 // Draw filled box
                 canvas.drawRoundRect(
                     prediction.bbox,
                     16f,
                     16f,
-                    if (isRecognized) recognizedBoxPaint else unknownBoxPaint
+                    fillPaint
                 )
 
                 // Draw box outline
@@ -321,41 +441,91 @@ class FaceDetectionOverlay(
                     prediction.bbox,
                     16f,
                     16f,
-                    if (isRecognized) recognizedStrokePaint else unknownStrokePaint
+                    strokePaint
                 )
 
                 // Draw label with background if available
                 if (prediction.label.isNotBlank()) {
-                    val textBounds = android.graphics.Rect()
-                    val displayText = prediction.label.uppercase()
-                    textPaint.getTextBounds(displayText, 0, displayText.length, textBounds)
+                    val lines = prediction.label.split("\n")
+                    var currentY = prediction.bbox.top - 20f
 
-                    val textX = prediction.bbox.left
-                    val textY = prediction.bbox.top - 10f
+                    lines.reversed().forEachIndexed { reverseIndex, line ->
+                        val index = lines.size - 1 - reverseIndex
+                        val paint = if (prediction.isCriminal && index == 0) {
+                            // Danger level gets bigger text (first line for criminals)
+                            dangerTextPaint
+                        } else {
+                            textPaint
+                        }
 
-                    // Ensure text stays within bounds
-                    val adjustedTextY = if (textY < textBounds.height() + 16f) {
-                        prediction.bbox.bottom + textBounds.height() + 16f
-                    } else {
-                        textY
+                        val textBounds = android.graphics.Rect()
+                        val displayText = line.uppercase()
+                        paint.getTextBounds(displayText, 0, displayText.length, textBounds)
+
+                        val textX = prediction.bbox.left
+                        val lineHeight = textBounds.height() + 16f
+                        val textY = currentY - lineHeight
+
+                        // Ensure text stays within bounds
+                        val adjustedTextY = if (textY < lineHeight) {
+                            prediction.bbox.bottom + lineHeight * (reverseIndex + 1)
+                        } else {
+                            textY
+                        }
+
+                        // Background for text (use criminal background for criminals)
+                        val backgroundPaint = if (prediction.isCriminal) {
+                            criminalTextBackgroundPaint
+                        } else {
+                            textBackgroundPaint
+                        }
+
+                        canvas.drawRect(
+                            textX - 8f,
+                            adjustedTextY - textBounds.height() - 8f,
+                            textX + textBounds.width() + 16f,
+                            adjustedTextY + 8f,
+                            backgroundPaint
+                        )
+
+                        // Draw text (in red for criminals, white for others)
+                        if (prediction.isCriminal && index == 0) {
+                            // Danger level in danger color (first line for criminals)
+                            paint.color = when (prediction.dangerLevel) {
+                                "HIGH" -> Color.parseColor("#FF0000")
+                                "MEDIUM" -> Color.parseColor("#FFA500")
+                                "LOW" -> Color.parseColor("#FFFF00")
+                                else -> Color.parseColor("#FF0000")
+                            }
+                        } else {
+                            paint.color = Color.WHITE
+                        }
+
+                        canvas.drawText(
+                            displayText,
+                            textX,
+                            adjustedTextY,
+                            paint
+                        )
+
+                        currentY = textY - 8f
                     }
 
-                    // Background for text
-                    canvas.drawRect(
-                        textX - 8f,
-                        adjustedTextY - textBounds.height() - 8f,
-                        textX + textBounds.width() + 8f,
-                        adjustedTextY + 8f,
-                        textBackgroundPaint
-                    )
-
-                    // Draw text
-                    canvas.drawText(
-                        displayText,
-                        textX,
-                        adjustedTextY,
-                        textPaint
-                    )
+                    // Draw confidence score (small text at bottom right)
+                    if (prediction.confidence > 0f) {
+                        val confidenceText = "${(prediction.confidence * 100).toInt()}%"
+                        val confidencePaint = Paint().apply {
+                            textSize = 24f
+                            color = Color.WHITE
+                            typeface = android.graphics.Typeface.MONOSPACE
+                        }
+                        canvas.drawText(
+                            confidenceText,
+                            prediction.bbox.right - 60f,
+                            prediction.bbox.bottom - 10f,
+                            confidencePaint
+                        )
+                    }
                 }
             }
         }

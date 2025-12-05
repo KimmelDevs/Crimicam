@@ -10,6 +10,7 @@ import com.example.crimicam.data.model.KnownPerson
 import com.example.crimicam.facerecognitionnetface.models.data.RecognitionMetrics
 import com.example.crimicam.facerecognitionnetface.models.domain.ImageVectorUseCase
 import com.example.crimicam.facerecognitionnetface.models.domain.PersonUseCase
+import com.example.crimicam.facerecognitionnetface.models.domain.CriminalImageVectorUseCase
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,7 +23,11 @@ data class DetectedFace(
     val personId: String? = null,
     val personName: String? = null,
     val confidence: Float,
-    val distance: Float = 0f
+    val distance: Float = 0f,
+    // Criminal-specific fields
+    val isCriminal: Boolean = false,
+    val dangerLevel: String? = null,
+    val spoofDetected: Boolean = false
 )
 
 // Video recording states
@@ -43,6 +48,7 @@ data class CameraState(
     val knownPeople: List<KnownPerson> = emptyList(),
     val modelInitialized: Boolean = false,
     val peopleCount: Long = 0L,
+    val criminalCount: Long = 0L,
     val recordingState: RecordingState = RecordingState()
 )
 
@@ -51,12 +57,14 @@ enum class ScanningMode {
     DETECTING,
     ANALYZING,
     IDENTIFIED,
-    UNKNOWN
+    UNKNOWN,
+    CRIMINAL_DETECTED
 }
 
 class CameraViewModel(
     val personUseCase: PersonUseCase,
-    val imageVectorUseCase: ImageVectorUseCase
+    val imageVectorUseCase: ImageVectorUseCase,
+    val criminalImageVectorUseCase: CriminalImageVectorUseCase
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(CameraState())
@@ -71,6 +79,144 @@ class CameraViewModel(
 
     init {
         refreshPeopleCount()
+        refreshCriminalCount()
+    }
+
+    // Criminal-specific methods
+    fun refreshCriminalCount() {
+        viewModelScope.launch {
+            try {
+                val criminals = criminalImageVectorUseCase.getAllCriminals()
+                _state.value = _state.value.copy(criminalCount = criminals.size.toLong())
+                Log.d("CameraViewModel", "Refreshed criminal count: ${criminals.size}")
+            } catch (e: Exception) {
+                Log.e("CameraViewModel", "Failed to refresh criminal count", e)
+                e.printStackTrace()
+            }
+        }
+    }
+
+    /**
+     * Process frame for both known people AND criminals
+     * Call this from your camera frame processor
+     */
+    fun processFrameForDetection(frameBitmap: android.graphics.Bitmap) {
+        if (_state.value.isProcessing) return
+
+        viewModelScope.launch {
+            try {
+                setProcessing(true)
+                updateScanningMode(ScanningMode.DETECTING)
+
+                // First, check for criminals (higher priority)
+                val (criminalMetrics, criminalResults) =
+                    criminalImageVectorUseCase.getNearestCriminalName(
+                        frameBitmap = frameBitmap,
+                        flatSearch = false,
+                        confidenceThreshold = CriminalImageVectorUseCase.DEFAULT_CONFIDENCE_THRESHOLD
+                    )
+
+                val detectedFaces = mutableListOf<DetectedFace>()
+                var hasCriminal = false
+
+                // Process criminal results
+                for (criminalResult in criminalResults) {
+                    val isCriminal = criminalResult.criminalName != "Unknown"
+                    if (isCriminal) hasCriminal = true
+
+                    val boundingBox = RectF(
+                        criminalResult.boundingBox.left.toFloat(),
+                        criminalResult.boundingBox.top.toFloat(),
+                        criminalResult.boundingBox.right.toFloat(),
+                        criminalResult.boundingBox.bottom.toFloat()
+                    )
+
+                    detectedFaces.add(
+                        DetectedFace(
+                            boundingBox = boundingBox,
+                            personId = criminalResult.criminalID,
+                            personName = criminalResult.criminalName,
+                            confidence = criminalResult.confidence,
+                            isCriminal = isCriminal,
+                            dangerLevel = criminalResult.dangerLevel,
+                            spoofDetected = criminalResult.spoofResult?.isSpoof ?: false
+                        )
+                    )
+                }
+
+                // If no criminals detected, check for known people
+                if (!hasCriminal && detectedFaces.isEmpty()) {
+                    val (peopleMetrics, peopleResults) =
+                        imageVectorUseCase.getNearestPersonName(
+                            frameBitmap = frameBitmap,
+                            flatSearch = false,
+                            confidenceThreshold = 0.6f
+                        )
+
+                    for (personResult in peopleResults) {
+                        val boundingBox = RectF(
+                            personResult.boundingBox.left.toFloat(),
+                            personResult.boundingBox.top.toFloat(),
+                            personResult.boundingBox.right.toFloat(),
+                            personResult.boundingBox.bottom.toFloat()
+                        )
+
+                        detectedFaces.add(
+                            DetectedFace(
+                                boundingBox = boundingBox,
+                                personName = personResult.personName,
+                                confidence = personResult.confidence,
+                                isCriminal = false,
+                                spoofDetected = personResult.spoofResult?.isSpoof ?: false
+                            )
+                        )
+                    }
+
+                    faceDetectionMetricsState.value = peopleMetrics
+                } else {
+                    faceDetectionMetricsState.value = criminalMetrics
+                }
+
+                // Update UI with results
+                updateDetectedFacesWithCriminals(detectedFaces, hasCriminal)
+
+            } catch (e: Exception) {
+                Log.e("CameraViewModel", "Error processing frame", e)
+                onRecognitionError(e.message ?: "Unknown error")
+            } finally {
+                setProcessing(false)
+            }
+        }
+    }
+
+    private fun updateDetectedFacesWithCriminals(faces: List<DetectedFace>, hasCriminal: Boolean) {
+        val newMode = when {
+            hasCriminal -> ScanningMode.CRIMINAL_DETECTED
+            faces.isEmpty() -> ScanningMode.IDLE
+            faces.any { it.personName != null && !it.isCriminal } -> ScanningMode.IDENTIFIED
+            else -> ScanningMode.UNKNOWN
+        }
+
+        val statusMessage = when (newMode) {
+            ScanningMode.IDLE -> "🔍 Scanning for faces..."
+            ScanningMode.DETECTING -> "👤 Detecting faces..."
+            ScanningMode.ANALYZING -> "🔄 Analyzing..."
+            ScanningMode.CRIMINAL_DETECTED -> {
+                val criminals = faces.filter { it.isCriminal }
+                val dangerLevels = criminals.map { it.dangerLevel }.distinct()
+                "🚨 CRIMINAL DETECTED! ${criminals.size} criminal(s) - ${dangerLevels.joinToString()}"
+            }
+            ScanningMode.IDENTIFIED -> "✅ ${faces.count { it.personName != null }} face(s) identified"
+            ScanningMode.UNKNOWN -> "❓ ${faces.size} unknown face(s)"
+        }
+
+        _state.value = _state.value.copy(
+            detectedFaces = faces,
+            scanningMode = newMode,
+            statusMessage = statusMessage
+        )
+
+        Log.d("CameraViewModel", "Updated detected faces: ${faces.size}, criminals: ${faces.count { it.isCriminal }}, mode: $newMode")
     }
 
     // Video Recording Methods
@@ -209,27 +355,8 @@ class CameraViewModel(
     }
 
     fun updateDetectedFaces(faces: List<DetectedFace>) {
-        val newMode = when {
-            faces.isEmpty() -> ScanningMode.IDLE
-            faces.any { it.personName != null } -> ScanningMode.IDENTIFIED
-            else -> ScanningMode.UNKNOWN
-        }
-
-        val statusMessage = when (newMode) {
-            ScanningMode.IDLE -> "🔍 Scanning for faces..."
-            ScanningMode.DETECTING -> "👤 Detecting faces..."
-            ScanningMode.ANALYZING -> "🔄 Analyzing..."
-            ScanningMode.IDENTIFIED -> "✅ ${faces.count { it.personName != null }} face(s) identified"
-            ScanningMode.UNKNOWN -> "❓ ${faces.size} unknown face(s)"
-        }
-
-        _state.value = _state.value.copy(
-            detectedFaces = faces,
-            scanningMode = newMode,
-            statusMessage = statusMessage
-        )
-
-        Log.d("CameraViewModel", "Updated detected faces: ${faces.size}, mode: $newMode")
+        val hasCriminal = faces.any { it.isCriminal }
+        updateDetectedFacesWithCriminals(faces, hasCriminal)
     }
 
     fun updateScanningMode(mode: ScanningMode) {
