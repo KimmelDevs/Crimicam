@@ -3,6 +3,7 @@ package com.example.crimicam.presentation.main.Home.ActivityDetail
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,16 +27,32 @@ class ActivityDetailViewModel : ViewModel() {
     val state: StateFlow<ActivityDetailState> = _state.asStateFlow()
 
     private val db = FirebaseFirestore.getInstance()
+    private val auth = FirebaseAuth.getInstance()
+
+    companion object {
+        private const val TAG = "ActivityDetailViewModel"
+    }
 
     /**
-     * Load details for a specific capture
+     * Load details for a specific capture from current user's subcollection
      */
     fun loadCaptureDetails(captureId: String) {
         viewModelScope.launch {
+            val currentUser = auth.currentUser
+            if (currentUser == null) {
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    error = "Please sign in to view capture details"
+                )
+                return@launch
+            }
+
             _state.value = _state.value.copy(isLoading = true, error = null)
 
             try {
-                val doc = db.collection("captured_faces")
+                val doc = db.collection("users")
+                    .document(currentUser.uid)
+                    .collection("captured_faces")
                     .document(captureId)
                     .get()
                     .await()
@@ -55,7 +72,7 @@ class ActivityDetailViewModel : ViewModel() {
                     )
                 }
             } catch (e: Exception) {
-                Log.e("ActivityDetailViewModel", "Error loading capture details: ${e.message}", e)
+                Log.e(TAG, "Error loading capture details: ${e.message}", e)
                 _state.value = _state.value.copy(
                     isLoading = false,
                     error = e.message ?: "Failed to load capture"
@@ -65,14 +82,25 @@ class ActivityDetailViewModel : ViewModel() {
     }
 
     /**
-     * Load all captured faces (most recent first)
+     * Load all captured faces from current user's subcollection (most recent first)
      */
     fun loadAllCaptures(limit: Int = 50) {
         viewModelScope.launch {
+            val currentUser = auth.currentUser
+            if (currentUser == null) {
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    error = "Please sign in to view captures"
+                )
+                return@launch
+            }
+
             _state.value = _state.value.copy(isLoading = true, error = null)
 
             try {
-                val querySnapshot = db.collection("captured_faces")
+                val querySnapshot = db.collection("users")
+                    .document(currentUser.uid)
+                    .collection("captured_faces")
                     .orderBy("timestamp", Query.Direction.DESCENDING)
                     .limit(limit.toLong())
                     .get()
@@ -82,7 +110,7 @@ class ActivityDetailViewModel : ViewModel() {
                     try {
                         parseCapturedFace(doc.id, doc.data ?: emptyMap())
                     } catch (e: Exception) {
-                        Log.e("ActivityDetailViewModel", "Error parsing document ${doc.id}: ${e.message}")
+                        Log.e(TAG, "Error parsing document ${doc.id}: ${e.message}")
                         null
                     }
                 }
@@ -93,9 +121,9 @@ class ActivityDetailViewModel : ViewModel() {
                     error = null
                 )
 
-                Log.d("ActivityDetailViewModel", "Loaded ${captures.size} captured faces")
+                Log.d(TAG, "Loaded ${captures.size} captured faces for user ${currentUser.uid}")
             } catch (e: Exception) {
-                Log.e("ActivityDetailViewModel", "Error loading captures: ${e.message}", e)
+                Log.e(TAG, "Error loading captures: ${e.message}", e)
                 _state.value = _state.value.copy(
                     isLoading = false,
                     error = e.message ?: "Failed to load captures"
@@ -119,8 +147,10 @@ class ActivityDetailViewModel : ViewModel() {
 
         // Recognition info
         val isRecognized = data["is_recognized"] as? Boolean ?: false
+        val isCriminal = data["is_criminal"] as? Boolean ?: false
         val matchedPersonName = data["matched_person_name"] as? String
         val confidence = (data["confidence"] as? Number)?.toFloat() ?: 0f
+        val dangerLevel = data["danger_level"] as? String
 
         // Location info
         val latitude = (data["latitude"] as? Number)?.toDouble()
@@ -131,8 +161,10 @@ class ActivityDetailViewModel : ViewModel() {
             id = id,
             croppedFaceBase64 = croppedFaceBase64,
             isRecognized = isRecognized,
+            isCriminal = isCriminal,
             matchedPersonName = matchedPersonName,
             confidence = confidence,
+            dangerLevel = dangerLevel,
             timestamp = timestampString,
             latitude = latitude,
             longitude = longitude,
@@ -145,10 +177,21 @@ class ActivityDetailViewModel : ViewModel() {
      */
     fun loadCapturesByStatus(isRecognized: Boolean, limit: Int = 50) {
         viewModelScope.launch {
+            val currentUser = auth.currentUser
+            if (currentUser == null) {
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    error = "Please sign in to view captures"
+                )
+                return@launch
+            }
+
             _state.value = _state.value.copy(isLoading = true, error = null)
 
             try {
-                val querySnapshot = db.collection("captured_faces")
+                val querySnapshot = db.collection("users")
+                    .document(currentUser.uid)
+                    .collection("captured_faces")
                     .whereEqualTo("is_recognized", isRecognized)
                     .orderBy("timestamp", Query.Direction.DESCENDING)
                     .limit(limit.toLong())
@@ -159,7 +202,7 @@ class ActivityDetailViewModel : ViewModel() {
                     try {
                         parseCapturedFace(doc.id, doc.data ?: emptyMap())
                     } catch (e: Exception) {
-                        Log.e("ActivityDetailViewModel", "Error parsing document: ${e.message}")
+                        Log.e(TAG, "Error parsing document: ${e.message}")
                         null
                     }
                 }
@@ -170,9 +213,9 @@ class ActivityDetailViewModel : ViewModel() {
                     error = null
                 )
 
-                Log.d("ActivityDetailViewModel", "Loaded ${captures.size} ${if (isRecognized) "recognized" else "unknown"} captures")
+                Log.d(TAG, "Loaded ${captures.size} ${if (isRecognized) "recognized" else "unknown"} captures")
             } catch (e: Exception) {
-                Log.e("ActivityDetailViewModel", "Error loading captures: ${e.message}", e)
+                Log.e(TAG, "Error loading captures: ${e.message}", e)
                 _state.value = _state.value.copy(
                     isLoading = false,
                     error = e.message ?: "Failed to load captures"
@@ -182,15 +225,26 @@ class ActivityDetailViewModel : ViewModel() {
     }
 
     /**
-     * Load captures for a specific person
+     * Load criminal captures only
      */
-    fun loadCapturesForPerson(personId: String, limit: Int = 50) {
+    fun loadCriminalCaptures(limit: Int = 50) {
         viewModelScope.launch {
+            val currentUser = auth.currentUser
+            if (currentUser == null) {
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    error = "Please sign in to view captures"
+                )
+                return@launch
+            }
+
             _state.value = _state.value.copy(isLoading = true, error = null)
 
             try {
-                val querySnapshot = db.collection("captured_faces")
-                    .whereEqualTo("matched_person_id", personId)
+                val querySnapshot = db.collection("users")
+                    .document(currentUser.uid)
+                    .collection("captured_faces")
+                    .whereEqualTo("is_criminal", true)
                     .orderBy("timestamp", Query.Direction.DESCENDING)
                     .limit(limit.toLong())
                     .get()
@@ -200,7 +254,7 @@ class ActivityDetailViewModel : ViewModel() {
                     try {
                         parseCapturedFace(doc.id, doc.data ?: emptyMap())
                     } catch (e: Exception) {
-                        Log.e("ActivityDetailViewModel", "Error parsing document: ${e.message}")
+                        Log.e(TAG, "Error parsing document: ${e.message}")
                         null
                     }
                 }
@@ -211,9 +265,9 @@ class ActivityDetailViewModel : ViewModel() {
                     error = null
                 )
 
-                Log.d("ActivityDetailViewModel", "Loaded ${captures.size} captures for person $personId")
+                Log.d(TAG, "Loaded ${captures.size} criminal captures")
             } catch (e: Exception) {
-                Log.e("ActivityDetailViewModel", "Error loading person captures: ${e.message}", e)
+                Log.e(TAG, "Error loading captures: ${e.message}", e)
                 _state.value = _state.value.copy(
                     isLoading = false,
                     error = e.message ?: "Failed to load captures"
@@ -222,3 +276,17 @@ class ActivityDetailViewModel : ViewModel() {
         }
     }
 }
+
+data class CapturedFaceData(
+    val id: String = "",
+    val croppedFaceBase64: String? = null,
+    val isRecognized: Boolean = false,
+    val isCriminal: Boolean = false,
+    val matchedPersonName: String? = null,
+    val confidence: Float = 0f,
+    val dangerLevel: String? = null,
+    val timestamp: String = "",
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val address: String? = null
+)

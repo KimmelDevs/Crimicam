@@ -7,49 +7,37 @@ import android.location.Location
 import android.util.Base64
 import android.util.Log
 import com.google.firebase.Timestamp
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.GeoPoint
 import kotlinx.coroutines.tasks.await
 import java.io.ByteArrayOutputStream
 import java.util.*
 
-data class CaptureData(
-    // Images (base64 encoded)
-    val croppedFaceBase64: String,
-    val fullFrameBase64: String,
-
-    // Recognition info
-    val isRecognized: Boolean,
-    val isCriminal: Boolean,
-    val matchedPersonId: String? = null,
-    val matchedPersonName: String? = null,
-    val confidence: Float,
-    val dangerLevel: String? = null, // "LOW", "MEDIUM", "HIGH", "CRITICAL"
-
-    // Location info
-    val latitude: Double? = null,
-    val longitude: Double? = null,
-    val address: String? = null,
-
-    // Metadata
-    val timestamp: Timestamp = Timestamp.now(),
-    val deviceId: String? = null,
-    val description: String = ""
-)
-
 class FirestoreCaptureService(private val context: Context) {
 
     private val db = FirebaseFirestore.getInstance()
+    private val auth = FirebaseAuth.getInstance()
     private val geocoder = Geocoder(context, Locale.getDefault())
 
     companion object {
         private const val TAG = "FirestoreCaptureService"
-        private const val COLLECTION_NAME = "captured_faces"
-        private const val MAX_IMAGE_SIZE = 800 // Max width/height for compression
+
+        // Main collections
+        private const val USERS_COLLECTION = "users"
+        private const val CRIMINALS_COLLECTION = "criminals"
+
+        // Subcollections
+        private const val CAPTURES_SUBCOLLECTION = "captured_faces"
+        private const val LOCATIONS_SUBCOLLECTION = "location_history"
+
+        private const val MAX_IMAGE_SIZE = 800
         private const val COMPRESSION_QUALITY = 85
     }
 
     /**
-     * Save captured face to Firestore
+     * Save captured face to Firestore under user's subcollection
      */
     suspend fun saveCapturedFace(
         croppedFace: Bitmap,
@@ -64,16 +52,23 @@ class FirestoreCaptureService(private val context: Context) {
         deviceId: String? = null
     ): Result<String> {
         return try {
-            Log.d(TAG, "Starting to save captured face...")
+            val currentUser = auth.currentUser
+            if (currentUser == null) {
+                Log.e(TAG, "No authenticated user")
+                return Result.failure(Exception("User not authenticated"))
+            }
 
-            // Compress and encode images to base64
+            Log.d(TAG, "Starting to save captured face for user: ${currentUser.uid}")
+
+            // Compress and encode images
             val croppedFaceBase64 = bitmapToBase64(croppedFace)
             val fullFrameBase64 = bitmapToBase64(fullFrame)
 
             Log.d(TAG, "Images encoded to base64")
 
-            // Get address from location
+            // Get address and create GeoPoint
             val address = location?.let { getAddressFromLocation(it) }
+            val geoPoint = location?.let { GeoPoint(it.latitude, it.longitude) }
 
             // Generate description
             val description = generateDescription(
@@ -96,21 +91,38 @@ class FirestoreCaptureService(private val context: Context) {
                 "matched_person_name" to matchedPersonName,
                 "confidence" to confidence,
                 "danger_level" to dangerLevel,
+                "location" to geoPoint,
                 "latitude" to location?.latitude,
                 "longitude" to location?.longitude,
                 "address" to address,
                 "timestamp" to Timestamp.now(),
                 "device_id" to deviceId,
-                "description" to description
+                "description" to description,
+                "user_id" to currentUser.uid
             )
 
-            // Save to Firestore
-            val docRef = db.collection(COLLECTION_NAME)
+            // Save to user's captured_faces subcollection
+            val captureRef = db.collection(USERS_COLLECTION)
+                .document(currentUser.uid)
+                .collection(CAPTURES_SUBCOLLECTION)
                 .add(captureData)
                 .await()
 
-            Log.d(TAG, "Successfully saved capture with ID: ${docRef.id}")
-            Result.success(docRef.id)
+            Log.d(TAG, "Capture saved with ID: ${captureRef.id}")
+
+            // If it's a criminal, update their location tracking
+            if (isCriminal && matchedPersonId != null && geoPoint != null) {
+                updateCriminalLocation(
+                    criminalId = matchedPersonId,
+                    criminalName = matchedPersonName ?: "Unknown",
+                    location = geoPoint,
+                    address = address,
+                    dangerLevel = dangerLevel,
+                    captureId = captureRef.id
+                )
+            }
+
+            Result.success(captureRef.id)
 
         } catch (e: Exception) {
             Log.e(TAG, "Error saving captured face", e)
@@ -119,10 +131,171 @@ class FirestoreCaptureService(private val context: Context) {
     }
 
     /**
+     * Update criminal's location in the criminals collection for map tracking
+     */
+    private suspend fun updateCriminalLocation(
+        criminalId: String,
+        criminalName: String,
+        location: GeoPoint,
+        address: String?,
+        dangerLevel: String?,
+        captureId: String
+    ) {
+        try {
+            val criminalRef = db.collection(CRIMINALS_COLLECTION).document(criminalId)
+
+            // Create/update criminal document with last location
+            val criminalData = hashMapOf(
+                "criminal_id" to criminalId,
+                "criminal_name" to criminalName,
+                "last_location" to location,
+                "last_latitude" to location.latitude,
+                "last_longitude" to location.longitude,
+                "last_address" to address,
+                "last_seen" to Timestamp.now(),
+                "danger_level" to dangerLevel,
+                "last_capture_id" to captureId,
+                "total_sightings" to FieldValue.increment(1)
+            )
+
+            criminalRef.set(criminalData, com.google.firebase.firestore.SetOptions.merge())
+                .await()
+
+            // Add to location history subcollection
+            val locationHistoryData = hashMapOf(
+                "location" to location,
+                "latitude" to location.latitude,
+                "longitude" to location.longitude,
+                "address" to address,
+                "timestamp" to Timestamp.now(),
+                "capture_id" to captureId
+            )
+
+            criminalRef.collection(LOCATIONS_SUBCOLLECTION)
+                .add(locationHistoryData)
+                .await()
+
+            Log.d(TAG, "Updated criminal location for: $criminalName at $address")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating criminal location", e)
+        }
+    }
+
+    /**
+     * Get all criminal locations for map display
+     */
+    suspend fun getCriminalLocations(): Result<List<CriminalLocation>> {
+        return try {
+            val snapshot = db.collection(CRIMINALS_COLLECTION)
+                .get()
+                .await()
+
+            val locations = snapshot.documents.mapNotNull { doc ->
+                try {
+                    val location = doc.getGeoPoint("last_location")
+                    val latitude = doc.getDouble("last_latitude")
+                    val longitude = doc.getDouble("last_longitude")
+
+                    if (location != null || (latitude != null && longitude != null)) {
+                        CriminalLocation(
+                            criminalId = doc.getString("criminal_id") ?: doc.id,
+                            criminalName = doc.getString("criminal_name") ?: "Unknown",
+                            latitude = latitude ?: location?.latitude ?: 0.0,
+                            longitude = longitude ?: location?.longitude ?: 0.0,
+                            address = doc.getString("last_address"),
+                            lastSeen = doc.getTimestamp("last_seen"),
+                            dangerLevel = doc.getString("danger_level"),
+                            totalSightings = doc.getLong("total_sightings")?.toInt() ?: 0
+                        )
+                    } else null
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error parsing criminal location", e)
+                    null
+                }
+            }
+
+            Result.success(locations)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting criminal locations", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Get location history for a specific criminal
+     */
+    suspend fun getCriminalLocationHistory(criminalId: String): Result<List<LocationHistory>> {
+        return try {
+            val snapshot = db.collection(CRIMINALS_COLLECTION)
+                .document(criminalId)
+                .collection(LOCATIONS_SUBCOLLECTION)
+                .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                .limit(50)
+                .get()
+                .await()
+
+            val history = snapshot.documents.mapNotNull { doc ->
+                try {
+                    val location = doc.getGeoPoint("location")
+                    val latitude = doc.getDouble("latitude")
+                    val longitude = doc.getDouble("longitude")
+
+                    if (location != null || (latitude != null && longitude != null)) {
+                        LocationHistory(
+                            latitude = latitude ?: location?.latitude ?: 0.0,
+                            longitude = longitude ?: location?.longitude ?: 0.0,
+                            address = doc.getString("address"),
+                            timestamp = doc.getTimestamp("timestamp"),
+                            captureId = doc.getString("capture_id")
+                        )
+                    } else null
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error parsing location history", e)
+                    null
+                }
+            }
+
+            Result.success(history)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting location history", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Get user's captured faces
+     */
+    suspend fun getUserCaptures(limit: Int = 50): Result<List<Map<String, Any?>>> {
+        return try {
+            val currentUser = auth.currentUser
+            if (currentUser == null) {
+                return Result.failure(Exception("User not authenticated"))
+            }
+
+            val snapshot = db.collection(USERS_COLLECTION)
+                .document(currentUser.uid)
+                .collection(CAPTURES_SUBCOLLECTION)
+                .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                .limit(limit.toLong())
+                .get()
+                .await()
+
+            val captures = snapshot.documents.map { doc ->
+                doc.data?.plus("id" to doc.id) ?: emptyMap()
+            }
+
+            Result.success(captures)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting user captures", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Convert Bitmap to Base64 string with compression
      */
     private fun bitmapToBase64(bitmap: Bitmap): String {
-        // Resize if too large
         val resizedBitmap = if (bitmap.width > MAX_IMAGE_SIZE || bitmap.height > MAX_IMAGE_SIZE) {
             val ratio = Math.min(
                 MAX_IMAGE_SIZE.toFloat() / bitmap.width,
@@ -135,12 +308,10 @@ class FirestoreCaptureService(private val context: Context) {
             bitmap
         }
 
-        // Compress to JPEG
         val byteArrayOutputStream = ByteArrayOutputStream()
         resizedBitmap.compress(Bitmap.CompressFormat.JPEG, COMPRESSION_QUALITY, byteArrayOutputStream)
         val byteArray = byteArrayOutputStream.toByteArray()
 
-        // Encode to Base64
         return Base64.encodeToString(byteArray, Base64.NO_WRAP)
     }
 
@@ -218,97 +389,24 @@ class FirestoreCaptureService(private val context: Context) {
             append(" on ${java.text.SimpleDateFormat("MMM dd, yyyy h:mm a", Locale.getDefault()).format(Date())}")
         }
     }
-
-    /**
-     * Batch save multiple captures
-     */
-    suspend fun saveBatchCaptures(captures: List<CaptureData>): Result<List<String>> {
-        return try {
-            val batch = db.batch()
-            val documentIds = mutableListOf<String>()
-
-            captures.forEach { capture ->
-                val docRef = db.collection(COLLECTION_NAME).document()
-                documentIds.add(docRef.id)
-
-                val captureMap = hashMapOf(
-                    "cropped_face_image_base64" to capture.croppedFaceBase64,
-                    "full_frame_image_base64" to capture.fullFrameBase64,
-                    "is_recognized" to capture.isRecognized,
-                    "is_criminal" to capture.isCriminal,
-                    "matched_person_id" to capture.matchedPersonId,
-                    "matched_person_name" to capture.matchedPersonName,
-                    "confidence" to capture.confidence,
-                    "danger_level" to capture.dangerLevel,
-                    "latitude" to capture.latitude,
-                    "longitude" to capture.longitude,
-                    "address" to capture.address,
-                    "timestamp" to capture.timestamp,
-                    "device_id" to capture.deviceId,
-                    "description" to capture.description
-                )
-
-                batch.set(docRef, captureMap)
-            }
-
-            batch.commit().await()
-            Log.d(TAG, "Successfully saved ${captures.size} captures in batch")
-            Result.success(documentIds)
-
-        } catch (e: Exception) {
-            Log.e(TAG, "Error saving batch captures", e)
-            Result.failure(e)
-        }
-    }
-
-    /**
-     * Get recent captures
-     */
-    suspend fun getRecentCaptures(limit: Int = 20): Result<List<Map<String, Any?>>> {
-        return try {
-            val snapshot = db.collection(COLLECTION_NAME)
-                .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
-                .limit(limit.toLong())
-                .get()
-                .await()
-
-            val captures = snapshot.documents.map { doc ->
-                doc.data?.plus("id" to doc.id) ?: emptyMap()
-            }
-
-            Result.success(captures)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error getting recent captures", e)
-            Result.failure(e)
-        }
-    }
-
-    /**
-     * Delete old captures (older than specified days)
-     */
-    suspend fun deleteOldCaptures(daysOld: Int = 30): Result<Int> {
-        return try {
-            val calendar = Calendar.getInstance()
-            calendar.add(Calendar.DAY_OF_YEAR, -daysOld)
-            val cutoffDate = Timestamp(calendar.time)
-
-            val snapshot = db.collection(COLLECTION_NAME)
-                .whereLessThan("timestamp", cutoffDate)
-                .get()
-                .await()
-
-            val batch = db.batch()
-            snapshot.documents.forEach { doc ->
-                batch.delete(doc.reference)
-            }
-
-            batch.commit().await()
-            Log.d(TAG, "Deleted ${snapshot.size()} old captures")
-            Result.success(snapshot.size())
-
-        } catch (e: Exception) {
-            Log.e(TAG, "Error deleting old captures", e)
-            Result.failure(e)
-        }
-    }
 }
+
+// Data classes for criminal tracking
+data class CriminalLocation(
+    val criminalId: String,
+    val criminalName: String,
+    val latitude: Double,
+    val longitude: Double,
+    val address: String?,
+    val lastSeen: Timestamp?,
+    val dangerLevel: String?,
+    val totalSightings: Int
+)
+
+data class LocationHistory(
+    val latitude: Double,
+    val longitude: Double,
+    val address: String?,
+    val timestamp: Timestamp?,
+    val captureId: String?
+)

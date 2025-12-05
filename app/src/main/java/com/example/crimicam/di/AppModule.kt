@@ -14,6 +14,7 @@ import com.example.crimicam.facerecognitionnetface.models.domain.face_detection.
 import com.example.crimicam.presentation.main.Admin.AdminViewModel
 import com.example.crimicam.presentation.main.Home.Camera.CameraViewModel
 import com.example.crimicam.presentation.main.KnownPeople.KnownPeopleViewModel
+import com.example.crimicam.presentation.main.Map.MapViewModel
 import org.koin.android.ext.koin.androidContext
 import org.koin.androidx.viewmodel.dsl.viewModel
 import org.koin.dsl.module
@@ -137,5 +138,8 @@ val appModule = module {
             criminalUseCase = get(),
             criminalImageVectorUseCase = get()
         )
+    }
+    viewModel {
+        MapViewModel(context = androidContext())
     }
 }

@@ -2,15 +2,14 @@ package com.example.crimicam.presentation.main.Map
 
 import android.content.Context
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -24,6 +23,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.crimicam.data.service.CriminalLocation
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -33,53 +34,20 @@ import org.osmdroid.views.overlay.compass.CompassOverlay
 import org.osmdroid.views.overlay.compass.InternalCompassOrientationProvider
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
+import java.text.SimpleDateFormat
+import java.util.*
 
 @Composable
 fun MapScreen() {
     val context = LocalContext.current
-    var selectedMarker by remember { mutableStateOf<MapMarker?>(null) }
+    val viewModel: MapViewModel = viewModel()
+    val state by viewModel.state.collectAsState()
+
+    var selectedMarker by remember { mutableStateOf<CriminalMapMarker?>(null) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
 
-    // Philippines center coordinates (Manila)
+    // Philippines center coordinates
     val philippinesCenter = remember { GeoPoint(12.8797, 121.7740) }
-
-    // Sample markers for demonstration in the Philippines
-    val markers = remember {
-        listOf(
-            MapMarker(
-                id = 1,
-                name = "Manila Camera",
-                status = "Active",
-                latitude = 14.5995,
-                longitude = 120.9842,
-                type = MarkerType.CAMERA
-            ),
-            MapMarker(
-                id = 2,
-                name = "Cebu Alert Zone",
-                status = "Recent Activity",
-                latitude = 10.3157,
-                longitude = 123.8854,
-                type = MarkerType.ALERT
-            ),
-            MapMarker(
-                id = 3,
-                name = "Davao Camera",
-                status = "Offline",
-                latitude = 7.1907,
-                longitude = 125.4553,
-                type = MarkerType.CAMERA
-            ),
-            MapMarker(
-                id = 4,
-                name = "Known Person - Baguio",
-                status = "John Doe spotted",
-                latitude = 16.4023,
-                longitude = 120.5960,
-                type = MarkerType.PERSON
-            )
-        )
-    }
 
     // Initialize OpenStreetMap configuration
     LaunchedEffect(Unit) {
@@ -88,21 +56,33 @@ fun MapScreen() {
             context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE)
         )
         Configuration.getInstance().userAgentValue = context.packageName
+
+        // Load criminal locations
+        viewModel.loadCriminalLocations()
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
         // OpenStreetMap View
-        OpenStreetMapView(
-            center = philippinesCenter,
-            zoomLevel = 6.0,
-            markers = markers,
-            onMarkerClick = { marker ->
-                selectedMarker = marker
-            },
-            onMapReady = { map ->
-                mapView = map
+        if (state.isLoading && state.criminalLocations.isEmpty()) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator()
             }
-        )
+        } else {
+            OpenStreetMapView(
+                center = philippinesCenter,
+                zoomLevel = 6.0,
+                criminalLocations = state.criminalLocations,
+                onMarkerClick = { marker ->
+                    selectedMarker = marker
+                },
+                onMapReady = { map ->
+                    mapView = map
+                }
+            )
+        }
 
         // Map Controls
         Column(
@@ -114,29 +94,30 @@ fun MapScreen() {
         ) {
             MapControlButton(
                 icon = Icons.Default.Add,
-                onClick = {
-                    mapView?.controller?.zoomIn()
-                }
+                onClick = { mapView?.controller?.zoomIn() }
             )
             MapControlButton(
                 icon = Icons.Default.Remove,
-                onClick = {
-                    mapView?.controller?.zoomOut()
-                }
+                onClick = { mapView?.controller?.zoomOut() }
             )
             MapControlButton(
                 icon = Icons.Default.MyLocation,
-                onClick = {
-                    mapView?.controller?.animateTo(philippinesCenter)
-                }
+                onClick = { mapView?.controller?.animateTo(philippinesCenter) }
+            )
+            MapControlButton(
+                icon = Icons.Default.Refresh,
+                onClick = { viewModel.loadCriminalLocations() }
             )
         }
 
         // Bottom Info Card
         selectedMarker?.let { marker ->
-            MarkerInfoCard(
+            CriminalInfoCard(
                 marker = marker,
                 onDismiss = { selectedMarker = null },
+                onViewHistory = {
+                    viewModel.loadLocationHistory(marker.criminalId)
+                },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(16.dp)
@@ -145,12 +126,23 @@ fun MapScreen() {
 
         // Top Stats Bar
         MapStatsBar(
-            cameraCount = markers.count { it.type == MarkerType.CAMERA },
-            alertCount = markers.count { it.type == MarkerType.ALERT },
+            criminalCount = state.criminalLocations.size,
+            totalSightings = state.criminalLocations.sumOf { it.totalSightings },
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(16.dp)
         )
+
+        // Error message
+        state.error?.let { error ->
+            Snackbar(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(16.dp)
+            ) {
+                Text(text = error)
+            }
+        }
     }
 }
 
@@ -158,11 +150,12 @@ fun MapScreen() {
 fun OpenStreetMapView(
     center: GeoPoint,
     zoomLevel: Double,
-    markers: List<MapMarker>,
-    onMarkerClick: (MapMarker) -> Unit,
+    criminalLocations: List<CriminalLocation>,
+    onMarkerClick: (CriminalMapMarker) -> Unit,
     onMapReady: (MapView) -> Unit
 ) {
     val context = LocalContext.current
+    var currentMapView by remember { mutableStateOf<MapView?>(null) }
 
     AndroidView(
         factory = { context ->
@@ -170,7 +163,7 @@ fun OpenStreetMapView(
                 setTileSource(TileSourceFactory.MAPNIK)
                 setMultiTouchControls(true)
 
-                // Set initial position and zoom (Philippines)
+                // Set initial position and zoom
                 controller.setZoom(zoomLevel)
                 controller.setCenter(center)
 
@@ -189,31 +182,62 @@ fun OpenStreetMapView(
                 locationOverlay.enableMyLocation()
                 overlays.add(locationOverlay)
 
-                // Add markers
-                markers.forEach { mapMarker ->
-                    val marker = Marker(this).apply {
-                        position = GeoPoint(mapMarker.latitude, mapMarker.longitude)
-                        title = mapMarker.name
-                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-
-                        // Set different icons based on marker type
-                        icon = when (mapMarker.type) {
-                            MarkerType.CAMERA -> context.getDrawable(android.R.drawable.ic_menu_camera)
-                            MarkerType.ALERT -> context.getDrawable(android.R.drawable.ic_dialog_alert)
-                            MarkerType.PERSON -> context.getDrawable(android.R.drawable.ic_menu_myplaces)
-                        }
-
-                        setOnMarkerClickListener { _, _ ->
-                            onMarkerClick(mapMarker)
-                            true
-                        }
-                    }
-                    overlays.add(marker)
-                }
+                currentMapView = this
+                onMapReady(this)
             }
         },
         update = { mapView ->
-            // Update map if needed
+            // Clear existing markers (except compass and location)
+            val overlaysToKeep = mapView.overlays.filter {
+                it is CompassOverlay || it is MyLocationNewOverlay
+            }
+            mapView.overlays.clear()
+            mapView.overlays.addAll(overlaysToKeep)
+
+            // Add criminal markers
+            criminalLocations.forEach { criminalLocation ->
+                val marker = Marker(mapView).apply {
+                    position = GeoPoint(criminalLocation.latitude, criminalLocation.longitude)
+                    title = criminalLocation.criminalName
+                    snippet = criminalLocation.address ?: "Location unknown"
+                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+
+                    // Set icon based on danger level
+                    icon = when (criminalLocation.dangerLevel?.uppercase()) {
+                        "CRITICAL" -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply {
+                            setTint(android.graphics.Color.RED)
+                        }
+                        "HIGH" -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply {
+                            setTint(android.graphics.Color.parseColor("#FF6B00"))
+                        }
+                        "MEDIUM" -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply {
+                            setTint(android.graphics.Color.parseColor("#FFA726"))
+                        }
+                        "LOW" -> context.getDrawable(android.R.drawable.ic_dialog_info)?.apply {
+                            setTint(android.graphics.Color.parseColor("#FFC107"))
+                        }
+                        else -> context.getDrawable(android.R.drawable.ic_dialog_alert)
+                    }
+
+                    setOnMarkerClickListener { _, _ ->
+                        onMarkerClick(
+                            CriminalMapMarker(
+                                criminalId = criminalLocation.criminalId,
+                                name = criminalLocation.criminalName,
+                                latitude = criminalLocation.latitude,
+                                longitude = criminalLocation.longitude,
+                                address = criminalLocation.address,
+                                lastSeen = criminalLocation.lastSeen?.toDate(),
+                                dangerLevel = criminalLocation.dangerLevel,
+                                totalSightings = criminalLocation.totalSightings
+                            )
+                        )
+                        true
+                    }
+                }
+                mapView.overlays.add(marker)
+            }
+
             mapView.invalidate()
         },
         modifier = Modifier.fillMaxSize()
@@ -236,11 +260,25 @@ fun MapControlButton(
 }
 
 @Composable
-fun MarkerInfoCard(
-    marker: MapMarker,
+fun CriminalInfoCard(
+    marker: CriminalMapMarker,
     onDismiss: () -> Unit,
+    onViewHistory: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val dangerColor = when (marker.dangerLevel?.uppercase()) {
+        "CRITICAL" -> Color(0xFFB71C1C)
+        "HIGH" -> Color(0xFFD32F2F)
+        "MEDIUM" -> Color(0xFFF57C00)
+        "LOW" -> Color(0xFFFFA726)
+        else -> Color(0xFF757575)
+    }
+
+    val lastSeenText = marker.lastSeen?.let { date ->
+        val formatter = SimpleDateFormat("MMM dd, yyyy h:mm a", Locale.getDefault())
+        formatter.format(date)
+    } ?: "Unknown"
+
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -257,30 +295,57 @@ fun MarkerInfoCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = marker.name,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.Black
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = dangerColor
+                        ) {
+                            Text(
+                                text = marker.dangerLevel ?: "UNKNOWN",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = marker.name,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.Black
+                        text = "Last seen: $lastSeenText",
+                        fontSize = 12.sp,
+                        color = Color.Gray
                     )
                     Text(
-                        text = "Lat: ${"%.4f".format(marker.latitude)}, Lng: ${"%.4f".format(marker.longitude)}",
+                        text = "Sightings: ${marker.totalSightings}",
                         fontSize = 12.sp,
                         color = Color.Gray
                     )
                 }
 
                 TextButton(onClick = onDismiss) {
-                    Text("Close", color = MaterialTheme.colorScheme.primary)
+                    Text("✕", fontSize = 20.sp, color = Color.Gray)
                 }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = marker.status,
-                fontSize = 14.sp,
+                text = "📍 ${marker.address ?: "Location unknown"}",
+                fontSize = 13.sp,
+                color = Color.DarkGray
+            )
+
+            Text(
+                text = "Coordinates: ${"%.4f".format(marker.latitude)}, ${"%.4f".format(marker.longitude)}",
+                fontSize = 11.sp,
                 color = Color.Gray
             )
 
@@ -291,24 +356,20 @@ fun MarkerInfoCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Button(
-                    onClick = { /* View details */ },
+                    onClick = onViewHistory,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = when (marker.type) {
-                            MarkerType.CAMERA -> Color(0xFF2196F3)
-                            MarkerType.ALERT -> Color(0xFFF44336)
-                            MarkerType.PERSON -> Color(0xFFFF9800)
-                        }
+                        containerColor = dangerColor
                     )
                 ) {
-                    Text("View Details", color = Color.White)
+                    Text("View History", color = Color.White, fontSize = 13.sp)
                 }
 
                 OutlinedButton(
                     onClick = { /* Navigate */ },
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text("Navigate")
+                    Text("Navigate", fontSize = 13.sp)
                 }
             }
         }
@@ -317,8 +378,8 @@ fun MarkerInfoCard(
 
 @Composable
 fun MapStatsBar(
-    cameraCount: Int,
-    alertCount: Int,
+    criminalCount: Int,
+    totalSightings: Int,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -332,15 +393,15 @@ fun MapStatsBar(
             horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             StatItem(
-                label = "Cameras",
-                value = cameraCount.toString(),
-                color = Color(0xFF2196F3)
+                label = "Criminals",
+                value = criminalCount.toString(),
+                color = Color(0xFFD32F2F)
             )
 
             StatItem(
-                label = "Alerts",
-                value = alertCount.toString(),
-                color = Color(0xFFF44336)
+                label = "Total Sightings",
+                value = totalSightings.toString(),
+                color = Color(0xFFF57C00)
             )
         }
     }
@@ -379,16 +440,14 @@ fun StatItem(
     }
 }
 
-// Updated Data classes with actual coordinates
-data class MapMarker(
-    val id: Int,
+// Data class for map markers
+data class CriminalMapMarker(
+    val criminalId: String,
     val name: String,
-    val status: String,
     val latitude: Double,
     val longitude: Double,
-    val type: MarkerType
+    val address: String?,
+    val lastSeen: Date?,
+    val dangerLevel: String?,
+    val totalSightings: Int
 )
-
-enum class MarkerType {
-    CAMERA, ALERT, PERSON
-}

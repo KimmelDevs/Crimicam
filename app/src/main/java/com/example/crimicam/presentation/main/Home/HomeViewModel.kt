@@ -36,7 +36,6 @@ data class HomeState(
 
 class HomeViewModel : ViewModel() {
 
-    // Create dependencies directly in the ViewModel
     private val notificationRepository = NotificationRepository(
         firestoreService = FirestoreService(
             FirebaseFirestore.getInstance(),
@@ -45,6 +44,7 @@ class HomeViewModel : ViewModel() {
     )
 
     private val db = FirebaseFirestore.getInstance()
+    private val auth = FirebaseAuth.getInstance()
 
     private val _notificationState = MutableStateFlow<NotificationState>(NotificationState.Idle)
     val notificationState: StateFlow<NotificationState> = _notificationState.asStateFlow()
@@ -52,19 +52,36 @@ class HomeViewModel : ViewModel() {
     private val _homeState = MutableStateFlow(HomeState())
     val homeState: StateFlow<HomeState> = _homeState.asStateFlow()
 
+    companion object {
+        private const val TAG = "HomeViewModel"
+    }
+
     init {
         loadRecentActivities()
     }
 
     /**
-     * Load recent activities from Firestore
+     * Load recent activities from current user's captured_faces subcollection
      */
     fun loadRecentActivities(limit: Int = 10) {
         viewModelScope.launch {
+            val currentUser = auth.currentUser
+            if (currentUser == null) {
+                Log.w(TAG, "No authenticated user, cannot load activities")
+                _homeState.value = _homeState.value.copy(
+                    isLoadingActivities = false,
+                    activitiesError = "Please sign in to view activities"
+                )
+                return@launch
+            }
+
             _homeState.value = _homeState.value.copy(isLoadingActivities = true, activitiesError = null)
 
             try {
-                val snapshot = db.collection("captured_faces")
+                // Query user's captured_faces subcollection
+                val snapshot = db.collection("users")
+                    .document(currentUser.uid)
+                    .collection("captured_faces")
                     .orderBy("timestamp", Query.Direction.DESCENDING)
                     .limit(limit.toLong())
                     .get()
@@ -138,7 +155,7 @@ class HomeViewModel : ViewModel() {
                         )
 
                     } catch (e: Exception) {
-                        Log.e("HomeViewModel", "Error parsing activity", e)
+                        Log.e(TAG, "Error parsing activity", e)
                         null
                     }
                 }
@@ -149,10 +166,10 @@ class HomeViewModel : ViewModel() {
                     activitiesError = null
                 )
 
-                Log.d("HomeViewModel", "Loaded ${activities.size} recent activities")
+                Log.d(TAG, "Loaded ${activities.size} recent activities for user ${currentUser.uid}")
 
             } catch (e: Exception) {
-                Log.e("HomeViewModel", "Error loading activities", e)
+                Log.e(TAG, "Error loading activities", e)
                 _homeState.value = _homeState.value.copy(
                     isLoadingActivities = false,
                     activitiesError = e.message ?: "Failed to load activities"
@@ -167,22 +184,21 @@ class HomeViewModel : ViewModel() {
             when (val result = notificationRepository.triggerNotification()) {
                 is Result.Success -> {
                     _notificationState.value = NotificationState.Success
-                    // Reset to idle after a short delay
                     viewModelScope.launch {
                         delay(2000L)
                         _notificationState.value = NotificationState.Idle
                     }
                 }
                 is Result.Error -> {
-                    _notificationState.value = NotificationState.Error(result.exception.message ?: "Failed to trigger notification")
-                    // Reset to idle after a short delay
+                    _notificationState.value = NotificationState.Error(
+                        result.exception.message ?: "Failed to trigger notification"
+                    )
                     viewModelScope.launch {
                         delay(3000L)
                         _notificationState.value = NotificationState.Idle
                     }
                 }
                 else -> {
-                    // This handles any other potential states, though Result should only have Success and Error
                     _notificationState.value = NotificationState.Idle
                 }
             }
