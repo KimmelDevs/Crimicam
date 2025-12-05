@@ -162,7 +162,6 @@ fun RecordingControls(
                     viewModel.onRecordingFailed(error)
                 }
             )
-            // Share the helper with the service
             ScreenRecordingService.screenRecorderHelper = screenRecorder
         }
     }
@@ -176,7 +175,6 @@ fun RecordingControls(
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
             Log.d("CameraScreen", "Starting screen recording via foreground service...")
 
-            // Start the foreground service
             val serviceIntent = Intent(context, ScreenRecordingService::class.java).apply {
                 action = ScreenRecordingService.ACTION_START
                 putExtra(ScreenRecordingService.EXTRA_RESULT_CODE, result.resultCode)
@@ -196,18 +194,48 @@ fun RecordingControls(
         }
     }
 
-    // Storage permission launcher for Android 9 and below
-    val storagePermissionLauncher = rememberLauncherForActivityResult(
+    // Audio permission launcher
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            // Request screen capture permission
+            Log.d("CameraScreen", "Audio permission granted")
+            // Audio permission granted, now request screen capture
             if (activity != null) {
                 val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
                         as MediaProjectionManager
                 screenCaptureLauncher.launch(projectionManager.createScreenCaptureIntent())
             }
         } else {
+            Log.e("CameraScreen", "Audio permission denied")
+            viewModel.onRecordingFailed("Audio permission required for recording")
+        }
+    }
+
+    // Storage permission launcher for Android 9 and below
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            Log.d("CameraScreen", "Storage permission granted")
+            // Check audio permission next
+            if (ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
+            ) {
+                // Audio already granted, request screen capture
+                if (activity != null) {
+                    val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
+                            as MediaProjectionManager
+                    screenCaptureLauncher.launch(projectionManager.createScreenCaptureIntent())
+                }
+            } else {
+                // Request audio permission
+                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        } else {
+            Log.e("CameraScreen", "Storage permission denied")
             viewModel.onRecognitionError("Storage permission required to save videos")
         }
     }
@@ -225,7 +253,6 @@ fun RecordingControls(
                 if (recordingState.isRecording) {
                     Log.d("CameraScreen", "Stopping recording via service...")
 
-                    // Stop recording via service
                     val stopIntent = Intent(context, ScreenRecordingService::class.java).apply {
                         action = ScreenRecordingService.ACTION_STOP
                     }
@@ -233,7 +260,20 @@ fun RecordingControls(
                     viewModel.stopRecording()
                 } else {
                     Log.d("CameraScreen", "Starting recording flow...")
-                    // Check storage permission first (for Android 9 and below)
+
+                    // Check audio permission first
+                    val hasAudioPermission = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+
+                    if (!hasAudioPermission) {
+                        Log.d("CameraScreen", "Requesting audio permission")
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        return@IconButton
+                    }
+
+                    // Check storage permission (for Android 9 and below)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         // Android 10+ - No storage permission needed
                         if (activity != null) {
@@ -512,7 +552,19 @@ private fun cameraPermissionDialog(context: Context) {
             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         },
         onNegativeButtonClick = {
-            // Handle deny action
+            // Handle deny action - inform user and optionally close the screen
+            Log.d("CameraScreen", "Camera permission denied by user")
+
+            // You can either:
+            // 1. Show a toast message
+            android.widget.Toast.makeText(
+                context,
+                "Camera permission is required for facial recognition",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+
+            // 2. Or navigate back since camera is essential
+            // navController.popBackStack()
         }
     )
 }
