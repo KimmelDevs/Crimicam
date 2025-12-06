@@ -1,3 +1,6 @@
+// ============================================================================
+// FILE: FaceDetectionOverlay.kt - COMPLETE WITH ALL IMPORTS
+// ============================================================================
 package com.example.crimicam.presentation.main.Home.Camera.components
 
 import android.annotation.SuppressLint
@@ -7,6 +10,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.util.Log
 import android.view.SurfaceHolder
@@ -56,6 +60,10 @@ class FaceDetectionOverlay(
 
     var predictions: Array<Prediction> = arrayOf()
 
+    companion object {
+        private const val TAG = "FaceDetectionOverlay"
+    }
+
     init {
         initializeCamera(cameraFacing)
         doOnLayout {
@@ -99,8 +107,9 @@ class FaceDetectionOverlay(
                         preview,
                         frameAnalyzer
                     )
+                    Log.d(TAG, "Camera bound successfully")
                 } catch (exc: Exception) {
-                    Log.e("Camera", "Use case binding failed", exc)
+                    Log.e(TAG, "Use case binding failed", exc)
                 }
             },
             executor
@@ -122,6 +131,26 @@ class FaceDetectionOverlay(
         this.boundingBoxOverlay.setWillNotDraw(false)
         this.boundingBoxOverlay.setZOrderOnTop(true)
         addView(this.boundingBoxOverlay, boundingBoxOverlayParams)
+    }
+
+    /**
+     * Crop bitmap from bounding box
+     */
+    private fun cropBitmapFromBoundingBox(bitmap: Bitmap, boundingBox: RectF): Bitmap? {
+        return try {
+            val left = boundingBox.left.toInt().coerceIn(0, bitmap.width)
+            val top = boundingBox.top.toInt().coerceIn(0, bitmap.height)
+            val right = boundingBox.right.toInt().coerceIn(0, bitmap.width)
+            val bottom = boundingBox.bottom.toInt().coerceIn(0, bitmap.height)
+
+            val width = (right - left).coerceAtLeast(1)
+            val height = (bottom - top).coerceAtLeast(1)
+
+            Bitmap.createBitmap(bitmap, left, top, width, height)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error cropping bitmap", e)
+            null
+        }
     }
 
     private val analyzer = ImageAnalysis.Analyzer { image ->
@@ -166,7 +195,6 @@ class FaceDetectionOverlay(
                     overlayHeight / frameBitmap.height.toFloat()
                 )
                 if (cameraFacing == CameraSelector.LENS_FACING_FRONT) {
-                    // Mirror the bounding box coordinates for front camera
                     postScale(
                         -1f,
                         1f,
@@ -196,24 +224,27 @@ class FaceDetectionOverlay(
                 val isCriminal = criminalResult.criminalName != "Unknown"
                 if (isCriminal) hasCriminal = true
 
-                val box = criminalResult.boundingBox.toRectF()
+                // Get ORIGINAL bounding box (before transformation) for cropping
+                val originalBox = criminalResult.boundingBox.toRectF()
 
-                // Build display label for criminal (danger level above name)
+                // Get a COPY for transformation (for display)
+                val displayBox = RectF(originalBox)
+
                 val displayLabel = if (isCriminal) {
                     val spoofInfo = if (criminalResult.spoofResult?.isSpoof == true) {
                         " (SPOOF)"
                     } else ""
                     "${criminalResult.dangerLevel}$spoofInfo\n${criminalResult.criminalName}"
                 } else {
-                    "" // Unknown face - will be checked against known people
+                    ""
                 }
 
-                // Transform box to overlay coordinates
-                boundingBoxTransform.mapRect(box)
+                // Transform ONLY the display box to overlay coordinates
+                boundingBoxTransform.mapRect(displayBox)
 
                 predictions.add(
                     Prediction(
-                        bbox = box,
+                        bbox = displayBox,
                         label = displayLabel,
                         isCriminal = isCriminal,
                         dangerLevel = if (isCriminal) criminalResult.dangerLevel else null,
@@ -222,18 +253,36 @@ class FaceDetectionOverlay(
                     )
                 )
 
-                // Create DetectedFace for ViewModel state
+                // Crop face from ORIGINAL frame using ORIGINAL box
+                val croppedFace = cropBitmapFromBoundingBox(frameBitmap, originalBox)
+
                 detectedFaces.add(
                     DetectedFace(
-                        boundingBox = box,
+                        boundingBox = displayBox,
                         personId = criminalResult.criminalID,
                         personName = criminalResult.criminalName,
                         confidence = criminalResult.confidence,
                         isCriminal = isCriminal,
                         dangerLevel = criminalResult.dangerLevel,
-                        spoofDetected = criminalResult.spoofResult?.isSpoof ?: false
+                        spoofDetected = criminalResult.spoofResult?.isSpoof ?: false,
+                        croppedBitmap = croppedFace
                     )
                 )
+
+                // ✅ AUTO-SAVE CRIMINALS TO FIRESTORE
+                if (isCriminal && croppedFace != null) {
+                    Log.d(TAG, "🚨 Auto-saving criminal: ${criminalResult.criminalName} - ${criminalResult.dangerLevel}")
+
+                    viewModel.saveCriminalToFirestore(
+                        croppedFace = croppedFace,
+                        fullFrame = frameBitmap,
+                        criminalId = criminalResult.criminalID,
+                        criminalName = criminalResult.criminalName,
+                        confidence = criminalResult.confidence,
+                        dangerLevel = criminalResult.dangerLevel,
+                        isSpoof = criminalResult.spoofResult?.isSpoof ?: false
+                    )
+                }
             }
 
             // SECOND: If no criminals detected, check for known people
@@ -246,27 +295,25 @@ class FaceDetectionOverlay(
                     )
 
                 peopleResults.forEach { personResult ->
-                    val box = personResult.boundingBox.toRectF()
+                    val originalBox = personResult.boundingBox.toRectF()
+                    val displayBox = RectF(originalBox)
                     var personName = personResult.personName
 
-                    // Check if database is empty
                     if (viewModel.getNumPeople() == 0L) {
                         personName = ""
                     }
 
-                    // Add spoof detection info if available
                     val displayLabel = if (personResult.spoofResult != null && personResult.spoofResult.isSpoof) {
                         "$personName\n(SPOOF: ${(personResult.spoofResult.score * 100).toInt()}%)"
                     } else {
                         personName
                     }
 
-                    // Transform box to overlay coordinates
-                    boundingBoxTransform.mapRect(box)
+                    boundingBoxTransform.mapRect(displayBox)
 
                     predictions.add(
                         Prediction(
-                            bbox = box,
+                            bbox = displayBox,
                             label = displayLabel,
                             isCriminal = false,
                             dangerLevel = null,
@@ -275,14 +322,16 @@ class FaceDetectionOverlay(
                         )
                     )
 
-                    // Create DetectedFace for ViewModel state
+                    val croppedFace = cropBitmapFromBoundingBox(frameBitmap, originalBox)
+
                     detectedFaces.add(
                         DetectedFace(
-                            boundingBox = box,
+                            boundingBox = displayBox,
                             personName = if (personName.isNotBlank()) personName else null,
                             confidence = personResult.confidence,
                             isCriminal = false,
-                            spoofDetected = personResult.spoofResult?.isSpoof ?: false
+                            spoofDetected = personResult.spoofResult?.isSpoof ?: false,
+                            croppedBitmap = croppedFace
                         )
                     )
                 }
@@ -293,10 +342,7 @@ class FaceDetectionOverlay(
             }
 
             withContext(Dispatchers.Main) {
-                // Update ViewModel with detected faces
                 viewModel.updateDetectedFaces(detectedFaces)
-
-                // Update overlay UI
                 this@FaceDetectionOverlay.predictions = predictions.toTypedArray()
                 boundingBoxOverlay.invalidate()
                 isProcessing = false
@@ -318,65 +364,65 @@ class FaceDetectionOverlay(
     inner class BoundingBoxOverlay(context: Context) :
         SurfaceView(context), SurfaceHolder.Callback {
 
-        // Criminal detection colors
+        // Criminal colors - Fill
         private val criminalHighBoxPaint = Paint().apply {
-            color = Color.parseColor("#4DFF0000") // Red with alpha for HIGH danger
+            color = Color.parseColor("#4DFF0000")
             style = Paint.Style.FILL
         }
 
         private val criminalMediumBoxPaint = Paint().apply {
-            color = Color.parseColor("#4DFFA500") // Orange with alpha for MEDIUM danger
+            color = Color.parseColor("#4DFFA500")
             style = Paint.Style.FILL
         }
 
         private val criminalLowBoxPaint = Paint().apply {
-            color = Color.parseColor("#4DFFFF00") // Yellow with alpha for LOW danger
+            color = Color.parseColor("#4DFFFF00")
             style = Paint.Style.FILL
         }
 
-        // Criminal stroke colors
+        // Criminal colors - Stroke
         private val criminalHighStrokePaint = Paint().apply {
-            color = Color.parseColor("#FF0000") // Bright red
+            color = Color.parseColor("#FF0000")
             style = Paint.Style.STROKE
             strokeWidth = 6f
         }
 
         private val criminalMediumStrokePaint = Paint().apply {
-            color = Color.parseColor("#FFA500") // Bright orange
+            color = Color.parseColor("#FFA500")
             style = Paint.Style.STROKE
             strokeWidth = 5f
         }
 
         private val criminalLowStrokePaint = Paint().apply {
-            color = Color.parseColor("#FFFF00") // Bright yellow
+            color = Color.parseColor("#FFFF00")
             style = Paint.Style.STROKE
             strokeWidth = 4f
         }
 
         // Known people colors
         private val recognizedBoxPaint = Paint().apply {
-            color = Color.parseColor("#4D00FF00") // Green with alpha
+            color = Color.parseColor("#4D00FF00")
             style = Paint.Style.FILL
         }
 
         private val unknownBoxPaint = Paint().apply {
-            color = Color.parseColor("#4D808080") // Gray with alpha
+            color = Color.parseColor("#4D808080")
             style = Paint.Style.FILL
         }
 
         private val recognizedStrokePaint = Paint().apply {
-            color = Color.parseColor("#00FF00") // Bright green
+            color = Color.parseColor("#00FF00")
             style = Paint.Style.STROKE
             strokeWidth = 4f
         }
 
         private val unknownStrokePaint = Paint().apply {
-            color = Color.parseColor("#808080") // Gray
+            color = Color.parseColor("#808080")
             style = Paint.Style.STROKE
             strokeWidth = 3f
         }
 
-        // Text paint for labels
+        // Text paints
         private val textPaint = Paint().apply {
             strokeWidth = 2.0f
             textSize = 32f
@@ -385,7 +431,6 @@ class FaceDetectionOverlay(
             typeface = android.graphics.Typeface.DEFAULT_BOLD
         }
 
-        // Text paint for danger level (larger)
         private val dangerTextPaint = Paint().apply {
             strokeWidth = 2.5f
             textSize = 38f
@@ -394,27 +439,28 @@ class FaceDetectionOverlay(
             typeface = android.graphics.Typeface.DEFAULT_BOLD
         }
 
-        // Background for text labels
         private val textBackgroundPaint = Paint().apply {
-            color = Color.parseColor("#DD000000") // More opaque black
+            color = Color.parseColor("#DD000000")
             style = Paint.Style.FILL
         }
 
-        // Criminal alert background (more prominent)
         private val criminalTextBackgroundPaint = Paint().apply {
-            color = Color.parseColor("#EE000000") // Almost opaque black
+            color = Color.parseColor("#EE000000")
             style = Paint.Style.FILL
+        }
+
+        init {
+            holder.addCallback(this)
+            setZOrderOnTop(true)
+            holder.setFormat(PixelFormat.TRANSPARENT)
         }
 
         override fun surfaceCreated(holder: SurfaceHolder) {}
-
         override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-
         override fun surfaceDestroyed(holder: SurfaceHolder) {}
 
         override fun onDraw(canvas: Canvas) {
             predictions.forEach { prediction ->
-                // Determine paint colors based on type
                 val (fillPaint, strokePaint) = when {
                     prediction.isCriminal -> {
                         when (prediction.dangerLevel) {
@@ -428,23 +474,9 @@ class FaceDetectionOverlay(
                     else -> Pair(unknownBoxPaint, unknownStrokePaint)
                 }
 
-                // Draw filled box
-                canvas.drawRoundRect(
-                    prediction.bbox,
-                    16f,
-                    16f,
-                    fillPaint
-                )
+                canvas.drawRoundRect(prediction.bbox, 16f, 16f, fillPaint)
+                canvas.drawRoundRect(prediction.bbox, 16f, 16f, strokePaint)
 
-                // Draw box outline
-                canvas.drawRoundRect(
-                    prediction.bbox,
-                    16f,
-                    16f,
-                    strokePaint
-                )
-
-                // Draw label with background if available
                 if (prediction.label.isNotBlank()) {
                     val lines = prediction.label.split("\n")
                     var currentY = prediction.bbox.top - 20f
@@ -452,7 +484,6 @@ class FaceDetectionOverlay(
                     lines.reversed().forEachIndexed { reverseIndex, line ->
                         val index = lines.size - 1 - reverseIndex
                         val paint = if (prediction.isCriminal && index == 0) {
-                            // Danger level gets bigger text (first line for criminals)
                             dangerTextPaint
                         } else {
                             textPaint
@@ -466,14 +497,12 @@ class FaceDetectionOverlay(
                         val lineHeight = textBounds.height() + 16f
                         val textY = currentY - lineHeight
 
-                        // Ensure text stays within bounds
                         val adjustedTextY = if (textY < lineHeight) {
                             prediction.bbox.bottom + lineHeight * (reverseIndex + 1)
                         } else {
                             textY
                         }
 
-                        // Background for text (use criminal background for criminals)
                         val backgroundPaint = if (prediction.isCriminal) {
                             criminalTextBackgroundPaint
                         } else {
@@ -488,9 +517,7 @@ class FaceDetectionOverlay(
                             backgroundPaint
                         )
 
-                        // Draw text (in red for criminals, white for others)
                         if (prediction.isCriminal && index == 0) {
-                            // Danger level in danger color (first line for criminals)
                             paint.color = when (prediction.dangerLevel) {
                                 "HIGH" -> Color.parseColor("#FF0000")
                                 "MEDIUM" -> Color.parseColor("#FFA500")
@@ -501,17 +528,10 @@ class FaceDetectionOverlay(
                             paint.color = Color.WHITE
                         }
 
-                        canvas.drawText(
-                            displayText,
-                            textX,
-                            adjustedTextY,
-                            paint
-                        )
-
+                        canvas.drawText(displayText, textX, adjustedTextY, paint)
                         currentY = textY - 8f
                     }
 
-                    // Draw confidence score (small text at bottom right)
                     if (prediction.confidence > 0f) {
                         val confidenceText = "${(prediction.confidence * 100).toInt()}%"
                         val confidencePaint = Paint().apply {
@@ -531,3 +551,52 @@ class FaceDetectionOverlay(
         }
     }
 }
+
+// ============================================================================
+// ADD THIS METHOD TO CameraViewModel.kt
+// ============================================================================
+/*
+/**
+ * Save criminal detection to Firestore (called from overlay analyzer)
+ */
+fun saveCriminalToFirestore(
+    croppedFace: Bitmap,
+    fullFrame: Bitmap,
+    criminalId: String,
+    criminalName: String,
+    confidence: Float,
+    dangerLevel: String,
+    isSpoof: Boolean
+) {
+    viewModelScope.launch {
+        try {
+            val result = firestoreCaptureService.saveCapturedFace(
+                croppedFace = croppedFace,
+                fullFrame = fullFrame,
+                isRecognized = true,
+                isCriminal = true,
+                matchedPersonId = criminalId,
+                matchedPersonName = criminalName,
+                confidence = confidence,
+                dangerLevel = dangerLevel,
+                location = _state.value.currentLocation,
+                deviceId = android.provider.Settings.Secure.getString(
+                    context.contentResolver,
+                    android.provider.Settings.Secure.ANDROID_ID
+                )
+            )
+
+            result.onSuccess { captureId ->
+                _state.value = _state.value.copy(lastSavedCaptureId = captureId)
+                Log.d(TAG, "✅ Criminal saved to Firestore: $captureId")
+                updateStatusMessage("🚨 Criminal detected and saved!")
+            }.onFailure { e ->
+                Log.e(TAG, "❌ Failed to save criminal", e)
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Error saving criminal to Firestore", e)
+        }
+    }
+}
+*/

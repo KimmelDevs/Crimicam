@@ -3,6 +3,7 @@ package com.example.crimicam.presentation.main.Map
 import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.crimicam.data.service.CriminalLocation
 import com.example.crimicam.data.service.FirestoreCaptureService
@@ -38,6 +39,7 @@ class MapViewModel(private val context: Context) : ViewModel() {
             _state.value = _state.value.copy(isLoading = true, error = null)
 
             try {
+                Log.d(TAG, "Loading criminal locations...")
                 val result = firestoreService.getCriminalLocations()
 
                 result.onSuccess { locations ->
@@ -46,13 +48,13 @@ class MapViewModel(private val context: Context) : ViewModel() {
                         criminalLocations = locations,
                         error = null
                     )
-                    Log.d(TAG, "Loaded ${locations.size} criminal locations")
+                    Log.d(TAG, "✅ Loaded ${locations.size} criminal locations")
                 }.onFailure { exception ->
                     _state.value = _state.value.copy(
                         isLoading = false,
                         error = exception.message ?: "Failed to load criminal locations"
                     )
-                    Log.e(TAG, "Error loading criminal locations", exception)
+                    Log.e(TAG, "❌ Error loading criminal locations", exception)
                 }
 
             } catch (e: Exception) {
@@ -60,7 +62,7 @@ class MapViewModel(private val context: Context) : ViewModel() {
                     isLoading = false,
                     error = e.message ?: "Unknown error occurred"
                 )
-                Log.e(TAG, "Exception loading criminal locations", e)
+                Log.e(TAG, "❌ Exception loading criminal locations", e)
             }
         }
     }
@@ -71,19 +73,20 @@ class MapViewModel(private val context: Context) : ViewModel() {
     fun loadLocationHistory(criminalId: String) {
         viewModelScope.launch {
             try {
+                Log.d(TAG, "Loading location history for criminal: $criminalId")
                 val result = firestoreService.getCriminalLocationHistory(criminalId)
 
                 result.onSuccess { history ->
                     _state.value = _state.value.copy(
                         selectedCriminalHistory = history
                     )
-                    Log.d(TAG, "Loaded ${history.size} location history entries for $criminalId")
+                    Log.d(TAG, "✅ Loaded ${history.size} location history entries for $criminalId")
                 }.onFailure { exception ->
-                    Log.e(TAG, "Error loading location history", exception)
+                    Log.e(TAG, "❌ Error loading location history", exception)
                 }
 
             } catch (e: Exception) {
-                Log.e(TAG, "Exception loading location history", e)
+                Log.e(TAG, "❌ Exception loading location history", e)
             }
         }
     }
@@ -100,5 +103,18 @@ class MapViewModel(private val context: Context) : ViewModel() {
      */
     fun clearError() {
         _state.value = _state.value.copy(error = null)
+    }
+}
+
+/**
+ * Factory for creating MapViewModel with Context dependency
+ */
+class MapViewModelFactory(private val context: Context) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        if (modelClass.isAssignableFrom(MapViewModel::class.java)) {
+            return MapViewModel(context) as T
+        }
+        throw IllegalArgumentException("Unknown ViewModel class")
     }
 }

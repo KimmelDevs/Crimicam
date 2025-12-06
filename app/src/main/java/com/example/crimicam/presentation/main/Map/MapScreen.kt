@@ -7,7 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.   icons.filled.Add
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
@@ -40,9 +40,13 @@ import java.util.*
 @Composable
 fun MapScreen() {
     val context = LocalContext.current
-    val viewModel: MapViewModel = viewModel()
-    val state by viewModel.state.collectAsState()
 
+    // FIXED: Use ViewModelFactory to provide Context
+    val viewModel: MapViewModel = viewModel(
+        factory = MapViewModelFactory(context)
+    )
+
+    val state by viewModel.state.collectAsState()
     var selectedMarker by remember { mutableStateOf<CriminalMapMarker?>(null) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
 

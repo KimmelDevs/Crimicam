@@ -2,6 +2,7 @@ package com.example.crimicam.presentation.main.Home.ActivityDetail
 
 import android.graphics.BitmapFactory
 import android.util.Base64
+import android.util.Log
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -34,8 +35,11 @@ fun ActivityDetailScreen(
     val viewModel: ActivityDetailViewModel = viewModel()
     val state by viewModel.state.collectAsState()
 
+    // Log the captureId for debugging
     LaunchedEffect(captureId) {
-        if (captureId != null) {
+        Log.d("ActivityDetailScreen", "Received captureId: $captureId")
+
+        if (captureId != null && captureId != "null" && captureId.isNotEmpty()) {
             viewModel.loadCaptureDetails(captureId)
         } else {
             viewModel.loadAllCaptures()
@@ -45,7 +49,14 @@ fun ActivityDetailScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Activity Details") },
+                title = {
+                    Text(
+                        if (captureId != null && captureId != "null")
+                            "Activity Details"
+                        else
+                            "All Captures"
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = { navController.navigateUp() }) {
                         Icon(
@@ -64,9 +75,22 @@ fun ActivityDetailScreen(
         ) {
             when {
                 state.isLoading -> {
-                    CircularProgressIndicator(
-                        modifier = Modifier.align(Alignment.Center)
-                    )
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            CircularProgressIndicator()
+                            Text(
+                                text = "Loading captures...",
+                                fontSize = 14.sp,
+                                color = Color.Gray
+                            )
+                        }
+                    }
                 }
                 state.error != null -> {
                     Column(
@@ -77,13 +101,20 @@ fun ActivityDetailScreen(
                         verticalArrangement = Arrangement.Center
                     ) {
                         Text(
-                            text = "Error: ${state.error}",
+                            text = "⚠️ Error",
+                            fontSize = 24.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.Red
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = state.error ?: "Unknown error",
                             color = Color.Red,
                             fontSize = 16.sp
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         Button(onClick = {
-                            if (captureId != null) {
+                            if (captureId != null && captureId != "null") {
                                 viewModel.loadCaptureDetails(captureId)
                             } else {
                                 viewModel.loadAllCaptures()
@@ -102,8 +133,20 @@ fun ActivityDetailScreen(
                         verticalArrangement = Arrangement.Center
                     ) {
                         Text(
+                            text = "📭",
+                            fontSize = 64.sp
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
                             text = "No captured faces found",
-                            fontSize = 16.sp,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = Color.Gray
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Start using the camera to capture faces",
+                            fontSize = 14.sp,
                             color = Color.Gray
                         )
                     }
@@ -117,92 +160,26 @@ fun ActivityDetailScreen(
                     ) {
                         // Activity Info Card (if viewing single capture)
                         state.selectedCapture?.let { capture ->
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(bottom = 16.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (capture.isRecognized)
-                                        Color(0xFFE8F5E9)
-                                    else
-                                        Color(0xFFFCE4EC)
-                                )
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(16.dp)
-                                ) {
-                                    Text(
-                                        text = if (capture.isRecognized) {
-                                            "✅ Identified: ${capture.matchedPersonName ?: "Unknown"}"
-                                        } else {
-                                            "⚠️ Unknown Person Detected"
-                                        },
-                                        fontSize = 18.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (capture.isRecognized)
-                                            Color(0xFF2E7D32)
-                                        else
-                                            Color(0xFFC2185B)
-                                    )
-
-                                    Spacer(modifier = Modifier.height(8.dp))
-
-                                    if (capture.isRecognized) {
-                                        Text(
-                                            text = "Confidence: ${(capture.confidence * 100).toInt()}%",
-                                            fontSize = 14.sp,
-                                            color = Color(0xFF2E7D32)
-                                        )
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                    }
-
-                                    Text(
-                                        text = "Captured: ${capture.timestamp}",
-                                        fontSize = 14.sp,
-                                        color = if (capture.isRecognized)
-                                            Color(0xFF2E7D32)
-                                        else
-                                            Color(0xFFC2185B)
-                                    )
-
-                                    if (capture.address != null) {
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Text(
-                                            text = "Location: ${capture.address}",
-                                            fontSize = 14.sp,
-                                            color = if (capture.isRecognized)
-                                                Color(0xFF2E7D32)
-                                            else
-                                                Color(0xFFC2185B)
-                                        )
-                                    } else if (capture.latitude != null && capture.longitude != null) {
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Text(
-                                            text = "Coordinates: ${capture.latitude}, ${capture.longitude}",
-                                            fontSize = 14.sp,
-                                            color = if (capture.isRecognized)
-                                                Color(0xFF2E7D32)
-                                            else
-                                                Color(0xFFC2185B)
-                                        )
-                                    }
-                                }
-                            }
+                            CaptureInfoCard(capture = capture)
+                            Spacer(modifier = Modifier.height(16.dp))
                         }
 
                         Text(
-                            text = if (captureId != null) "Captured Media" else "All Captured Faces",
+                            text = if (captureId != null && captureId != "null")
+                                "Captured Media"
+                            else
+                                "All Captured Faces (${state.captures.size})",
                             fontSize = 20.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(bottom = 12.dp)
                         )
 
-                        // Photo Grid - Fixed height calculation
+                        // Photo Grid
                         LazyVerticalGrid(
                             columns = GridCells.Fixed(2),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.heightIn(max = 600.dp) // Use heightIn instead of fixed height
+                            modifier = Modifier.heightIn(max = 800.dp)
                         ) {
                             items(state.captures) { capture ->
                                 CapturedFaceCard(capture = capture)
@@ -218,9 +195,137 @@ fun ActivityDetailScreen(
 }
 
 @Composable
+fun CaptureInfoCard(capture: CapturedFaceData) {
+    val backgroundColor = when {
+        capture.isCriminal && capture.dangerLevel == "CRITICAL" -> Color(0xFFFFEBEE)
+        capture.isCriminal -> Color(0xFFFFF3E0)
+        capture.isRecognized -> Color(0xFFE8F5E9)
+        else -> Color(0xFFFCE4EC)
+    }
+
+    val textColor = when {
+        capture.isCriminal && capture.dangerLevel == "CRITICAL" -> Color(0xFFB71C1C)
+        capture.isCriminal -> Color(0xFFE65100)
+        capture.isRecognized -> Color(0xFF2E7D32)
+        else -> Color(0xFFC2185B)
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = backgroundColor),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            // Title
+            Text(
+                text = when {
+                    capture.isCriminal && capture.dangerLevel != null -> {
+                        "🚨 ${capture.dangerLevel} DANGER: ${capture.matchedPersonName ?: "Unknown Criminal"}"
+                    }
+                    capture.isRecognized -> {
+                        "✅ Identified: ${capture.matchedPersonName ?: "Unknown"}"
+                    }
+                    else -> "⚠️ Unknown Person Detected"
+                },
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = textColor
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Confidence
+            if (capture.confidence > 0) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "Confidence: ",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = textColor.copy(alpha = 0.8f)
+                    )
+                    Text(
+                        text = "${(capture.confidence * 100).toInt()}%",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = textColor
+                    )
+                }
+            }
+
+            // Timestamp
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(vertical = 4.dp)
+            ) {
+                Text(
+                    text = "Captured: ",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = textColor.copy(alpha = 0.8f)
+                )
+                Text(
+                    text = capture.timestamp,
+                    fontSize = 14.sp,
+                    color = textColor
+                )
+            }
+
+            // Location
+            if (capture.address != null) {
+                Row(
+                    verticalAlignment = Alignment.Top,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "Location: ",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = textColor.copy(alpha = 0.8f)
+                    )
+                    Text(
+                        text = capture.address,
+                        fontSize = 14.sp,
+                        color = textColor,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            } else if (capture.latitude != null && capture.longitude != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "Coordinates: ",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = textColor.copy(alpha = 0.8f)
+                    )
+                    Text(
+                        text = "${"%.4f".format(capture.latitude)}, ${"%.4f".format(capture.longitude)}",
+                        fontSize = 14.sp,
+                        color = textColor
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun CapturedFaceCard(capture: CapturedFaceData) {
     val decodedBitmap = remember(capture.croppedFaceBase64) {
         decodeBase64ToBitmap(capture.croppedFaceBase64)
+    }
+
+    val cardColor = when {
+        capture.isCriminal && capture.dangerLevel == "CRITICAL" -> Color(0xFFB71C1C)
+        capture.isCriminal && capture.dangerLevel == "HIGH" -> Color(0xFFD32F2F)
+        capture.isCriminal -> Color(0xFFFF6F00)
+        capture.isRecognized -> Color(0xFF4CAF50)
+        else -> Color(0xFFE91E63)
     }
 
     Card(
@@ -228,12 +333,7 @@ fun CapturedFaceCard(capture: CapturedFaceData) {
             .fillMaxWidth()
             .aspectRatio(1f),
         shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (capture.isRecognized)
-                Color(0xFF4CAF50)
-            else
-                Color(0xFFE91E63)
-        )
+        colors = CardDefaults.cardColors(containerColor = cardColor)
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             // Display the cropped face image
@@ -245,17 +345,47 @@ fun CapturedFaceCard(capture: CapturedFaceData) {
                     contentScale = ContentScale.Crop
                 )
             } ?: run {
-                // Fallback if no image or decoding failed
+                // Fallback if no image
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = "No Image",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "📷",
+                            fontSize = 32.sp
+                        )
+                        Text(
+                            text = "No Image",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
+
+            // Criminal danger badge
+            if (capture.isCriminal && capture.dangerLevel != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(8.dp)
+                ) {
+                    Surface(
+                        color = Color.Red,
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = capture.dangerLevel,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 9.sp,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
                 }
             }
 
@@ -271,10 +401,10 @@ fun CapturedFaceCard(capture: CapturedFaceData) {
                     shape = RoundedCornerShape(4.dp)
                 ) {
                     Text(
-                        text = if (capture.isRecognized) {
-                            capture.matchedPersonName ?: "Known"
-                        } else {
-                            "Unknown"
+                        text = when {
+                            capture.isCriminal -> capture.matchedPersonName ?: "Criminal"
+                            capture.isRecognized -> capture.matchedPersonName ?: "Known"
+                            else -> "Unknown"
                         },
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
@@ -285,7 +415,7 @@ fun CapturedFaceCard(capture: CapturedFaceData) {
             }
 
             // Confidence badge
-            if (capture.isRecognized && capture.confidence > 0) {
+            if (capture.confidence > 0) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -309,7 +439,6 @@ fun CapturedFaceCard(capture: CapturedFaceData) {
     }
 }
 
-// Remove @Composable annotation from this function - it's a regular function
 fun decodeBase64ToBitmap(base64String: String?): android.graphics.Bitmap? {
     return if (base64String.isNullOrEmpty()) {
         null
@@ -318,20 +447,8 @@ fun decodeBase64ToBitmap(base64String: String?): android.graphics.Bitmap? {
             val imageBytes = Base64.decode(base64String, Base64.DEFAULT)
             BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e("ActivityDetailScreen", "Error decoding base64 image", e)
             null
         }
     }
 }
-
-data class CapturedFaceData(
-    val id: String = "",
-    val croppedFaceBase64: String? = null,
-    val isRecognized: Boolean = false,
-    val matchedPersonName: String? = null,
-    val confidence: Float = 0f,
-    val timestamp: String = "",
-    val latitude: Double? = null,
-    val longitude: Double? = null,
-    val address: String? = null
-)

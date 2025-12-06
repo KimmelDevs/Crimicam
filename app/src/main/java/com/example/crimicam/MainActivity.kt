@@ -24,18 +24,18 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.example.crimicam.presentation.login.LoginScreen
 import com.example.crimicam.presentation.main.Admin.AdminScreen
 import com.example.crimicam.presentation.main.BottomNav.BottomNavItem
 import com.example.crimicam.presentation.main.BottomNav.BottomNavigationBar
 import com.example.crimicam.presentation.main.Home.ActivityDetail.ActivityDetailScreen
 import com.example.crimicam.presentation.main.Home.Camera.CameraScreen
-import com.example.crimicam.presentation.main.Home.Camera.CameraViewModel
 import com.example.crimicam.presentation.main.Home.HomeScreen
 import com.example.crimicam.presentation.main.Home.Monitor.MonitorScreen
 import com.example.crimicam.presentation.main.Home.Monitor.StreamViewerScreen
@@ -243,8 +243,31 @@ fun MainScreen(
             composable("monitor") {
                 MonitorScreen(navController = bottomNavController)
             }
+
+            // FIXED: Activity detail route with parameter
+            composable(
+                route = "activity_detail/{captureId}",
+                arguments = listOf(
+                    navArgument("captureId") {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    }
+                )
+            ) { backStackEntry ->
+                val captureId = backStackEntry.arguments?.getString("captureId")
+                ActivityDetailScreen(
+                    navController = bottomNavController,
+                    captureId = captureId
+                )
+            }
+
+            // Alternative route without parameter
             composable("activity_detail") {
-                ActivityDetailScreen(navController = bottomNavController)
+                ActivityDetailScreen(
+                    navController = bottomNavController,
+                    captureId = null
+                )
             }
 
             // Profile nested routes (these are NOT bottom nav routes)

@@ -5,8 +5,10 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.Location
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Looper
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -39,12 +41,14 @@ import com.example.crimicam.presentation.main.Home.Camera.components.FaceDetecti
 import com.example.crimicam.presentation.main.Home.Camera.components.ScreenRecorderHelper
 import com.example.crimicam.presentation.main.Home.Camera.components.ScreenRecordingService
 import com.example.crimicam.presentation.main.Home.Camera.components.createAlertDialog
+import com.google.android.gms.location.*
 import org.koin.androidx.compose.koinViewModel
 
 private val cameraPermissionStatus = mutableStateOf(false)
 private val cameraFacing = mutableIntStateOf(CameraSelector.LENS_FACING_FRONT)
 private lateinit var cameraPermissionLauncher: androidx.activity.compose.ManagedActivityResultLauncher<String, Boolean>
 private var screenRecorder: ScreenRecorderHelper? = null
+private lateinit var locationCallback: LocationCallback
 
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
@@ -53,6 +57,21 @@ fun CameraScreen(
     viewModel: CameraViewModel = koinViewModel()
 ) {
     val context = LocalContext.current
+    val state by viewModel.state.collectAsState()
+
+    // Location tracking
+    val fusedLocationClient = remember {
+        LocationServices.getFusedLocationProviderClient(context)
+    }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        viewModel.setLocationPermission(isGranted)
+        if (isGranted) {
+            startLocationUpdates(fusedLocationClient, viewModel, context)
+        }
+    }
 
     // Check camera permission
     LaunchedEffect(Unit) {
@@ -61,9 +80,31 @@ fun CameraScreen(
                     android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 
+    // Request location permission and start updates
+    LaunchedEffect(Unit) {
+        if (ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            viewModel.setLocationPermission(true)
+            startLocationUpdates(fusedLocationClient, viewModel, context)
+        } else {
+            locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
+    // Stop location updates when screen is disposed
+    DisposableEffect(Unit) {
+        onDispose {
+            stopLocationUpdates(fusedLocationClient)
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         ScreenUI(viewModel)
 
+        // Back button
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -85,7 +126,7 @@ fun CameraScreen(
             }
         }
 
-        // Top controls container - recording and camera switch side by side
+        // Top controls container
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -100,12 +141,10 @@ fun CameraScreen(
                     .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(24.dp))
                     .padding(8.dp)
             ) {
-                // Recording controls
                 RecordingControls(viewModel = viewModel)
 
                 Spacer(modifier = Modifier.width(8.dp))
 
-                // Vertical divider
                 Box(
                     modifier = Modifier
                         .width(1.dp)
@@ -135,6 +174,26 @@ fun CameraScreen(
                         modifier = Modifier.size(20.dp)
                     )
                 }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // Manual capture button
+                IconButton(
+                    onClick = {
+                        viewModel.saveCurrentDetection()
+                        Log.d("CameraScreen", "Manual capture triggered")
+                    },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(Color.Green.copy(alpha = 0.8f), CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Camera,
+                        contentDescription = "Manual Capture",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
         }
     }
@@ -150,7 +209,6 @@ fun RecordingControls(
     val state by viewModel.state.collectAsState()
     val recordingState = state.recordingState
 
-    // Initialize screen recorder
     LaunchedEffect(Unit) {
         if (screenRecorder == null) {
             screenRecorder = ScreenRecorderHelper(
@@ -166,15 +224,10 @@ fun RecordingControls(
         }
     }
 
-    // Screen capture permission launcher
     val screenCaptureLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        Log.d("CameraScreen", "Screen capture result: resultCode=${result.resultCode}, data=${result.data}")
-
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-            Log.d("CameraScreen", "Starting screen recording via foreground service...")
-
             val serviceIntent = Intent(context, ScreenRecordingService::class.java).apply {
                 action = ScreenRecordingService.ACTION_START
                 putExtra(ScreenRecordingService.EXTRA_RESULT_CODE, result.resultCode)
@@ -189,53 +242,42 @@ fun RecordingControls(
 
             viewModel.startRecording()
         } else {
-            Log.e("CameraScreen", "Screen recording permission denied")
             viewModel.onRecordingFailed("Screen recording permission denied")
         }
     }
 
-    // Audio permission launcher
     val audioPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            Log.d("CameraScreen", "Audio permission granted")
-            // Audio permission granted, now request screen capture
             if (activity != null) {
                 val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
                         as MediaProjectionManager
                 screenCaptureLauncher.launch(projectionManager.createScreenCaptureIntent())
             }
         } else {
-            Log.e("CameraScreen", "Audio permission denied")
             viewModel.onRecordingFailed("Audio permission required for recording")
         }
     }
 
-    // Storage permission launcher for Android 9 and below
     val storagePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            Log.d("CameraScreen", "Storage permission granted")
-            // Check audio permission next
             if (ContextCompat.checkSelfPermission(
                     context,
                     Manifest.permission.RECORD_AUDIO
                 ) == PackageManager.PERMISSION_GRANTED
             ) {
-                // Audio already granted, request screen capture
                 if (activity != null) {
                     val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
                             as MediaProjectionManager
                     screenCaptureLauncher.launch(projectionManager.createScreenCaptureIntent())
                 }
             } else {
-                // Request audio permission
                 audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             }
         } else {
-            Log.e("CameraScreen", "Storage permission denied")
             viewModel.onRecognitionError("Storage permission required to save videos")
         }
     }
@@ -245,48 +287,32 @@ fun RecordingControls(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center
     ) {
-        // Record button
         IconButton(
             onClick = {
-                Log.d("CameraScreen", "Record button clicked, isRecording=${recordingState.isRecording}")
-
                 if (recordingState.isRecording) {
-                    Log.d("CameraScreen", "Stopping recording via service...")
-
                     val stopIntent = Intent(context, ScreenRecordingService::class.java).apply {
                         action = ScreenRecordingService.ACTION_STOP
                     }
                     context.startService(stopIntent)
                     viewModel.stopRecording()
                 } else {
-                    Log.d("CameraScreen", "Starting recording flow...")
-
-                    // Check audio permission first
                     val hasAudioPermission = ContextCompat.checkSelfPermission(
                         context,
                         Manifest.permission.RECORD_AUDIO
                     ) == PackageManager.PERMISSION_GRANTED
 
                     if (!hasAudioPermission) {
-                        Log.d("CameraScreen", "Requesting audio permission")
                         audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         return@IconButton
                     }
 
-                    // Check storage permission (for Android 9 and below)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        // Android 10+ - No storage permission needed
                         if (activity != null) {
                             val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE)
                                     as MediaProjectionManager
-                            val intent = projectionManager.createScreenCaptureIntent()
-                            Log.d("CameraScreen", "Launching screen capture intent")
-                            screenCaptureLauncher.launch(intent)
-                        } else {
-                            Log.e("CameraScreen", "Activity is null!")
+                            screenCaptureLauncher.launch(projectionManager.createScreenCaptureIntent())
                         }
                     } else {
-                        // Android 9 and below - need storage permission
                         if (ContextCompat.checkSelfPermission(
                                 context,
                                 Manifest.permission.WRITE_EXTERNAL_STORAGE
@@ -320,10 +346,7 @@ fun RecordingControls(
 
         Spacer(modifier = Modifier.width(8.dp))
 
-        // Recording timer and status - compact version
-        Column(
-            horizontalAlignment = Alignment.Start
-        ) {
+        Column(horizontalAlignment = Alignment.Start) {
             if (recordingState.isRecording) {
                 Text(
                     text = recordingState.recordingTime,
@@ -349,7 +372,6 @@ fun RecordingControls(
                 )
             }
 
-            // Show save location when not recording
             if (!recordingState.isRecording) {
                 Text(
                     text = "Gallery/CrimiCam",
@@ -371,7 +393,6 @@ private fun ScreenUI(viewModel: CameraViewModel) {
     Box(modifier = Modifier.fillMaxSize()) {
         Camera(viewModel)
 
-        // Show metrics when people are detected - adjusted padding for new layout
         DelayedVisibility(state.detectedFaces.isNotEmpty()) {
             Column(
                 modifier = Modifier
@@ -389,7 +410,6 @@ private fun ScreenUI(viewModel: CameraViewModel) {
 
                 Spacer(modifier = Modifier.weight(1f))
 
-                // Performance metrics - moved to bottom
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -428,7 +448,6 @@ private fun ScreenUI(viewModel: CameraViewModel) {
             }
         }
 
-        // Show warning when no known people
         DelayedVisibility(state.knownPeople.isEmpty()) {
             Text(
                 text = "⚠️ NO PROFILES IN DATABASE",
@@ -552,19 +571,52 @@ private fun cameraPermissionDialog(context: Context) {
             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         },
         onNegativeButtonClick = {
-            // Handle deny action - inform user and optionally close the screen
-            Log.d("CameraScreen", "Camera permission denied by user")
-
-            // You can either:
-            // 1. Show a toast message
             android.widget.Toast.makeText(
                 context,
                 "Camera permission is required for facial recognition",
                 android.widget.Toast.LENGTH_LONG
             ).show()
-
-            // 2. Or navigate back since camera is essential
-            // navController.popBackStack()
         }
     )
+}
+
+// Location helper functions
+private fun startLocationUpdates(
+    fusedLocationClient: FusedLocationProviderClient,
+    viewModel: CameraViewModel,
+    context: Context
+) {
+    if (ActivityCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) != PackageManager.PERMISSION_GRANTED
+    ) {
+        return
+    }
+
+    val locationRequest = LocationRequest.create().apply {
+        interval = 10000
+        fastestInterval = 5000
+        priority = LocationRequest.PRIORITY_HIGH_ACCURACY
+    }
+
+    locationCallback = object : LocationCallback() {
+        override fun onLocationResult(locationResult: LocationResult) {
+            locationResult.lastLocation?.let { location ->
+                viewModel.updateLocation(location)
+            }
+        }
+    }
+
+    fusedLocationClient.requestLocationUpdates(
+        locationRequest,
+        locationCallback,
+        Looper.getMainLooper()
+    )
+}
+
+private fun stopLocationUpdates(fusedLocationClient: FusedLocationProviderClient) {
+    if (::locationCallback.isInitialized) {
+        fusedLocationClient.removeLocationUpdates(locationCallback)
+    }
 }

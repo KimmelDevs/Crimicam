@@ -15,6 +15,7 @@ import com.example.crimicam.facerecognitionnetface.models.data.RecognitionMetric
 import com.example.crimicam.facerecognitionnetface.models.domain.ImageVectorUseCase
 import com.example.crimicam.facerecognitionnetface.models.domain.PersonUseCase
 import com.example.crimicam.facerecognitionnetface.models.domain.CriminalImageVectorUseCase
+import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,15 +29,12 @@ data class DetectedFace(
     val personName: String? = null,
     val confidence: Float,
     val distance: Float = 0f,
-    // Criminal-specific fields
     val isCriminal: Boolean = false,
     val dangerLevel: String? = null,
     val spoofDetected: Boolean = false,
-    // For saving to Firestore
     val croppedBitmap: Bitmap? = null
 )
 
-// Video recording states
 data class RecordingState(
     val isRecording: Boolean = false,
     val recordingTime: String = "00:00",
@@ -82,42 +80,49 @@ class CameraViewModel(
     val faceDetectionMetricsState = mutableStateOf<RecognitionMetrics?>(null)
 
     private val firestoreCaptureService = FirestoreCaptureService(context)
+    private val auth = FirebaseAuth.getInstance()
 
-    // Video recording properties
     private var recordingStartTime: Long = 0
     private val timerFormat = SimpleDateFormat("mm:ss", Locale.getDefault())
     private var recordingJob: kotlinx.coroutines.Job? = null
-
-    // Store the last full frame for saving
     private var lastFullFrameBitmap: Bitmap? = null
+
+    companion object {
+        private const val TAG = "CameraViewModel"
+    }
 
     init {
         refreshPeopleCount()
         refreshCriminalCount()
+        ensureAuthentication()
     }
 
-    // Criminal-specific methods
+    private fun ensureAuthentication() {
+        viewModelScope.launch {
+            if (auth.currentUser == null) {
+                auth.signInAnonymously().addOnCompleteListener { task ->
+                    if (task.isSuccessful) {
+                        Log.d(TAG, "Signed in anonymously")
+                    }
+                }
+            }
+        }
+    }
+
     fun refreshCriminalCount() {
         viewModelScope.launch {
             try {
                 val criminals = criminalImageVectorUseCase.getAllCriminals()
                 _state.value = _state.value.copy(criminalCount = criminals.size.toLong())
-                Log.d("CameraViewModel", "Refreshed criminal count: ${criminals.size}")
             } catch (e: Exception) {
-                Log.e("CameraViewModel", "Failed to refresh criminal count", e)
-                e.printStackTrace()
+                Log.e(TAG, "Failed to refresh criminal count", e)
             }
         }
     }
 
-    /**
-     * Process frame for both known people AND criminals
-     * Also saves the full frame for later use
-     */
     fun processFrameForDetection(frameBitmap: Bitmap) {
         if (_state.value.isProcessing) return
 
-        // Store full frame for later saving
         lastFullFrameBitmap = frameBitmap
 
         viewModelScope.launch {
@@ -125,7 +130,6 @@ class CameraViewModel(
                 setProcessing(true)
                 updateScanningMode(ScanningMode.DETECTING)
 
-                // First, check for criminals (higher priority)
                 val (criminalMetrics, criminalResults) =
                     criminalImageVectorUseCase.getNearestCriminalName(
                         frameBitmap = frameBitmap,
@@ -136,7 +140,6 @@ class CameraViewModel(
                 val detectedFaces = mutableListOf<DetectedFace>()
                 var hasCriminal = false
 
-                // Process criminal results
                 for (criminalResult in criminalResults) {
                     val isCriminal = criminalResult.criminalName != "Unknown"
                     if (isCriminal) hasCriminal = true
@@ -148,7 +151,6 @@ class CameraViewModel(
                         criminalResult.boundingBox.bottom.toFloat()
                     )
 
-                    // Crop the face from the frame
                     val croppedFace = cropBitmapFromBoundingBox(frameBitmap, boundingBox)
 
                     detectedFaces.add(
@@ -164,7 +166,6 @@ class CameraViewModel(
                         )
                     )
 
-                    // Auto-save criminal detections to Firestore
                     if (isCriminal && croppedFace != null) {
                         saveCaptureToFirestore(
                             croppedFace = croppedFace,
@@ -179,7 +180,6 @@ class CameraViewModel(
                     }
                 }
 
-                // If no criminals detected, check for known people
                 if (!hasCriminal && detectedFaces.isEmpty()) {
                     val (peopleMetrics, peopleResults) =
                         imageVectorUseCase.getNearestPersonName(
@@ -215,11 +215,10 @@ class CameraViewModel(
                     faceDetectionMetricsState.value = criminalMetrics
                 }
 
-                // Update UI with results
                 updateDetectedFacesWithCriminals(detectedFaces, hasCriminal)
 
             } catch (e: Exception) {
-                Log.e("CameraViewModel", "Error processing frame", e)
+                Log.e(TAG, "Error processing frame", e)
                 onRecognitionError(e.message ?: "Unknown error")
             } finally {
                 setProcessing(false)
@@ -227,9 +226,6 @@ class CameraViewModel(
         }
     }
 
-    /**
-     * Crop bitmap from bounding box
-     */
     private fun cropBitmapFromBoundingBox(bitmap: Bitmap, boundingBox: RectF): Bitmap? {
         return try {
             val left = boundingBox.left.toInt().coerceIn(0, bitmap.width)
@@ -242,14 +238,11 @@ class CameraViewModel(
 
             Bitmap.createBitmap(bitmap, left, top, width, height)
         } catch (e: Exception) {
-            Log.e("CameraViewModel", "Error cropping bitmap", e)
+            Log.e(TAG, "Error cropping bitmap", e)
             null
         }
     }
 
-    /**
-     * Save capture to Firestore
-     */
     private fun saveCaptureToFirestore(
         croppedFace: Bitmap,
         fullFrame: Bitmap,
@@ -279,24 +272,16 @@ class CameraViewModel(
                 )
 
                 result.onSuccess { captureId ->
-                    Log.d("CameraViewModel", "Saved capture to Firestore: $captureId")
                     _state.value = _state.value.copy(lastSavedCaptureId = captureId)
-
-                    // Show success message
                     updateStatusMessage("✅ Capture saved to database")
-                }.onFailure { e ->
-                    Log.e("CameraViewModel", "Failed to save capture", e)
                 }
 
             } catch (e: Exception) {
-                Log.e("CameraViewModel", "Error saving capture", e)
+                Log.e(TAG, "Error saving capture", e)
             }
         }
     }
 
-    /**
-     * Manually save current detection to Firestore
-     */
     fun saveCurrentDetection() {
         viewModelScope.launch {
             val detectedFaces = _state.value.detectedFaces
@@ -329,12 +314,8 @@ class CameraViewModel(
         }
     }
 
-    /**
-     * Update current location
-     */
     fun updateLocation(location: Location) {
         _state.value = _state.value.copy(currentLocation = location)
-        Log.d("CameraViewModel", "Location updated: ${location.latitude}, ${location.longitude}")
     }
 
     private fun updateDetectedFacesWithCriminals(faces: List<DetectedFace>, hasCriminal: Boolean) {
@@ -363,35 +344,24 @@ class CameraViewModel(
             scanningMode = newMode,
             statusMessage = statusMessage
         )
-
-        Log.d("CameraViewModel", "Updated detected faces: ${faces.size}, criminals: ${faces.count { it.isCriminal }}, mode: $newMode")
     }
 
     // Video Recording Methods
     fun startRecording() {
         viewModelScope.launch {
-            if (_state.value.recordingState.isRecording) {
-                Log.w("CameraViewModel", "Already recording, ignoring start request")
-                return@launch
-            }
+            if (_state.value.recordingState.isRecording) return@launch
 
             try {
-                Log.d("CameraViewModel", "Starting recording")
-
                 _state.value = _state.value.copy(
                     recordingState = RecordingState(
                         isRecording = true,
-                        recordingTime = "00:00",
-                        outputUri = null,
-                        recordingError = null,
-                        recordingSaved = false
+                        recordingTime = "00:00"
                     )
                 )
                 recordingStartTime = System.currentTimeMillis()
                 startRecordingTimer()
-
             } catch (e: Exception) {
-                Log.e("CameraViewModel", "Failed to start recording", e)
+                Log.e(TAG, "Failed to start recording", e)
                 _state.value = _state.value.copy(
                     recordingState = RecordingState(
                         isRecording = false,
@@ -404,8 +374,6 @@ class CameraViewModel(
 
     fun stopRecording() {
         if (_state.value.recordingState.isRecording) {
-            Log.d("CameraViewModel", "Stopping recording")
-
             recordingJob?.cancel()
             recordingJob = null
 
@@ -416,9 +384,6 @@ class CameraViewModel(
                 )
             )
             recordingStartTime = 0
-
-        } else {
-            Log.w("CameraViewModel", "Stop recording called but not currently recording")
         }
     }
 
@@ -436,7 +401,6 @@ class CameraViewModel(
 
     private fun startRecordingTimer() {
         recordingJob?.cancel()
-
         recordingJob = viewModelScope.launch {
             while (_state.value.recordingState.isRecording && recordingStartTime > 0) {
                 updateRecordingTime()
@@ -446,7 +410,6 @@ class CameraViewModel(
     }
 
     fun onRecordingSaved(uri: Uri?) {
-        Log.d("CameraViewModel", "Recording saved successfully: $uri")
         _state.value = _state.value.copy(
             recordingState = _state.value.recordingState.copy(
                 outputUri = uri,
@@ -457,7 +420,6 @@ class CameraViewModel(
     }
 
     fun onRecordingFailed(error: String) {
-        Log.e("CameraViewModel", "Recording failed: $error")
         _state.value = _state.value.copy(
             recordingState = _state.value.recordingState.copy(
                 isRecording = false,
@@ -472,21 +434,16 @@ class CameraViewModel(
 
     fun clearRecordingError() {
         _state.value = _state.value.copy(
-            recordingState = _state.value.recordingState.copy(
-                recordingError = null
-            )
+            recordingState = _state.value.recordingState.copy(recordingError = null)
         )
     }
 
     fun clearRecordingSaved() {
         _state.value = _state.value.copy(
-            recordingState = _state.value.recordingState.copy(
-                recordingSaved = false
-            )
+            recordingState = _state.value.recordingState.copy(recordingSaved = false)
         )
     }
 
-    // Existing methods
     fun getNumPeople(): Long = _state.value.peopleCount
 
     fun refreshPeopleCount() {
@@ -494,10 +451,8 @@ class CameraViewModel(
             try {
                 val count = personUseCase.refreshCount()
                 _state.value = _state.value.copy(peopleCount = count)
-                Log.d("CameraViewModel", "Refreshed people count: $count")
             } catch (e: Exception) {
-                Log.e("CameraViewModel", "Failed to refresh people count", e)
-                e.printStackTrace()
+                Log.e(TAG, "Failed to refresh people count", e)
             }
         }
     }
@@ -509,32 +464,26 @@ class CameraViewModel(
 
     fun updateScanningMode(mode: ScanningMode) {
         _state.value = _state.value.copy(scanningMode = mode)
-        Log.d("CameraViewModel", "Scanning mode updated: $mode")
     }
 
     fun updateStatusMessage(message: String) {
         _state.value = _state.value.copy(statusMessage = message)
-        Log.d("CameraViewModel", "Status message updated: $message")
     }
 
     fun updateKnownPeople(people: List<KnownPerson>) {
         _state.value = _state.value.copy(knownPeople = people)
-        Log.d("CameraViewModel", "Known people updated: ${people.size}")
     }
 
     fun setModelInitialized(initialized: Boolean) {
         _state.value = _state.value.copy(modelInitialized = initialized)
-        Log.d("CameraViewModel", "Model initialized: $initialized")
     }
 
     fun setProcessing(processing: Boolean) {
         _state.value = _state.value.copy(isProcessing = processing)
-        Log.d("CameraViewModel", "Processing state: $processing")
     }
 
     fun setLocationPermission(hasPermission: Boolean) {
         _state.value = _state.value.copy(hasLocationPermission = hasPermission)
-        Log.d("CameraViewModel", "Location permission: $hasPermission")
     }
 
     fun clearDetectedFaces() {
@@ -543,7 +492,6 @@ class CameraViewModel(
             scanningMode = ScanningMode.IDLE,
             statusMessage = "🔍 Scanning for faces..."
         )
-        Log.d("CameraViewModel", "Cleared detected faces")
     }
 
     fun onRecognitionError(error: String) {
@@ -552,15 +500,55 @@ class CameraViewModel(
             scanningMode = ScanningMode.IDLE,
             statusMessage = "⚠️ $error"
         )
-        Log.e("CameraViewModel", "Recognition error: $error")
     }
+    /**
+     * Save criminal detection to Firestore (called from overlay analyzer)
+     */
+    fun saveCriminalToFirestore(
+        croppedFace: Bitmap,
+        fullFrame: Bitmap,
+        criminalId: String,
+        criminalName: String,
+        confidence: Float,
+        dangerLevel: String,
+        isSpoof: Boolean
+    ) {
+        viewModelScope.launch {
+            try {
+                val result = firestoreCaptureService.saveCapturedFace(
+                    croppedFace = croppedFace,
+                    fullFrame = fullFrame,
+                    isRecognized = true,
+                    isCriminal = true,
+                    matchedPersonId = criminalId,
+                    matchedPersonName = criminalName,
+                    confidence = confidence,
+                    dangerLevel = dangerLevel,
+                    location = _state.value.currentLocation,
+                    deviceId = android.provider.Settings.Secure.getString(
+                        context.contentResolver,
+                        android.provider.Settings.Secure.ANDROID_ID
+                    )
+                )
 
+                result.onSuccess { captureId ->
+                    _state.value = _state.value.copy(lastSavedCaptureId = captureId)
+                    Log.d(TAG, "✅ Criminal saved to Firestore: $captureId")
+                    updateStatusMessage("🚨 Criminal detected and saved!")
+                }.onFailure { e ->
+                    Log.e(TAG, "❌ Failed to save criminal", e)
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Error saving criminal to Firestore", e)
+            }
+        }
+    }
     override fun onCleared() {
         super.onCleared()
         recordingJob?.cancel()
         recordingJob = null
         lastFullFrameBitmap?.recycle()
         lastFullFrameBitmap = null
-        Log.d("CameraViewModel", "ViewModel cleared")
     }
 }

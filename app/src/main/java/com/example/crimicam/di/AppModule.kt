@@ -12,6 +12,7 @@ import com.example.crimicam.facerecognitionnetface.models.domain.embeddings.Face
 import com.example.crimicam.facerecognitionnetface.models.domain.embeddings.MediapipeFaceDetector
 import com.example.crimicam.facerecognitionnetface.models.domain.face_detection.FaceSpoofDetector
 import com.example.crimicam.presentation.main.Admin.AdminViewModel
+import com.example.crimicam.presentation.main.Home.ActivityDetail.ActivityDetailViewModel
 import com.example.crimicam.presentation.main.Home.Camera.CameraViewModel
 import com.example.crimicam.presentation.main.KnownPeople.KnownPeopleViewModel
 import com.example.crimicam.presentation.main.Map.MapViewModel
@@ -141,5 +142,8 @@ val appModule = module {
     }
     viewModel {
         MapViewModel(context = androidContext())
+    }
+    viewModel {
+        ActivityDetailViewModel()
     }
 }
