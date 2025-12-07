@@ -10,9 +10,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -34,6 +32,18 @@ fun HomeScreen(
     val scrollState = rememberScrollState()
     val notificationState by viewModel.notificationState.collectAsState()
     val homeState by viewModel.homeState.collectAsState()
+
+    // Auto-refresh when screen is focused
+    LaunchedEffect(Unit) {
+        viewModel.startRealtimeUpdates()
+    }
+
+    // Clean up listener when screen is destroyed
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.stopRealtimeUpdates()
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -110,25 +120,6 @@ fun HomeScreen(
                     )
 
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        // Refresh Button
-                        IconButton(
-                            onClick = { viewModel.refreshActivities() },
-                            modifier = Modifier.size(36.dp),
-                            enabled = !homeState.isLoadingActivities
-                        ) {
-                            if (homeState.isLoadingActivities) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.dp
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = "Refresh Activities",
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
 
                         // Notification Trigger Button
                         IconButton(
@@ -169,6 +160,16 @@ fun HomeScreen(
                             }
                         }
                     }
+                }
+
+                // Show realtime connection status
+                if (!homeState.isRealtimeActive && !homeState.isLoadingActivities) {
+                    Text(
+                        text = "🔄 Realtime updates paused",
+                        fontSize = 12.sp,
+                        color = Color.Gray,
+                        modifier = Modifier.padding(horizontal = 4.dp)
+                    )
                 }
 
                 // Recent Activity Content
@@ -223,12 +224,12 @@ fun HomeScreen(
                                     fontSize = 14.sp
                                 )
                                 Button(
-                                    onClick = { viewModel.refreshActivities() },
+                                    onClick = { viewModel.startRealtimeUpdates() },
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = Color(0xFFD32F2F)
                                     )
                                 ) {
-                                    Text("Retry")
+                                    Text("Retry Connection")
                                 }
                             }
                         }
@@ -265,6 +266,14 @@ fun HomeScreen(
                                     fontSize = 14.sp,
                                     color = Color.Gray
                                 )
+                                if (!homeState.isRealtimeActive) {
+                                    Button(
+                                        onClick = { viewModel.startRealtimeUpdates() },
+                                        modifier = Modifier.padding(top = 12.dp)
+                                    ) {
+                                        Text("Enable Realtime Updates")
+                                    }
+                                }
                             }
                         }
                     }
@@ -497,4 +506,3 @@ fun RecentActivityCard(
         }
     }
 }
-
