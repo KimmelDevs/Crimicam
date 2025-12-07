@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 
 data class DetectedFace(
     val boundingBox: RectF,
@@ -55,9 +56,7 @@ data class CameraState(
     val criminalCount: Long = 0L,
     val recordingState: RecordingState = RecordingState(),
     val currentLocation: Location? = null,
-    val lastSavedCaptureId: String? = null,
-    val isInCooldown: Boolean = false, // Add cooldown state
-    val cooldownRemaining: Long = 0L // Add cooldown remaining time
+    val lastSavedCaptureId: String? = null
 )
 
 enum class ScanningMode {
@@ -89,10 +88,10 @@ class CameraViewModel(
     private var recordingJob: kotlinx.coroutines.Job? = null
     private var lastFullFrameBitmap: Bitmap? = null
 
-    // Cooldown management
-    private var lastDetectionTimestamp: Long = 0
-    private val DETECTION_COOLDOWN_MS = 10000L // 10 seconds
-    private var cooldownJob: kotlinx.coroutines.Job? = null
+    // Per-person cooldown management
+    private val personCooldowns = ConcurrentHashMap<String, Long>()
+    private val PERSON_COOLDOWN_MS = 10000L
+    private var cooldownCleanupJob: kotlinx.coroutines.Job? = null
 
     companion object {
         private const val TAG = "CameraViewModel"
@@ -102,7 +101,7 @@ class CameraViewModel(
         refreshPeopleCount()
         refreshCriminalCount()
         ensureAuthentication()
-        startCooldownChecker()
+        startCooldownCleanup()
     }
 
     private fun ensureAuthentication() {
@@ -117,30 +116,27 @@ class CameraViewModel(
         }
     }
 
-    private fun startCooldownChecker() {
-        cooldownJob?.cancel()
-        cooldownJob = viewModelScope.launch {
+    private fun startCooldownCleanup() {
+        cooldownCleanupJob?.cancel()
+        cooldownCleanupJob = viewModelScope.launch {
             while (true) {
-                updateCooldownState()
-                kotlinx.coroutines.delay(1000) // Update every second
+                cleanupOldCooldowns()
+                kotlinx.coroutines.delay(60000L) // Cleanup every minute
             }
         }
     }
 
-    private fun updateCooldownState() {
+    private fun cleanupOldCooldowns() {
         val currentTime = System.currentTimeMillis()
-        val timeSinceLastDetection = currentTime - lastDetectionTimestamp
-        val isInCooldown = timeSinceLastDetection < DETECTION_COOLDOWN_MS
-        val cooldownRemaining = if (isInCooldown) {
-            DETECTION_COOLDOWN_MS - timeSinceLastDetection
-        } else {
-            0L
+        val fiveMinutesAgo = currentTime - (5 * 60 * 1000L)
+
+        personCooldowns.entries.removeIf { entry ->
+            entry.value < fiveMinutesAgo
         }
 
-        _state.value = _state.value.copy(
-            isInCooldown = isInCooldown,
-            cooldownRemaining = cooldownRemaining
-        )
+        if (personCooldowns.isNotEmpty()) {
+            Log.d(TAG, "Cooldown cleanup: ${personCooldowns.size} active cooldowns")
+        }
     }
 
     fun refreshCriminalCount() {
@@ -201,9 +197,11 @@ class CameraViewModel(
                     )
 
                     if (isCriminal && croppedFace != null) {
-                        // Check if we're in cooldown before saving
-                        val currentTime = System.currentTimeMillis()
-                        if (currentTime - lastDetectionTimestamp >= DETECTION_COOLDOWN_MS) {
+                        // Check per-person cooldown for criminals
+                        val personId = criminalResult.criminalID
+                        if (personId != null && isPersonInCooldown(personId)) {
+                            Log.d(TAG, "Skipping criminal $personId due to cooldown")
+                        } else {
                             saveCaptureToFirestore(
                                 croppedFace = croppedFace,
                                 fullFrame = frameBitmap,
@@ -214,9 +212,8 @@ class CameraViewModel(
                                 confidence = criminalResult.confidence,
                                 dangerLevel = criminalResult.dangerLevel
                             )
-                            lastDetectionTimestamp = currentTime
-                        } else {
-                            Log.d(TAG, "Skipping criminal save due to cooldown")
+                            // Start cooldown for this criminal
+                            personId?.let { startCooldownForPerson(it) }
                         }
                     }
                 }
@@ -239,6 +236,14 @@ class CameraViewModel(
 
                         val croppedFace = cropBitmapFromBoundingBox(frameBitmap, boundingBox)
 
+                        // For recognized people, use their ID, for unknown use bounding box hash
+                        val personId = if (personResult.personName != "Unknown") {
+                            personResult.personName?.hashCode()?.toString()
+                        } else {
+                            // For unknown faces, use a hash of bounding box as ID
+                            "${boundingBox.left.toInt()}_${boundingBox.top.toInt()}_${boundingBox.width().toInt()}_${boundingBox.height().toInt()}".hashCode().toString()
+                        }
+
                         detectedFaces.add(
                             DetectedFace(
                                 boundingBox = boundingBox,
@@ -249,6 +254,25 @@ class CameraViewModel(
                                 croppedBitmap = croppedFace
                             )
                         )
+
+                        // Save recognized faces (not unknown)
+                        if (personResult.personName != "Unknown" && croppedFace != null && personId != null) {
+                            if (isPersonInCooldown(personId)) {
+                                Log.d(TAG, "Skipping recognized person ${personResult.personName} due to cooldown")
+                            } else {
+                                saveCaptureToFirestore(
+                                    croppedFace = croppedFace,
+                                    fullFrame = frameBitmap,
+                                    isRecognized = true,
+                                    isCriminal = false,
+                                    personId = personId,
+                                    personName = personResult.personName,
+                                    confidence = personResult.confidence,
+                                    dangerLevel = null
+                                )
+                                startCooldownForPerson(personId)
+                            }
+                        }
                     }
 
                     faceDetectionMetricsState.value = peopleMetrics
@@ -265,6 +289,28 @@ class CameraViewModel(
                 setProcessing(false)
             }
         }
+    }
+
+    private fun isPersonInCooldown(personId: String): Boolean {
+        val lastDetectionTime = personCooldowns[personId] ?: return false
+        val currentTime = System.currentTimeMillis()
+        return currentTime - lastDetectionTime < PERSON_COOLDOWN_MS
+    }
+
+    private fun getCooldownRemaining(personId: String): Long {
+        val lastDetectionTime = personCooldowns[personId] ?: return 0L
+        val currentTime = System.currentTimeMillis()
+        val elapsed = currentTime - lastDetectionTime
+        return if (elapsed < PERSON_COOLDOWN_MS) {
+            PERSON_COOLDOWN_MS - elapsed
+        } else {
+            0L
+        }
+    }
+
+    private fun startCooldownForPerson(personId: String) {
+        personCooldowns[personId] = System.currentTimeMillis()
+        Log.d(TAG, "Started cooldown for person: $personId")
     }
 
     private fun cropBitmapFromBoundingBox(bitmap: Bitmap, boundingBox: RectF): Bitmap? {
@@ -314,8 +360,13 @@ class CameraViewModel(
 
                 result.onSuccess { captureId ->
                     _state.value = _state.value.copy(lastSavedCaptureId = captureId)
-                    updateStatusMessage("✅ Capture saved to database")
-                    Log.d(TAG, "Capture saved during cooldown period")
+                    val message = when {
+                        isCriminal -> "🚨 Criminal $personName detected and saved!"
+                        isRecognized -> "✅ $personName identified and saved!"
+                        else -> "📸 Face captured and saved!"
+                    }
+                    updateStatusMessage(message)
+                    Log.d(TAG, "Capture saved: $captureId for person: $personName")
                 }
 
             } catch (e: Exception) {
@@ -339,18 +390,27 @@ class CameraViewModel(
                 return@launch
             }
 
-            // Check cooldown for manual capture
-            val currentTime = System.currentTimeMillis()
-            if (currentTime - lastDetectionTimestamp < DETECTION_COOLDOWN_MS) {
-                val remainingSeconds = (DETECTION_COOLDOWN_MS - (currentTime - lastDetectionTimestamp)) / 1000
-                updateStatusMessage("⏳ Please wait ${remainingSeconds}s before capturing again")
-                return@launch
-            }
-
-            lastDetectionTimestamp = currentTime
-
+            // For manual capture, check cooldown for each person
             detectedFaces.forEach { face ->
                 face.croppedBitmap?.let { croppedFace ->
+                    // Generate person ID for cooldown check
+                    val personId = when {
+                        face.personId != null -> face.personId
+                        face.personName != null -> face.personName.hashCode().toString()
+                        else -> {
+                            // Use bounding box hash for unknown faces
+                            "${face.boundingBox.left.toInt()}_${face.boundingBox.top.toInt()}_${face.boundingBox.width().toInt()}_${face.boundingBox.height().toInt()}".hashCode().toString()
+                        }
+                    }
+
+                    // Check cooldown for this person
+                    if (isPersonInCooldown(personId)) {
+                        val remaining = getCooldownRemaining(personId) / 1000
+                        Log.d(TAG, "Skipping manual save for person due to cooldown: ${remaining}s remaining")
+                        updateStatusMessage("⏳ Person already captured recently (${remaining}s)")
+                        return@forEach
+                    }
+
                     saveCaptureToFirestore(
                         croppedFace = croppedFace,
                         fullFrame = fullFrame,
@@ -361,6 +421,9 @@ class CameraViewModel(
                         confidence = face.confidence,
                         dangerLevel = face.dangerLevel
                     )
+
+                    // Start cooldown for this person
+                    startCooldownForPerson(personId)
                 }
             }
         }
@@ -567,14 +630,12 @@ class CameraViewModel(
         isSpoof: Boolean
     ) {
         viewModelScope.launch {
-            // Check cooldown before saving criminal
-            val currentTime = System.currentTimeMillis()
-            if (currentTime - lastDetectionTimestamp < DETECTION_COOLDOWN_MS) {
-                Log.d(TAG, "Skipping criminal save due to cooldown")
+            // Check per-person cooldown before saving criminal
+            if (isPersonInCooldown(criminalId)) {
+                val remaining = getCooldownRemaining(criminalId) / 1000
+                Log.d(TAG, "Skipping criminal $criminalName due to cooldown: ${remaining}s remaining")
                 return@launch
             }
-
-            lastDetectionTimestamp = currentTime
 
             try {
                 val result = firestoreCaptureService.saveCapturedFace(
@@ -596,7 +657,9 @@ class CameraViewModel(
                 result.onSuccess { captureId ->
                     _state.value = _state.value.copy(lastSavedCaptureId = captureId)
                     Log.d(TAG, "✅ Criminal saved to Firestore: $captureId")
-                    updateStatusMessage("🚨 Criminal detected and saved!")
+                    updateStatusMessage("🚨 Criminal $criminalName detected and saved!")
+                    // Start cooldown for this criminal
+                    startCooldownForPerson(criminalId)
                 }.onFailure { e ->
                     Log.e(TAG, "❌ Failed to save criminal", e)
                 }
@@ -611,9 +674,10 @@ class CameraViewModel(
         super.onCleared()
         recordingJob?.cancel()
         recordingJob = null
-        cooldownJob?.cancel()
-        cooldownJob = null
+        cooldownCleanupJob?.cancel()
+        cooldownCleanupJob = null
         lastFullFrameBitmap?.recycle()
         lastFullFrameBitmap = null
+        personCooldowns.clear()
     }
 }
