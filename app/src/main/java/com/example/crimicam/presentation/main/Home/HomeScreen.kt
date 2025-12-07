@@ -1,5 +1,6 @@
 package com.example.crimicam.presentation.main.Home
 
+import android.content.Context
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -16,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -29,19 +31,42 @@ fun HomeScreen(
     navController: NavController
 ) {
     val viewModel: HomeViewModel = viewModel()
+    val context = LocalContext.current
     val scrollState = rememberScrollState()
-    val notificationState by viewModel.notificationState.collectAsState()
     val homeState by viewModel.homeState.collectAsState()
 
-    // Auto-refresh when screen is focused
+    // Initialize ringtone player
     LaunchedEffect(Unit) {
+        viewModel.initializeRingtonePlayer(context)
+    }
+
+    // Start realtime updates with a small delay to ensure ringtone player is initialized
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(500) // Small delay to ensure initialization
         viewModel.startRealtimeUpdates()
     }
 
-    // Clean up listener when screen is destroyed
+    // Reset new activity count when user views the screen
+    LaunchedEffect(Unit) {
+        viewModel.resetNewActivityCount()
+    }
+
+    // Show new activity badge when new activities arrive
+    val newActivityCount = homeState.newActivityCount
+    var showNewActivityBadge by remember { mutableStateOf(false) }
+
+    LaunchedEffect(newActivityCount) {
+        if (newActivityCount > 0) {
+            showNewActivityBadge = true
+        }
+    }
+
+    // Clean up when leaving screen
     DisposableEffect(Unit) {
         onDispose {
-            viewModel.stopRealtimeUpdates()
+            // We don't stop realtime updates here because we want to keep listening
+            // even when screen is not visible, but we should cleanup ringtone
+            // Actually, let the ViewModel handle cleanup when it's destroyed
         }
     }
 
@@ -106,57 +131,61 @@ fun HomeScreen(
 
                 Spacer(modifier = Modifier.height(6.dp))
 
-                // Recent Activity Header with Refresh and Notification Buttons
+                // Recent Activity Header with Refresh Button and New Activity Badge
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "Recent Activity",
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.SemiBold
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Recent Activity",
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.SemiBold
+                            )
                         )
-                    )
+
+                        // New Activity Badge
+                        if (showNewActivityBadge && newActivityCount > 0) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Badge(
+                                containerColor = Color.Red,
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clickable {
+                                        // Clear badge when clicked
+                                        showNewActivityBadge = false
+                                        viewModel.resetNewActivityCount()
+                                    }
+                            ) {
+                                Text(
+                                    text = "$newActivityCount",
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
 
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-
-                        // Notification Trigger Button
+                        // Refresh Button
                         IconButton(
-                            onClick = { viewModel.triggerNotification() },
+                            onClick = { viewModel.refreshActivities() },
                             modifier = Modifier.size(36.dp),
-                            enabled = notificationState !is NotificationState.Loading
+                            enabled = !homeState.isLoadingActivities
                         ) {
-                            when (notificationState) {
-                                is NotificationState.Loading -> {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(20.dp),
-                                        strokeWidth = 2.dp
-                                    )
-                                }
-                                is NotificationState.Success -> {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.ic_notification),
-                                        contentDescription = "Notification Sent",
-                                        tint = Color.Green,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                                is NotificationState.Error -> {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.ic_notification),
-                                        contentDescription = "Notification Error",
-                                        tint = Color.Red,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                                is NotificationState.Idle -> {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.ic_notification),
-                                        contentDescription = "Trigger Notification",
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
+                            if (homeState.isLoadingActivities) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "Refresh Activities",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
                             }
                         }
                     }
@@ -306,36 +335,6 @@ fun HomeScreen(
 
                 // Bottom spacing
                 Spacer(modifier = Modifier.height(16.dp))
-            }
-        }
-
-        // Show error snackbar for notification errors
-        if (notificationState is NotificationState.Error) {
-            Snackbar(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(16.dp),
-                containerColor = Color(0xFFD32F2F)
-            ) {
-                Text(
-                    text = (notificationState as NotificationState.Error).message,
-                    color = Color.White
-                )
-            }
-        }
-
-        // Show success snackbar for notifications
-        if (notificationState is NotificationState.Success) {
-            Snackbar(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(16.dp),
-                containerColor = Color(0xFF4CAF50)
-            ) {
-                Text(
-                    text = "✅ Notification sent successfully",
-                    color = Color.White
-                )
             }
         }
     }
