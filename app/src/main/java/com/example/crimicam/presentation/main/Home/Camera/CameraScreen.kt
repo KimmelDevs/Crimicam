@@ -177,22 +177,44 @@ fun CameraScreen(
 
                 Spacer(modifier = Modifier.width(8.dp))
 
-                // Manual capture button
-                IconButton(
-                    onClick = {
-                        viewModel.saveCurrentDetection()
-                        Log.d("CameraScreen", "Manual capture triggered")
-                    },
-                    modifier = Modifier
-                        .size(40.dp)
-                        .background(Color.Green.copy(alpha = 0.8f), CircleShape)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Camera,
-                        contentDescription = "Manual Capture",
-                        tint = Color.White,
-                        modifier = Modifier.size(20.dp)
-                    )
+                // Manual capture button with cooldown indicator
+                Box {
+                    IconButton(
+                        onClick = {
+                            if (state.isInCooldown) {
+                                // Show cooldown message
+                                viewModel.updateStatusMessage(
+                                    "⏳ Please wait ${state.cooldownRemaining / 1000}s before capturing"
+                                )
+                            } else {
+                                viewModel.saveCurrentDetection()
+                                Log.d("CameraScreen", "Manual capture triggered")
+                            }
+                        },
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(
+                                if (state.isInCooldown) Color.Gray else Color.Green.copy(alpha = 0.8f),
+                                CircleShape
+                            ),
+                        enabled = !state.isInCooldown
+                    ) {
+                        if (state.isInCooldown) {
+                            Text(
+                                text = "${state.cooldownRemaining / 1000}",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Camera,
+                                contentDescription = "Manual Capture",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -393,11 +415,31 @@ private fun ScreenUI(viewModel: CameraViewModel) {
     Box(modifier = Modifier.fillMaxSize()) {
         Camera(viewModel)
 
+        // Show cooldown status
+        if (state.isInCooldown) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 72.dp, start = 16.dp, end = 16.dp)
+                    .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                    .padding(8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "⏳ Cooldown: ${state.cooldownRemaining / 1000}s",
+                    color = Color.Yellow,
+                    fontSize = 14.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
         DelayedVisibility(state.detectedFaces.isNotEmpty()) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 72.dp, start = 16.dp, end = 16.dp)
+                    .padding(top = if (state.isInCooldown) 110.dp else 72.dp, start = 16.dp, end = 16.dp)
             ) {
                 Text(
                     text = "Recognition on ${state.detectedFaces.size} face(s)",
@@ -436,6 +478,9 @@ private fun ScreenUI(viewModel: CameraViewModel) {
                                 append("Identified: ${state.detectedFaces.count { it.personName != null }}")
                                 if (state.recordingState.isRecording) {
                                     append("\nRecording: ${state.recordingState.recordingTime}")
+                                }
+                                if (state.isInCooldown) {
+                                    append("\nCooldown: ${state.cooldownRemaining / 1000}s")
                                 }
                                 append("\nSave to: Gallery/CrimiCam")
                             },

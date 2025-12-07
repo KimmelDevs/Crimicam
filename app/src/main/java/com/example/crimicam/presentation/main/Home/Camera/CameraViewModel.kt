@@ -55,7 +55,9 @@ data class CameraState(
     val criminalCount: Long = 0L,
     val recordingState: RecordingState = RecordingState(),
     val currentLocation: Location? = null,
-    val lastSavedCaptureId: String? = null
+    val lastSavedCaptureId: String? = null,
+    val isInCooldown: Boolean = false, // Add cooldown state
+    val cooldownRemaining: Long = 0L // Add cooldown remaining time
 )
 
 enum class ScanningMode {
@@ -87,6 +89,11 @@ class CameraViewModel(
     private var recordingJob: kotlinx.coroutines.Job? = null
     private var lastFullFrameBitmap: Bitmap? = null
 
+    // Cooldown management
+    private var lastDetectionTimestamp: Long = 0
+    private val DETECTION_COOLDOWN_MS = 10000L // 10 seconds
+    private var cooldownJob: kotlinx.coroutines.Job? = null
+
     companion object {
         private const val TAG = "CameraViewModel"
     }
@@ -95,6 +102,7 @@ class CameraViewModel(
         refreshPeopleCount()
         refreshCriminalCount()
         ensureAuthentication()
+        startCooldownChecker()
     }
 
     private fun ensureAuthentication() {
@@ -107,6 +115,32 @@ class CameraViewModel(
                 }
             }
         }
+    }
+
+    private fun startCooldownChecker() {
+        cooldownJob?.cancel()
+        cooldownJob = viewModelScope.launch {
+            while (true) {
+                updateCooldownState()
+                kotlinx.coroutines.delay(1000) // Update every second
+            }
+        }
+    }
+
+    private fun updateCooldownState() {
+        val currentTime = System.currentTimeMillis()
+        val timeSinceLastDetection = currentTime - lastDetectionTimestamp
+        val isInCooldown = timeSinceLastDetection < DETECTION_COOLDOWN_MS
+        val cooldownRemaining = if (isInCooldown) {
+            DETECTION_COOLDOWN_MS - timeSinceLastDetection
+        } else {
+            0L
+        }
+
+        _state.value = _state.value.copy(
+            isInCooldown = isInCooldown,
+            cooldownRemaining = cooldownRemaining
+        )
     }
 
     fun refreshCriminalCount() {
@@ -167,16 +201,23 @@ class CameraViewModel(
                     )
 
                     if (isCriminal && croppedFace != null) {
-                        saveCaptureToFirestore(
-                            croppedFace = croppedFace,
-                            fullFrame = frameBitmap,
-                            isRecognized = true,
-                            isCriminal = true,
-                            personId = criminalResult.criminalID,
-                            personName = criminalResult.criminalName,
-                            confidence = criminalResult.confidence,
-                            dangerLevel = criminalResult.dangerLevel
-                        )
+                        // Check if we're in cooldown before saving
+                        val currentTime = System.currentTimeMillis()
+                        if (currentTime - lastDetectionTimestamp >= DETECTION_COOLDOWN_MS) {
+                            saveCaptureToFirestore(
+                                croppedFace = croppedFace,
+                                fullFrame = frameBitmap,
+                                isRecognized = true,
+                                isCriminal = true,
+                                personId = criminalResult.criminalID,
+                                personName = criminalResult.criminalName,
+                                confidence = criminalResult.confidence,
+                                dangerLevel = criminalResult.dangerLevel
+                            )
+                            lastDetectionTimestamp = currentTime
+                        } else {
+                            Log.d(TAG, "Skipping criminal save due to cooldown")
+                        }
                     }
                 }
 
@@ -274,6 +315,7 @@ class CameraViewModel(
                 result.onSuccess { captureId ->
                     _state.value = _state.value.copy(lastSavedCaptureId = captureId)
                     updateStatusMessage("✅ Capture saved to database")
+                    Log.d(TAG, "Capture saved during cooldown period")
                 }
 
             } catch (e: Exception) {
@@ -296,6 +338,16 @@ class CameraViewModel(
                 updateStatusMessage("⚠️ No frame available")
                 return@launch
             }
+
+            // Check cooldown for manual capture
+            val currentTime = System.currentTimeMillis()
+            if (currentTime - lastDetectionTimestamp < DETECTION_COOLDOWN_MS) {
+                val remainingSeconds = (DETECTION_COOLDOWN_MS - (currentTime - lastDetectionTimestamp)) / 1000
+                updateStatusMessage("⏳ Please wait ${remainingSeconds}s before capturing again")
+                return@launch
+            }
+
+            lastDetectionTimestamp = currentTime
 
             detectedFaces.forEach { face ->
                 face.croppedBitmap?.let { croppedFace ->
@@ -501,6 +553,7 @@ class CameraViewModel(
             statusMessage = "⚠️ $error"
         )
     }
+
     /**
      * Save criminal detection to Firestore (called from overlay analyzer)
      */
@@ -514,6 +567,15 @@ class CameraViewModel(
         isSpoof: Boolean
     ) {
         viewModelScope.launch {
+            // Check cooldown before saving criminal
+            val currentTime = System.currentTimeMillis()
+            if (currentTime - lastDetectionTimestamp < DETECTION_COOLDOWN_MS) {
+                Log.d(TAG, "Skipping criminal save due to cooldown")
+                return@launch
+            }
+
+            lastDetectionTimestamp = currentTime
+
             try {
                 val result = firestoreCaptureService.saveCapturedFace(
                     croppedFace = croppedFace,
@@ -544,10 +606,13 @@ class CameraViewModel(
             }
         }
     }
+
     override fun onCleared() {
         super.onCleared()
         recordingJob?.cancel()
         recordingJob = null
+        cooldownJob?.cancel()
+        cooldownJob = null
         lastFullFrameBitmap?.recycle()
         lastFullFrameBitmap = null
     }
