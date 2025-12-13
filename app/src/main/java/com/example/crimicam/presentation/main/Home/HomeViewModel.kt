@@ -8,19 +8,15 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.crimicam.data.repository.NotificationRepository
 import com.example.crimicam.data.remote.FirestoreService
-import com.example.crimicam.util.Result
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.*
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import java.text.SimpleDateFormat
 import java.util.*
-import java.util.concurrent.ConcurrentHashMap
 
 data class RecentActivity(
     val id: String,
@@ -29,7 +25,7 @@ data class RecentActivity(
     val timestamp: String,
     val isCriminal: Boolean = false,
     val dangerLevel: String? = null,
-    val firestoreTimestamp: Timestamp? = null // Add original timestamp for comparison
+    val firestoreTimestamp: Timestamp? = null
 )
 
 data class HomeState(
@@ -37,8 +33,12 @@ data class HomeState(
     val isLoadingActivities: Boolean = false,
     val isRealtimeActive: Boolean = false,
     val activitiesError: String? = null,
-    val newActivityCount: Int = 0, // Track new activities since last view
-    val lastSeenTimestamp: Long = 0 // Track last seen activity timestamp
+    val newActivityCount: Int = 0,
+    val lastSeenTimestamp: Long = 0,
+    val lastNotificationData: Map<String, String>? = null,
+    val showNotificationAlert: Boolean = false,
+    val notificationTitle: String = "",
+    val notificationBody: String = ""
 )
 
 class HomeViewModel : ViewModel() {
@@ -53,72 +53,163 @@ class HomeViewModel : ViewModel() {
     private val db = FirebaseFirestore.getInstance()
     private val auth = FirebaseAuth.getInstance()
     private var snapshotListener: ListenerRegistration? = null
-    private var lastKnownActivityIds = mutableSetOf<String>() // Track already seen activities
+    private var lastKnownActivityIds = mutableSetOf<String>()
     private var ringtonePlayer: RingtonePlayer? = null
-    private var isFirstLoad = true // Track if this is the first load after app start
-
-    private val _notificationState = MutableStateFlow<NotificationState>(NotificationState.Idle)
-    val notificationState: StateFlow<NotificationState> = _notificationState.asStateFlow()
+    private var isFirstLoad = true
 
     private val _homeState = MutableStateFlow(HomeState())
     val homeState: StateFlow<HomeState> = _homeState.asStateFlow()
 
     companion object {
         private const val TAG = "HomeViewModel"
-        private const val RINGTONE_DURATION_MS = 15000L
+        private const val RINGTONE_DURATION_MS = 10000L
     }
 
     init {
-        // Don't start realtime updates immediately - wait for UI to initialize
         Log.d(TAG, "HomeViewModel initialized")
     }
 
     /**
-     * Initialize ringtone player with context
+     * Initialize ringtone player
      */
     fun initializeRingtonePlayer(context: Context) {
         if (ringtonePlayer == null) {
             ringtonePlayer = RingtonePlayer(context)
-            Log.d(TAG, "Ringtone player initialized")
+            Log.d(TAG, "✅ Ringtone player initialized")
         }
     }
 
     /**
-     * Play ringtone for new activity with 8-second limit
+     * Handle incoming broadcast notification
      */
-    private fun playRingtoneForActivity(activity: RecentActivity) {
-        ringtonePlayer?.let { player ->
-            viewModelScope.launch {
-                try {
-                    // Use different ringtones based on activity type
-                    when {
-                        activity.isCriminal && activity.dangerLevel == "CRITICAL" -> {
-                            player.playCriticalAlert(RINGTONE_DURATION_MS)
-                        }
-                        activity.isCriminal -> {
-                            player.playCriminalAlert(RINGTONE_DURATION_MS)
-                        }
-                        else -> {
-                            player.playNewActivityAlert(RINGTONE_DURATION_MS)
-                        }
-                    }
-                    Log.d(TAG, "Played ringtone for new activity: ${activity.title}")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error playing ringtone", e)
+    fun handleBroadcastNotification(data: Map<String, String>) {
+        viewModelScope.launch {
+            try {
+                Log.d(TAG, "🎯 Processing broadcast notification in ViewModel")
+
+                val type = data["type"]
+                if (type != "ACTIVITY_BROADCAST") {
+                    Log.d(TAG, "Ignoring notification type: $type")
+                    return@launch
                 }
+
+                // Extract data
+                val title = data["title"] ?: "New Activity"
+                val body = data["body"] ?: "Activity detected"
+                val isCriminal = data["isCriminal"]?.toBoolean() ?: false
+                val dangerLevel = data["dangerLevel"] ?: "LOW"
+                val userId = data["userId"] ?: "unknown"
+                val faceId = data["faceId"] ?: System.currentTimeMillis().toString()
+
+                Log.d(TAG, "📢 Broadcast notification received:")
+                Log.d(TAG, "   Title: $title")
+                Log.d(TAG, "   Body: $body")
+                Log.d(TAG, "   From user: $userId")
+                Log.d(TAG, "   Face ID: $faceId")
+                Log.d(TAG, "   Criminal: $isCriminal")
+                Log.d(TAG, "   Danger: $dangerLevel")
+
+                // Update state with notification data
+                _homeState.value = _homeState.value.copy(
+                    lastNotificationData = data,
+                    showNotificationAlert = true,
+                    notificationTitle = title,
+                    notificationBody = body
+                )
+
+                // Play appropriate ringtone
+                playRingtoneForNotification(isCriminal, dangerLevel)
+
+                // Increment new activity count
+                val currentCount = _homeState.value.newActivityCount
+                _homeState.value = _homeState.value.copy(
+                    newActivityCount = currentCount + 1
+                )
+
+                // Create mock activity for UI
+                val mockActivity = RecentActivity(
+                    id = faceId,
+                    title = title,
+                    subtitle = "Broadcast notification • Just now",
+                    timestamp = "Just now",
+                    isCriminal = isCriminal,
+                    dangerLevel = dangerLevel
+                )
+
+                // Add to recent activities if not from current user
+                val currentUser = auth.currentUser
+                if (currentUser?.uid != userId) {
+                    val currentActivities = _homeState.value.recentActivities.toMutableList()
+                    currentActivities.add(0, mockActivity)
+
+                    // Keep only last 10 activities
+                    val limitedActivities = if (currentActivities.size > 10) {
+                        currentActivities.take(10)
+                    } else {
+                        currentActivities
+                    }
+
+                    _homeState.value = _homeState.value.copy(
+                        recentActivities = limitedActivities
+                    )
+                }
+
+                Log.d(TAG, "✅ Broadcast notification processed successfully")
+                Log.d(TAG, "📊 New activity count: ${_homeState.value.newActivityCount}")
+
+                // Auto-hide notification alert after 5 seconds
+                viewModelScope.launch {
+                    kotlinx.coroutines.delay(5000)
+                    _homeState.value = _homeState.value.copy(
+                        showNotificationAlert = false
+                    )
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error processing broadcast notification", e)
             }
         }
     }
 
     /**
-     * Start listening for realtime updates from Firestore
+     * Play ringtone based on notification type
+     */
+    private fun playRingtoneForNotification(isCriminal: Boolean, dangerLevel: String?) {
+        ringtonePlayer?.let { player ->
+            viewModelScope.launch {
+                try {
+                    when {
+                        isCriminal && dangerLevel == "CRITICAL" -> {
+                            player.playCriticalAlert(RINGTONE_DURATION_MS)
+                            Log.d(TAG, "🔊 Playing CRITICAL alert ringtone")
+                        }
+                        isCriminal -> {
+                            player.playCriminalAlert(RINGTONE_DURATION_MS)
+                            Log.d(TAG, "🔊 Playing criminal alert ringtone")
+                        }
+                        else -> {
+                            player.playNewActivityAlert(RINGTONE_DURATION_MS)
+                            Log.d(TAG, "🔊 Playing new activity ringtone")
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error playing ringtone", e)
+                }
+            }
+        } ?: run {
+            Log.w(TAG, "⚠️ Ringtone player not initialized")
+        }
+    }
+
+    /**
+     * Start listening for user's own activities
      */
     fun startRealtimeUpdates() {
-        stopRealtimeUpdates() // Clean up any existing listener
+        stopRealtimeUpdates()
 
         val currentUser = auth.currentUser
         if (currentUser == null) {
-            Log.w(TAG, "No authenticated user, cannot start realtime updates")
+            Log.w(TAG, "⚠️ No authenticated user")
             _homeState.value = _homeState.value.copy(
                 activitiesError = "Please sign in to view activities",
                 isRealtimeActive = false
@@ -142,7 +233,7 @@ class HomeViewModel : ViewModel() {
             snapshotListener = query.addSnapshotListener { snapshot, error ->
                 viewModelScope.launch {
                     if (error != null) {
-                        Log.e(TAG, "Realtime listener error", error)
+                        Log.e(TAG, "❌ Realtime listener error", error)
                         _homeState.value = _homeState.value.copy(
                             isLoadingActivities = false,
                             isRealtimeActive = false,
@@ -151,14 +242,10 @@ class HomeViewModel : ViewModel() {
                         return@launch
                     }
 
-                    if (snapshot == null) {
-                        return@launch
-                    }
+                    if (snapshot == null) return@launch
 
-                    // Skip the initial load to prevent playing ringtones for existing activities
+                    // Track first load
                     if (isFirstLoad) {
-                        Log.d(TAG, "First load - skipping ringtones for existing activities")
-                        // Store existing activity IDs so they won't trigger ringtones
                         snapshot.documents.forEach { doc ->
                             lastKnownActivityIds.add(doc.id)
                         }
@@ -179,7 +266,7 @@ class HomeViewModel : ViewModel() {
                             val address = data["address"] as? String
                             val timestamp = data["timestamp"] as? Timestamp
 
-                            // Format timestamp
+                            // Format time
                             val timeString = timestamp?.toDate()?.let { date ->
                                 val now = Date()
                                 val diff = now.time - date.time
@@ -200,10 +287,10 @@ class HomeViewModel : ViewModel() {
                             val title = when {
                                 isCriminal && dangerLevel != null -> {
                                     when (dangerLevel.uppercase()) {
-                                        "CRITICAL" -> "🚨 CRITICAL THREAT: ${personName ?: "Unknown Criminal"}"
-                                        "HIGH" -> "⚠️ HIGH DANGER: ${personName ?: "Unknown Criminal"}"
-                                        "MEDIUM" -> "⚠️ MEDIUM RISK: ${personName ?: "Unknown Criminal"}"
-                                        "LOW" -> "⚠️ LOW RISK: ${personName ?: "Unknown Criminal"}"
+                                        "CRITICAL" -> "🚨 CRITICAL THREAT: ${personName ?: "Unknown"}"
+                                        "HIGH" -> "⚠️ HIGH DANGER: ${personName ?: "Unknown"}"
+                                        "MEDIUM" -> "⚠️ MEDIUM RISK: ${personName ?: "Unknown"}"
+                                        "LOW" -> "⚠️ LOW RISK: ${personName ?: "Unknown"}"
                                         else -> "🚨 Criminal: ${personName ?: "Unknown"}"
                                     }
                                 }
@@ -216,7 +303,6 @@ class HomeViewModel : ViewModel() {
                                 append(timeString)
                                 if (address != null) {
                                     append(" • ")
-                                    // Truncate long addresses
                                     val shortAddress = if (address.length > 40) {
                                         address.take(37) + "..."
                                     } else {
@@ -238,117 +324,138 @@ class HomeViewModel : ViewModel() {
 
                             allActivities.add(activity)
 
-                            // Check if this is a new activity (not seen before)
+                            // Check if new activity
                             if (!lastKnownActivityIds.contains(doc.id)) {
                                 newActivities.add(activity)
                                 lastKnownActivityIds.add(doc.id)
-                                Log.d(TAG, "New activity detected: ${activity.title}")
+                                Log.d(TAG, "📝 New local activity: ${activity.title}")
                             }
 
                         } catch (e: Exception) {
-                            Log.e(TAG, "Error parsing activity", e)
+                            Log.e(TAG, "❌ Error parsing activity", e)
                         }
                     }
 
-                    // Update state with all activities
+                    // Update state
                     _homeState.value = _homeState.value.copy(
                         recentActivities = allActivities,
                         isLoadingActivities = false,
                         isRealtimeActive = true,
-                        activitiesError = null,
-                        newActivityCount = newActivities.size
+                        activitiesError = null
                     )
 
-                    // Play ringtone for each new activity (only if not first load)
-                    if (!isFirstLoad) {
+                    // Play ringtone for new local activities
+                    if (newActivities.isNotEmpty() && !isFirstLoad) {
                         newActivities.forEach { activity ->
                             playRingtoneForActivity(activity)
                         }
+                        _homeState.value = _homeState.value.copy(
+                            newActivityCount = _homeState.value.newActivityCount + newActivities.size
+                        )
                     }
 
-                    if (newActivities.isNotEmpty()) {
-                        Log.d(TAG, "New activities detected: ${newActivities.size}")
-                        Log.d(TAG, "New activity titles: ${newActivities.map { it.title }}")
-                    }
-
-                    Log.d(TAG, "Realtime update: Total ${allActivities.size} activities, New ${newActivities.size} activities")
+                    Log.d(TAG, "📊 Activities updated: ${allActivities.size} total, ${newActivities.size} new")
 
                 }
             }
 
-            Log.d(TAG, "Started realtime updates for user ${currentUser.uid}")
+            Log.d(TAG, "✅ Started realtime updates for user ${currentUser.uid}")
 
         } catch (e: Exception) {
-            Log.e(TAG, "Error setting up realtime listener", e)
+            Log.e(TAG, "❌ Error setting up realtime listener", e)
             _homeState.value = _homeState.value.copy(
                 isLoadingActivities = false,
                 isRealtimeActive = false,
-                activitiesError = e.message ?: "Failed to setup realtime updates"
+                activitiesError = e.message ?: "Failed to setup updates"
             )
         }
     }
 
     /**
-     * Reset new activity count (call this when user views the screen)
+     * Play ringtone for local activity
+     */
+    private fun playRingtoneForActivity(activity: RecentActivity) {
+        ringtonePlayer?.let { player ->
+            viewModelScope.launch {
+                try {
+                    when {
+                        activity.isCriminal && activity.dangerLevel == "CRITICAL" -> {
+                            player.playCriticalAlert(RINGTONE_DURATION_MS)
+                        }
+                        activity.isCriminal -> {
+                            player.playCriminalAlert(RINGTONE_DURATION_MS)
+                        }
+                        else -> {
+                            player.playNewActivityAlert(RINGTONE_DURATION_MS)
+                        }
+                    }
+                    Log.d(TAG, "🔊 Playing ringtone for: ${activity.title}")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error playing ringtone", e)
+                }
+            }
+        }
+    }
+
+    /**
+     * Reset new activity count
      */
     fun resetNewActivityCount() {
         _homeState.value = _homeState.value.copy(newActivityCount = 0)
-        Log.d(TAG, "Reset new activity count")
+        Log.d(TAG, "🔄 Reset new activity count")
     }
 
     /**
-     * Clear all seen activities (for testing or reset)
+     * Hide notification alert
      */
-    fun clearSeenActivities() {
-        lastKnownActivityIds.clear()
-        isFirstLoad = true // Reset first load flag
-        Log.d(TAG, "Cleared seen activities")
+    fun hideNotificationAlert() {
+        _homeState.value = _homeState.value.copy(showNotificationAlert = false)
     }
 
     /**
-     * Stop realtime updates and clean up the listener
+     * Clear last notification data
+     */
+    fun clearLastNotificationData() {
+        _homeState.value = _homeState.value.copy(lastNotificationData = null)
+    }
+
+    /**
+     * Refresh activities
+     */
+    fun refreshActivities() {
+        Log.d(TAG, "🔄 Manual refresh triggered")
+        startRealtimeUpdates()
+    }
+
+    /**
+     * Stop updates
      */
     fun stopRealtimeUpdates() {
         snapshotListener?.remove()
         snapshotListener = null
         _homeState.value = _homeState.value.copy(isRealtimeActive = false)
-        Log.d(TAG, "Stopped realtime updates")
+        Log.d(TAG, "⏹️ Stopped realtime updates")
     }
 
     /**
-     * Clean up resources
+     * Cleanup
      */
     fun cleanup() {
         ringtonePlayer?.release()
         ringtonePlayer = null
-        Log.d(TAG, "Cleaned up resources")
-    }
-
-    /**
-     * Refresh activities manually (can be called from retry button)
-     */
-    fun refreshActivities() {
-        Log.d(TAG, "Manual refresh triggered")
-        startRealtimeUpdates()
+        Log.d(TAG, "🧹 Cleaned up resources")
     }
 
     override fun onCleared() {
         super.onCleared()
         stopRealtimeUpdates()
         cleanup()
-        Log.d(TAG, "ViewModel cleared")
+        Log.d(TAG, "❌ ViewModel cleared")
     }
 }
 
-sealed class NotificationState {
-    object Idle : NotificationState()
-    object Loading : NotificationState()
-    object Success : NotificationState()
-    data class Error(val message: String) : NotificationState()
-}
-
 /**
- * Ringtone player class to handle different types of alerts with 8-second limit
+ * Ringtone player
  */
 class RingtonePlayer(private val context: Context) {
     private var currentRingtone: android.media.Ringtone? = null
@@ -362,7 +469,6 @@ class RingtonePlayer(private val context: Context) {
     }
 
     fun playCriminalAlert(durationMillis: Long = 8000L) {
-        // Use alarm sound for criminals
         playRingtoneWithDuration(
             RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
             durationMillis
@@ -370,7 +476,6 @@ class RingtonePlayer(private val context: Context) {
     }
 
     fun playCriticalAlert(durationMillis: Long = 8000L) {
-        // Use a more urgent sound for critical threats
         playRingtoneWithDuration(
             RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
             durationMillis
@@ -378,11 +483,7 @@ class RingtonePlayer(private val context: Context) {
     }
 
     private fun playRingtoneWithDuration(uri: Uri, durationMillis: Long) {
-        // Cancel any existing ringtone job
         ringtoneJob?.cancel()
-        ringtoneJob = null
-
-        // Stop any currently playing ringtone
         stop()
 
         try {
@@ -390,17 +491,15 @@ class RingtonePlayer(private val context: Context) {
                 play()
             }
 
-            // Schedule auto-stop after duration
             ringtoneJob = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
                 kotlinx.coroutines.delay(durationMillis)
                 stop()
-                Log.d("RingtonePlayer", "Ringtone stopped after ${durationMillis}ms")
             }
 
-            Log.d("RingtonePlayer", "Playing ringtone for ${durationMillis}ms")
+            Log.d("RingtonePlayer", "🔊 Playing ringtone for ${durationMillis}ms")
 
         } catch (e: Exception) {
-            Log.e("RingtonePlayer", "Error playing ringtone", e)
+            Log.e("RingtonePlayer", "❌ Error playing ringtone", e)
             stop()
         }
     }
@@ -411,14 +510,13 @@ class RingtonePlayer(private val context: Context) {
             currentRingtone = null
             ringtoneJob?.cancel()
             ringtoneJob = null
-            Log.d("RingtonePlayer", "Ringtone stopped manually")
         } catch (e: Exception) {
-            Log.e("RingtonePlayer", "Error stopping ringtone", e)
+            Log.e("RingtonePlayer", "❌ Error stopping ringtone", e)
         }
     }
 
     fun release() {
         stop()
-        Log.d("RingtonePlayer", "Ringtone player released")
+        Log.d("RingtonePlayer", "🧹 Ringtone player released")
     }
 }

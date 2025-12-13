@@ -1,10 +1,14 @@
 package com.example.crimicam
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -24,6 +28,8 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -47,22 +53,39 @@ import com.example.crimicam.presentation.main.Profile.ViewProfile.ViewProfileScr
 import com.example.crimicam.presentation.signup.SignupScreen
 import com.example.crimicam.ui.theme.CrimicamTheme
 import com.example.crimicam.util.NotificationHelper
-import com.example.crimicam.util.NotificationManager
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.BuildConfig
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.messaging.FirebaseMessaging
+import timber.log.Timber
 
 class MainActivity : ComponentActivity() {
-    private lateinit var notificationManager: NotificationManager
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            Timber.d("✅ Notification permission GRANTED")
+            initializeFCM()
+        } else {
+            Timber.w("❌ Notification permission DENIED")
+        }
+    }
 
     @RequiresApi(Build.VERSION_CODES.O)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Create notification channel
+        if (BuildConfig.DEBUG) {
+            Timber.plant(Timber.DebugTree())
+        }
+
+        Timber.d("🚀 MainActivity onCreate")
+
         NotificationHelper.createNotificationChannel(this)
 
-        // Initialize notification manager
-        notificationManager = NotificationManager(this)
+        handleNotificationIntent(intent)
+
+        requestNotificationPermission()
 
         setContent {
             CrimicamTheme {
@@ -72,7 +95,6 @@ class MainActivity : ComponentActivity() {
 
                 SideEffect {
                     val window = (view.context as ComponentActivity).window
-
                     window.statusBarColor = statusBarColor.toArgb()
                     window.navigationBarColor = navBarColor.toArgb()
                     window.setBackgroundDrawable(ColorDrawable(statusBarColor.toArgb()))
@@ -102,29 +124,177 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                AppNavigation(notificationManager = notificationManager)
+                AppNavigation()
             }
         }
     }
 
     override fun onResume() {
         super.onResume()
-        notificationManager.startListening()
+        Timber.d("📱 MainActivity onResume")
+
+        handleNotificationIntent(intent)
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            when {
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED -> {
+                    Timber.d("✅ Notification permission already granted")
+                    initializeFCM()
+                }
+
+                ActivityCompat.shouldShowRequestPermissionRationale(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) -> {
+                    Timber.d("ℹ️ Showing notification permission rationale")
+                    requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+
+                else -> {
+                    Timber.d("📝 Requesting notification permission")
+                    requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+        } else {
+            Timber.d("📱 Android <13, no permission needed")
+            initializeFCM()
+        }
+    }
+
+    private fun initializeFCM() {
+        try {
+            Timber.d("🔄 Initializing FCM...")
+
+            // Get FCM token
+            FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                if (task.isSuccessful) {
+                    val token = task.result
+                    Timber.d("✅ FCM Token: ${token?.take(10)}...")
+
+                    // Store token in Firestore
+                    storeFCMToken(token)
+                } else {
+                    Timber.e(task.exception, "❌ Failed to get FCM token")
+                }
+            }
+
+            // Subscribe to broadcast topic (ALL users will get notifications)
+            FirebaseMessaging.getInstance().subscribeToTopic("activity_broadcast")
+                .addOnCompleteListener { task ->
+                    if (task.isSuccessful) {
+                        Timber.d("✅ SUCCESS: Subscribed to 'activity_broadcast' topic")
+                        Timber.d("📢 This device will now receive notifications from ALL users!")
+                    } else {
+                        Timber.e(task.exception, "❌ FAILED to subscribe to topic")
+                    }
+                }
+
+            val userId = FirebaseAuth.getInstance().currentUser?.uid
+            userId?.let {
+                FirebaseMessaging.getInstance().subscribeToTopic("user_$it")
+                    .addOnCompleteListener { task ->
+                        if (task.isSuccessful) {
+                            Timber.d("✅ Also subscribed to user topic: user_$it")
+                        }
+                    }
+            }
+
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error initializing FCM")
+        }
+    }
+
+    private fun storeFCMToken(token: String?) {
+        token?.let { fcmToken ->
+            val currentUser = FirebaseAuth.getInstance().currentUser
+            if (currentUser != null) {
+                val deviceId = "${Build.BRAND}_${Build.MODEL}_${Build.SERIAL}"
+
+                Timber.d("💾 Storing FCM token for user: ${currentUser.uid}")
+
+                FirebaseFirestore.getInstance()
+                    .collection("user_tokens")
+                    .document(currentUser.uid)
+                    .collection("devices")
+                    .document(deviceId)
+                    .set(mapOf(
+                        "token" to fcmToken,
+                        "platform" to "android",
+                        "active" to true,
+                        "lastUpdated" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+                        "deviceId" to deviceId,
+                        "userId" to currentUser.uid,
+                        "model" to "${Build.BRAND} ${Build.MODEL}",
+                        "androidVersion" to Build.VERSION.RELEASE
+                    ))
+                    .addOnSuccessListener {
+                        Timber.d("✅ FCM token stored successfully in Firestore")
+                    }
+                    .addOnFailureListener { e ->
+                        Timber.e(e, "❌ Failed to store FCM token in Firestore")
+                    }
+            } else {
+                Timber.w("⚠️ No authenticated user, skipping token storage")
+            }
+        }
+    }
+
+    private fun handleNotificationIntent(intent: Intent?) {
+        Timber.d("🔍 Checking for notification intent...")
+        intent?.extras?.let { extras ->
+            Timber.d("📦 Intent extras found: ${extras.keySet().joinToString(", ")}")
+
+            val type = extras.getString("type")
+            Timber.d("📋 Notification type: $type")
+
+            if (type == "ACTIVITY_BROADCAST") {
+                Timber.d("🎯 RECEIVED BROADCAST NOTIFICATION!")
+
+                val notificationData = mutableMapOf<String, String>()
+
+                listOf("type", "title", "body", "userId", "faceId",
+                    "isCriminal", "dangerLevel", "personName", "address", "timestamp")
+                    .forEach { key ->
+                        notificationData[key] = extras.getString(key) ?: ""
+                    }
+
+                val filteredData = notificationData.filterValues { it.isNotEmpty() }
+
+                Timber.d("📊 Notification data: $filteredData")
+
+                handleNotificationData(filteredData)
+            }
+        }
+    }
+
+    private fun handleNotificationData(data: Map<String, String>) {
+        Timber.d("🎯 Processing broadcast notification:")
+        data.forEach { (key, value) ->
+            Timber.d("   $key: $value")
+        }
+
+        Timber.d("✅ Notification processed successfully")
     }
 
     override fun onPause() {
         super.onPause()
+        Timber.d("⏸️ MainActivity onPause")
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        notificationManager.stopListening()
+        Timber.d("❌ MainActivity onDestroy")
     }
 }
 
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
-fun AppNavigation(notificationManager: NotificationManager) {
+fun AppNavigation() {
     val navController = rememberNavController()
 
     NavHost(
@@ -150,8 +320,7 @@ fun AppNavigation(notificationManager: NotificationManager) {
 
         composable("main") {
             MainScreen(
-                mainNavController = navController,
-                notificationManager = notificationManager
+                mainNavController = navController
             )
         }
     }
@@ -160,8 +329,7 @@ fun AppNavigation(notificationManager: NotificationManager) {
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
 fun MainScreen(
-    mainNavController: androidx.navigation.NavHostController,
-    notificationManager: NotificationManager
+    mainNavController: androidx.navigation.NavHostController
 ) {
     val bottomNavController = rememberNavController()
     val context = LocalContext.current
@@ -225,7 +393,14 @@ fun MainScreen(
                 ProfileScreen(
                     navController = bottomNavController,
                     onLogout = {
-                        notificationManager.stopListening()
+                        // Unsubscribe from topics on logout
+                        FirebaseMessaging.getInstance().unsubscribeFromTopic("activity_broadcast")
+                            .addOnCompleteListener { task ->
+                                if (task.isSuccessful) {
+                                    Timber.d("✅ Unsubscribed from broadcast topic")
+                                }
+                            }
+
                         mainNavController.navigate("login") {
                             popUpTo("main") { inclusive = true }
                         }
@@ -236,7 +411,7 @@ fun MainScreen(
                 AdminScreen()
             }
 
-            // Home nested routes (these are NOT bottom nav routes)
+            // Home nested routes
             composable("camera") {
                 CameraScreen(navController = bottomNavController)
             }
@@ -244,7 +419,6 @@ fun MainScreen(
                 MonitorScreen(navController = bottomNavController)
             }
 
-            // FIXED: Activity detail route with parameter
             composable(
                 route = "activity_detail/{captureId}",
                 arguments = listOf(
@@ -262,7 +436,6 @@ fun MainScreen(
                 )
             }
 
-            // Alternative route without parameter
             composable("activity_detail") {
                 ActivityDetailScreen(
                     navController = bottomNavController,
@@ -270,7 +443,7 @@ fun MainScreen(
                 )
             }
 
-            // Profile nested routes (these are NOT bottom nav routes)
+            // Profile nested routes
             composable("view_profile") {
                 ViewProfileScreen(navController = bottomNavController)
             }
@@ -278,7 +451,7 @@ fun MainScreen(
                 LocationLabelScreen(navController = bottomNavController)
             }
 
-            // Stream viewer route (this is NOT a bottom nav route)
+            // Stream viewer route
             composable("stream_viewer/{sessionId}") { backStackEntry ->
                 val sessionId = backStackEntry.arguments?.getString("sessionId") ?: ""
                 StreamViewerScreen(
@@ -303,6 +476,7 @@ private fun checkAdminStatus(onResult: (Boolean) -> Unit) {
                 onResult(isAdmin)
             }
             .addOnFailureListener {
+                Timber.e(it, "Failed to check admin status")
                 onResult(false)
             }
     } else {

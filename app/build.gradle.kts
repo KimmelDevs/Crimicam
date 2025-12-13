@@ -138,4 +138,9 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2")
     implementation("com.google.mediapipe:tasks-vision:0.10.14")
+
+    implementation("com.google.firebase:firebase-messaging:23.4.0")
+    implementation("com.google.firebase:firebase-installations:17.2.0")
+    implementation("com.jakewharton.timber:timber:5.0.1")
+
 }
