@@ -1,0 +1,96 @@
+app/
+├── manifests/
+├── kotlin+java/
+│   └── com.example.crimicam/
+│       ├── CrimicamApplication.kt
+│       │
+│       ├── data/
+│       │   ├── model/
+│       │   │   ├── User.kt
+│       │   │   ├── Report.kt
+│       │   │   ├── Location.kt
+│       │   │   └── Response.kt (for API responses)
+│       │   │
+│       │   ├── repository/
+│       │   │   ├── AuthRepository.kt
+│       │   │   ├── UserRepository.kt
+│       │   │   ├── ReportRepository.kt
+│       │   │   └── StorageRepository.kt
+│       │   │
+│       │   └── remote/
+│       │       ├── FirebaseAuthService.kt
+│       │       ├── FirestoreService.kt
+│       │       └── FirebaseStorageService.kt
+│       │
+│       ├── domain/
+│       │   ├── usecase/
+│       │   │   ├── auth/
+│       │   │   │   ├── LoginUseCase.kt
+│       │   │   │   ├── SignupUseCase.kt
+│       │   │   │   └── LogoutUseCase.kt
+│       │   │   │
+│       │   │   ├── user/
+│       │   │   │   ├── GetUserProfileUseCase.kt
+│       │   │   │   └── UpdateUserProfileUseCase.kt
+│       │   │   │
+│       │   │   └── report/
+│       │   │       ├── CreateReportUseCase.kt
+│       │   │       ├── GetReportsUseCase.kt
+│       │   │       └── UploadMediaUseCase.kt
+│       │   │
+│       │   └── repository/ (interfaces)
+│       │       ├── IAuthRepository.kt
+│       │       ├── IUserRepository.kt
+│       │       └── IReportRepository.kt
+│       │
+│       ├── presentation/
+│       │   ├── login/
+│       │   │   ├── LoginScreen.kt
+│       │   │   ├── LoginViewModel.kt
+│       │   │   └── LoginState.kt
+│       │   │
+│       │   ├── signup/
+│       │   │   ├── SignupScreen.kt
+│       │   │   ├── SignupViewModel.kt
+│       │   │   └── SignupState.kt
+│       │   │
+│       │   ├── main/
+│       │   │   ├── BottomNav/
+│       │   │   ├── Home/
+│       │   │   │   ├── HomeScreen.kt
+│       │   │   │   ├── HomeViewModel.kt
+│       │   │   │   └── HomeState.kt
+│       │   │   │
+│       │   │   ├── KnownPeople/
+│       │   │   │   ├── KnownPeopleScreen.kt
+│       │   │   │   └── KnownPeopleViewModel.kt
+│       │   │   │
+│       │   │   ├── Map/
+│       │   │   │   ├── MapScreen.kt
+│       │   │   │   └── MapViewModel.kt
+│       │   │   │
+│       │   │   └── Profile/
+│       │   │       ├── ProfileScreen.kt
+│       │   │       └── ProfileViewModel.kt
+│       │   │
+│       │   ├── camera/
+│       │   │   ├── CameraScreen.kt
+│       │   │   └── CameraViewModel.kt
+│       │   │
+│       │   └── monitor/
+│       │       ├── MonitorScreen.kt
+│       │       └── MonitorViewModel.kt
+│       │
+│       ├── ui.theme/
+│       │   ├── Color.kt
+│       │   ├── Theme.kt
+│       │   └── Type.kt
+│       │
+│       ├── util/
+│       │   ├── Constants.kt
+│       │   ├── Result.kt (for handling success/error states)
+│       │   └── Extensions.kt
+│       │
+│       └── MainActivity.kt
+│
+└── res/
