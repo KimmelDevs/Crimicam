@@ -1,3 +1,4 @@
+// WebRTC Signaling Repository - Fixed to use your Result class
 package com.example.crimicam.data.repository
 
 import android.util.Log
@@ -25,7 +26,8 @@ class WebRTCSignalingRepository {
      */
     suspend fun createSession(session: WebRTCSession): Result<String> {
         return try {
-            val userId = auth.currentUser?.uid ?: return Result.Error(Exception("User not authenticated"))
+            val userId = auth.currentUser?.uid
+                ?: return Result.Error(Exception("User not authenticated"))
 
             val sessionData = session.copy(userId = userId)
             val docRef = sessionsCollection.add(sessionData).await()
@@ -110,39 +112,60 @@ class WebRTCSignalingRepository {
         val userId = auth.currentUser?.uid
 
         if (userId == null) {
-            Log.e(TAG, "User not authenticated")
+            Log.e(TAG, "❌ User not authenticated in observeAllSessions")
             trySend(emptyList())
             close()
             return@callbackFlow
         }
 
-        Log.d(TAG, "Starting to observe sessions for user: $userId")
+        Log.d(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        Log.d(TAG, "📡 Setting up Firestore listener")
+        Log.d(TAG, "  Collection: webrtc_sessions")
+        Log.d(TAG, "  Filtering by userId: $userId")
+        Log.d(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
         val listener = sessionsCollection
             .whereEqualTo("userId", userId)
             .orderBy("lastHeartbeat", Query.Direction.DESCENDING)
             .addSnapshotListener { snapshots, error ->
                 if (error != null) {
-                    Log.e(TAG, "Error observing sessions", error)
+                    Log.e(TAG, "❌ Firestore listener error", error)
                     trySend(emptyList())
                     return@addSnapshotListener
                 }
 
+                Log.d(TAG, "📦 Firestore snapshot received")
+                Log.d(TAG, "  Documents count: ${snapshots?.size() ?: 0}")
+
                 val sessions = snapshots?.documents?.mapNotNull { doc ->
                     try {
-                        doc.toObject(WebRTCSession::class.java)?.copy(id = doc.id)
+                        Log.d(TAG, "  📄 Document ID: ${doc.id}")
+                        Log.d(TAG, "    Data: ${doc.data}")
+
+                        val session = doc.toObject(WebRTCSession::class.java)?.copy(id = doc.id)
+
+                        if (session != null) {
+                            Log.d(TAG, "    ✅ Parsed successfully")
+                            Log.d(TAG, "      Device: ${session.deviceName}")
+                            Log.d(TAG, "      Streaming: ${session.isStreaming}")
+                            Log.d(TAG, "      Heartbeat: ${session.lastHeartbeat}")
+                        } else {
+                            Log.w(TAG, "    ⚠️ Failed to parse document")
+                        }
+
+                        session
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error parsing session: ${doc.id}", e)
+                        Log.e(TAG, "    ❌ Error parsing document ${doc.id}", e)
                         null
                     }
                 } ?: emptyList()
 
-                Log.d(TAG, "Observed ${sessions.size} sessions")
+                Log.d(TAG, "✅ Successfully parsed ${sessions.size} sessions")
                 trySend(sessions)
             }
 
         awaitClose {
-            Log.d(TAG, "Closing session observer")
+            Log.d(TAG, "🔌 Closing Firestore session observer")
             listener.remove()
         }
     }
