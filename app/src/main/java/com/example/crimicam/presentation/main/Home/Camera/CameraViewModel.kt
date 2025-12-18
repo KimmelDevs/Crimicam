@@ -10,22 +10,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.crimicam.data.model.KnownPerson
-import com.example.crimicam.data.model.WebRTCSession
-import com.example.crimicam.data.repository.WebRTCSignalingRepository
 import com.example.crimicam.data.service.FirestoreCaptureService
 import com.example.crimicam.facerecognitionnetface.models.data.RecognitionMetrics
 import com.example.crimicam.facerecognitionnetface.models.domain.ImageVectorUseCase
 import com.example.crimicam.facerecognitionnetface.models.domain.PersonUseCase
 import com.example.crimicam.facerecognitionnetface.models.domain.CriminalImageVectorUseCase
-import com.example.crimicam.webrtc.WebRTCManager
-import com.example.crimicam.webrtc.WebRTCSignalingService
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import org.webrtc.IceCandidate
-import org.webrtc.SessionDescription
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
@@ -62,12 +56,7 @@ data class CameraState(
     val criminalCount: Long = 0L,
     val recordingState: RecordingState = RecordingState(),
     val currentLocation: Location? = null,
-    val lastSavedCaptureId: String? = null,
-    // WebRTC streaming state
-    val isStreaming: Boolean = false,
-    val streamingSessionId: String? = null,
-    val webRtcConnectionState: WebRTCManager.RTCConnectionState = WebRTCManager.RTCConnectionState.DISCONNECTED,
-    val viewerCount: Int = 0
+    val lastSavedCaptureId: String? = null
 )
 
 enum class ScanningMode {
@@ -93,202 +82,31 @@ class CameraViewModel(
 
     private val firestoreCaptureService = FirestoreCaptureService(context)
     private val auth = FirebaseAuth.getInstance()
-    private val webRtcManager = WebRTCManager(context)
-    private val signalingService = WebRTCSignalingService()
-    private val sessionRepository = WebRTCSignalingRepository()
 
     private var recordingStartTime: Long = 0
     private val timerFormat = SimpleDateFormat("mm:ss", Locale.getDefault())
     private var recordingJob: kotlinx.coroutines.Job? = null
     private var lastFullFrameBitmap: Bitmap? = null
-    private var currentSessionId: String? = null
-    private val viewerConnections = mutableMapOf<String, org.webrtc.PeerConnection>()
 
     // Per-person cooldown management
     private val personCooldowns = ConcurrentHashMap<String, Long>()
     private val PERSON_COOLDOWN_MS = 10000L
+    private val UNKNOWN_PERSON_COOLDOWN_MS = 15000L  // ✅ 15 seconds for unknown people
     private var cooldownCleanupJob: kotlinx.coroutines.Job? = null
+
+    // ✅ Global unknown person detection pause
+    private var lastUnknownDetectionTime: Long = 0
+    private val UNKNOWN_DETECTION_PAUSE_MS = 15000L  // Pause for 15 seconds after detecting ANY unknown
 
     companion object {
         private const val TAG = "CameraViewModel"
     }
 
     init {
-        webRtcManager.initialize()
-        observeConnectionState()
         refreshPeopleCount()
         refreshCriminalCount()
         ensureAuthentication()
         startCooldownCleanup()
-    }
-
-    private fun observeConnectionState() {
-        viewModelScope.launch {
-            webRtcManager.connectionState.collect { state ->
-                _state.value = _state.value.copy(webRtcConnectionState = state)
-            }
-        }
-    }
-
-    // ========== WebRTC Streaming Methods ==========
-
-    fun startWebRtcStreaming() {
-        viewModelScope.launch {
-            try {
-                val userId = auth.currentUser?.uid ?: run {
-                    updateStatusMessage("⚠️ Please sign in to start streaming")
-                    return@launch
-                }
-
-                val deviceId = android.provider.Settings.Secure.getString(
-                    context.contentResolver,
-                    android.provider.Settings.Secure.ANDROID_ID
-                )
-
-                val deviceName = android.os.Build.MODEL
-
-                // Create session in Firestore
-                val session = WebRTCSession(
-                    id = "",
-                    userId = userId,
-                    deviceId = deviceId,
-                    deviceName = deviceName,
-                    isStreaming = true,
-                    streamStartedAt = System.currentTimeMillis(),
-                    lastHeartbeat = System.currentTimeMillis(),
-                    latitude = _state.value.currentLocation?.latitude,
-                    longitude = _state.value.currentLocation?.longitude
-                )
-
-                val result = sessionRepository.createSession(session)
-                if (result is com.example.crimicam.util.Result.Success) {
-                    currentSessionId = result.data
-
-                    // Start WebRTC
-                    webRtcManager.startStreaming(
-                        sessionId = result.data,
-                        onIceCandidate = { candidate ->
-                            handleIceCandidate(candidate, result.data, userId, null)
-                        },
-                        onOfferCreated = { offer ->
-                            handleOfferCreated(offer, result.data, userId)
-                        }
-                    )
-
-                    // Listen for viewer answers
-                    observeViewerAnswers(result.data, userId)
-
-                    // Start heartbeat
-                    startHeartbeat(result.data)
-
-                    _state.value = _state.value.copy(
-                        isStreaming = true,
-                        streamingSessionId = result.data
-                    )
-
-                    updateStatusMessage("🔴 Live streaming started")
-                    Log.d(TAG, "Streaming started: ${result.data}")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start streaming", e)
-                updateStatusMessage("⚠️ Failed to start streaming")
-            }
-        }
-    }
-
-    fun stopWebRtcStreaming() {
-        viewModelScope.launch {
-            currentSessionId?.let { sessionId ->
-                try {
-                    // Close all viewer connections
-                    viewerConnections.values.forEach { it.close() }
-                    viewerConnections.clear()
-
-                    // Update session status
-                    sessionRepository.updateSessionStatus(sessionId, false)
-
-                    // Cleanup signaling
-                    signalingService.cleanupSession(sessionId)
-
-                    webRtcManager.release()
-
-                    _state.value = _state.value.copy(
-                        isStreaming = false,
-                        streamingSessionId = null,
-                        viewerCount = 0
-                    )
-
-                    currentSessionId = null
-                    updateStatusMessage("⚫ Streaming stopped")
-                    Log.d(TAG, "Streaming stopped")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error stopping stream", e)
-                }
-            }
-        }
-    }
-
-    private fun handleOfferCreated(offer: SessionDescription, sessionId: String, userId: String) {
-        viewModelScope.launch {
-            try {
-                signalingService.sendOffer(sessionId, userId, offer)
-                Log.d(TAG, "Offer sent to signaling server")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to send offer", e)
-            }
-        }
-    }
-
-    private fun handleIceCandidate(
-        candidate: IceCandidate,
-        sessionId: String,
-        senderId: String,
-        receiverId: String?
-    ) {
-        viewModelScope.launch {
-            try {
-                signalingService.sendIceCandidate(sessionId, senderId, receiverId, candidate)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to send ICE candidate", e)
-            }
-        }
-    }
-
-    private fun observeViewerAnswers(sessionId: String, broadcasterId: String) {
-        viewModelScope.launch {
-            signalingService.observeAnswers(sessionId, broadcasterId).collect { (viewerId, answer) ->
-                Log.d(TAG, "Received answer from viewer: $viewerId")
-                webRtcManager.setRemoteDescription(answer) {
-                    _state.value = _state.value.copy(
-                        viewerCount = _state.value.viewerCount + 1
-                    )
-                }
-
-                // Observe ICE candidates from this viewer
-                observeViewerIceCandidates(sessionId, broadcasterId)
-            }
-        }
-    }
-
-    private fun observeViewerIceCandidates(sessionId: String, receiverId: String) {
-        viewModelScope.launch {
-            signalingService.observeIceCandidates(sessionId, receiverId).collect { candidate ->
-                webRtcManager.addIceCandidate(candidate)
-            }
-        }
-    }
-
-    private fun startHeartbeat(sessionId: String) {
-        viewModelScope.launch {
-            while (_state.value.isStreaming) {
-                sessionRepository.updateHeartbeat(sessionId, System.currentTimeMillis())
-                kotlinx.coroutines.delay(5000) // Update every 5 seconds
-            }
-        }
-    }
-
-    fun switchCamera() {
-        webRtcManager.switchCamera()
     }
 
     // ========== Face Recognition Methods ==========
@@ -475,18 +293,34 @@ class CameraViewModel(
         }
     }
 
-    private fun isPersonInCooldown(personId: String): Boolean {
+    fun isPersonInCooldown(personId: String): Boolean {
         val lastDetectionTime = personCooldowns[personId] ?: return false
         val currentTime = System.currentTimeMillis()
-        return currentTime - lastDetectionTime < PERSON_COOLDOWN_MS
+
+        // ✅ Use different cooldown for unknown people
+        val cooldownDuration = if (personId.startsWith("unknown_")) {
+            UNKNOWN_PERSON_COOLDOWN_MS
+        } else {
+            PERSON_COOLDOWN_MS
+        }
+
+        return currentTime - lastDetectionTime < cooldownDuration
     }
 
     private fun getCooldownRemaining(personId: String): Long {
         val lastDetectionTime = personCooldowns[personId] ?: return 0L
         val currentTime = System.currentTimeMillis()
+
+        // ✅ Use different cooldown for unknown people
+        val cooldownDuration = if (personId.startsWith("unknown_")) {
+            UNKNOWN_PERSON_COOLDOWN_MS
+        } else {
+            PERSON_COOLDOWN_MS
+        }
+
         val elapsed = currentTime - lastDetectionTime
-        return if (elapsed < PERSON_COOLDOWN_MS) {
-            PERSON_COOLDOWN_MS - elapsed
+        return if (elapsed < cooldownDuration) {
+            cooldownDuration - elapsed
         } else {
             0L
         }
@@ -610,17 +444,6 @@ class CameraViewModel(
 
     fun updateLocation(location: Location) {
         _state.value = _state.value.copy(currentLocation = location)
-
-        // Update session location if streaming
-        currentSessionId?.let { sessionId ->
-            viewModelScope.launch {
-                sessionRepository.updateSessionLocation(
-                    sessionId,
-                    location.latitude,
-                    location.longitude
-                )
-            }
-        }
     }
 
     private fun updateDetectedFacesWithCriminals(faces: List<DetectedFace>, hasCriminal: Boolean) {
@@ -750,6 +573,139 @@ class CameraViewModel(
         )
     }
 
+    // ========== Methods Called from FaceDetectionOverlay ==========
+
+    /**
+     * Save criminal detection to Firestore (called from overlay analyzer)
+     * DON'T TOUCH THIS - IT WORKS!
+     */
+    fun saveCriminalToFirestore(
+        croppedFace: Bitmap,
+        fullFrame: Bitmap,
+        criminalId: String,
+        criminalName: String,
+        confidence: Float,
+        dangerLevel: String,
+        isSpoof: Boolean
+    ) {
+        viewModelScope.launch {
+            if (isPersonInCooldown(criminalId)) {
+                val remaining = getCooldownRemaining(criminalId) / 1000
+                Log.d(TAG, "Skipping criminal $criminalName due to cooldown: ${remaining}s remaining")
+                return@launch
+            }
+
+            try {
+                val result = firestoreCaptureService.saveCapturedFace(
+                    croppedFace = croppedFace,
+                    fullFrame = fullFrame,
+                    isRecognized = true,
+                    isCriminal = true,
+                    matchedPersonId = criminalId,
+                    matchedPersonName = criminalName,
+                    confidence = confidence,
+                    dangerLevel = dangerLevel,
+                    location = _state.value.currentLocation,
+                    deviceId = android.provider.Settings.Secure.getString(
+                        context.contentResolver,
+                        android.provider.Settings.Secure.ANDROID_ID
+                    )
+                )
+
+                result.onSuccess { captureId ->
+                    _state.value = _state.value.copy(lastSavedCaptureId = captureId)
+                    Log.d(TAG, "✅ Criminal saved to Firestore: $captureId")
+                    updateStatusMessage("🚨 Criminal $criminalName detected and saved!")
+                    startCooldownForPerson(criminalId)
+                }.onFailure { e ->
+                    Log.e(TAG, "❌ Failed to save criminal", e)
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Error saving criminal to Firestore", e)
+            }
+        }
+    }
+
+    /**
+     * Save known or unknown person to Firestore (called from overlay analyzer)
+     * ✅ FIXED: Disable ALL unknown saving for 15 seconds after first detection
+     */
+    fun savePersonToFirestore(
+        croppedFace: Bitmap,
+        fullFrame: Bitmap,
+        personId: String,
+        personName: String?,
+        confidence: Float,
+        isUnknown: Boolean
+    ) {
+        viewModelScope.launch {
+            // ✅ SPECIAL HANDLING FOR UNKNOWN PEOPLE - Global pause
+            if (isUnknown) {
+                val currentTime = System.currentTimeMillis()
+                val timeSinceLastUnknown = currentTime - lastUnknownDetectionTime
+
+                if (lastUnknownDetectionTime > 0 && timeSinceLastUnknown < UNKNOWN_DETECTION_PAUSE_MS) {
+                    val remainingSeconds = (UNKNOWN_DETECTION_PAUSE_MS - timeSinceLastUnknown) / 1000
+                    Log.d(TAG, "⏳ Unknown detection PAUSED - ${remainingSeconds}s remaining")
+                    return@launch
+                }
+
+                // ✅ First unknown or pause expired - SAVE and start new pause
+                lastUnknownDetectionTime = currentTime
+                Log.d(TAG, "📸 Saving unknown person - Starting 15 second pause for ALL unknowns")
+
+            } else {
+                // ✅ KNOWN PEOPLE - Use normal cooldown
+                if (isPersonInCooldown(personId)) {
+                    val remaining = getCooldownRemaining(personId) / 1000
+                    Log.d(TAG, "⏳ Skipping person $personName due to cooldown: ${remaining}s remaining")
+                    return@launch
+                }
+
+                startCooldownForPerson(personId)
+                Log.d(TAG, "📸 Saving known person: $personName - Cooldown started")
+            }
+
+            try {
+                val result = firestoreCaptureService.saveCapturedFace(
+                    croppedFace = croppedFace,
+                    fullFrame = fullFrame,
+                    isRecognized = !isUnknown,
+                    isCriminal = false,
+                    matchedPersonId = personId,
+                    matchedPersonName = personName,
+                    confidence = confidence,
+                    dangerLevel = null,
+                    location = _state.value.currentLocation,
+                    deviceId = android.provider.Settings.Secure.getString(
+                        context.contentResolver,
+                        android.provider.Settings.Secure.ANDROID_ID
+                    )
+                )
+
+                result.onSuccess { captureId ->
+                    _state.value = _state.value.copy(lastSavedCaptureId = captureId)
+
+                    val message = if (isUnknown) {
+                        "📸 Unknown person captured!"
+                    } else {
+                        "✅ $personName identified and saved!"
+                    }
+
+                    Log.d(TAG, "✅ Person saved to Firestore: $captureId - ${personName ?: "Unknown"}")
+                    updateStatusMessage(message)
+
+                }.onFailure { e ->
+                    Log.e(TAG, "❌ Failed to save person", e)
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Error saving person to Firestore", e)
+            }
+        }
+    }
+
     // ========== Utility Methods ==========
 
     fun getNumPeople(): Long = _state.value.peopleCount
@@ -810,62 +766,8 @@ class CameraViewModel(
         )
     }
 
-    /**
-     * Save criminal detection to Firestore (called from overlay analyzer)
-     */
-    fun saveCriminalToFirestore(
-        croppedFace: Bitmap,
-        fullFrame: Bitmap,
-        criminalId: String,
-        criminalName: String,
-        confidence: Float,
-        dangerLevel: String,
-        isSpoof: Boolean
-    ) {
-        viewModelScope.launch {
-            if (isPersonInCooldown(criminalId)) {
-                val remaining = getCooldownRemaining(criminalId) / 1000
-                Log.d(TAG, "Skipping criminal $criminalName due to cooldown: ${remaining}s remaining")
-                return@launch
-            }
-
-            try {
-                val result = firestoreCaptureService.saveCapturedFace(
-                    croppedFace = croppedFace,
-                    fullFrame = fullFrame,
-                    isRecognized = true,
-                    isCriminal = true,
-                    matchedPersonId = criminalId,
-                    matchedPersonName = criminalName,
-                    confidence = confidence,
-                    dangerLevel = dangerLevel,
-                    location = _state.value.currentLocation,
-                    deviceId = android.provider.Settings.Secure.getString(
-                        context.contentResolver,
-                        android.provider.Settings.Secure.ANDROID_ID
-                    )
-                )
-
-                result.onSuccess { captureId ->
-                    _state.value = _state.value.copy(lastSavedCaptureId = captureId)
-                    Log.d(TAG, "✅ Criminal saved to Firestore: $captureId")
-                    updateStatusMessage("🚨 Criminal $criminalName detected and saved!")
-                    startCooldownForPerson(criminalId)
-                }.onFailure { e ->
-                    Log.e(TAG, "❌ Failed to save criminal", e)
-                }
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Error saving criminal to Firestore", e)
-            }
-        }
-    }
-
     override fun onCleared() {
         super.onCleared()
-        if (_state.value.isStreaming) {
-            stopWebRtcStreaming()
-        }
         recordingJob?.cancel()
         recordingJob = null
         cooldownCleanupJob?.cancel()
@@ -873,5 +775,6 @@ class CameraViewModel(
         lastFullFrameBitmap?.recycle()
         lastFullFrameBitmap = null
         personCooldowns.clear()
-        webRtcManager.release()
-    }}
+        lastUnknownDetectionTime = 0  // ✅ Reset unknown detection timer
+    }
+}

@@ -5,7 +5,6 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.location.Location
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Looper
@@ -141,20 +140,6 @@ fun CameraScreen(
                     .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(24.dp))
                     .padding(8.dp)
             ) {
-                // WebRTC Streaming Controls
-                WebRTCStreamingControls(viewModel = viewModel)
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Box(
-                    modifier = Modifier
-                        .width(1.dp)
-                        .height(24.dp)
-                        .background(Color.White.copy(alpha = 0.3f))
-                )
-
-                Spacer(modifier = Modifier.width(8.dp))
-
                 // Screen Recording Controls
                 RecordingControls(viewModel = viewModel)
 
@@ -176,10 +161,6 @@ fun CameraScreen(
                             cameraFacing.intValue = CameraSelector.LENS_FACING_FRONT
                         } else {
                             cameraFacing.intValue = CameraSelector.LENS_FACING_BACK
-                        }
-                        // Also switch WebRTC camera if streaming
-                        if (state.isStreaming) {
-                            viewModel.switchCamera()
                         }
                     },
                     modifier = Modifier
@@ -213,87 +194,6 @@ fun CameraScreen(
                         modifier = Modifier.size(20.dp)
                     )
                 }
-            }
-        }
-    }
-}
-
-@Composable
-fun WebRTCStreamingControls(
-    viewModel: CameraViewModel,
-    modifier: Modifier = Modifier
-) {
-    val state by viewModel.state.collectAsState()
-
-    Row(
-        modifier = modifier,
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center
-    ) {
-        // Streaming button
-        IconButton(
-            onClick = {
-                if (state.isStreaming) {
-                    viewModel.stopWebRtcStreaming()
-                } else {
-                    viewModel.startWebRtcStreaming()
-                }
-            },
-            modifier = Modifier
-                .size(40.dp)
-                .background(
-                    if (state.isStreaming) Color.Red else Color.White,
-                    shape = CircleShape
-                )
-        ) {
-            Icon(
-                imageVector = if (state.isStreaming) Icons.Default.StopCircle else Icons.Default.Wifi,
-                contentDescription = if (state.isStreaming) "Stop Streaming" else "Start Streaming",
-                tint = if (state.isStreaming) Color.White else Color.Blue,
-                modifier = Modifier.size(18.dp)
-            )
-        }
-
-        Spacer(modifier = Modifier.width(8.dp))
-
-        Column(horizontalAlignment = Alignment.Start) {
-            if (state.isStreaming) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .background(Color.Red, CircleShape)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "LIVE",
-                        color = Color.Red,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace
-                    )
-                }
-                Text(
-                    text = "${state.viewerCount} viewer(s)",
-                    color = Color.White.copy(alpha = 0.7f),
-                    fontSize = 8.sp,
-                    fontFamily = FontFamily.Monospace
-                )
-            } else {
-                Text(
-                    text = "STREAM",
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    fontFamily = FontFamily.Monospace
-                )
-                Text(
-                    text = "Tap to go live",
-                    color = Color.White.copy(alpha = 0.7f),
-                    fontSize = 8.sp,
-                    fontFamily = FontFamily.Monospace,
-                    maxLines = 1
-                )
             }
         }
     }
@@ -485,83 +385,8 @@ fun RecordingControls(
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
 private fun ScreenUI(viewModel: CameraViewModel) {
-    val state by viewModel.state.collectAsState()
-
     Box(modifier = Modifier.fillMaxSize()) {
         Camera(viewModel)
-
-        DelayedVisibility(state.detectedFaces.isNotEmpty()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 72.dp, start = 16.dp, end = 16.dp)
-            ) {
-                Text(
-                    text = "Recognition on ${state.detectedFaces.size} face(s)",
-                    color = Color.White,
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold
-                )
-
-                Spacer(modifier = Modifier.weight(1f))
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 24.dp)
-                        .background(
-                            Color.Black.copy(alpha = 0.7f),
-                            RoundedCornerShape(8.dp)
-                        )
-                        .padding(12.dp)
-                ) {
-                    Column {
-                        Text(
-                            "SYSTEM PERFORMANCE",
-                            color = Color.Cyan,
-                            fontSize = 12.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = buildString {
-                                append("Database: ${state.knownPeople.size} profiles\n")
-                                append("Detected: ${state.detectedFaces.size}\n")
-                                append("Identified: ${state.detectedFaces.count { it.personName != null }}")
-                                if (state.recordingState.isRecording) {
-                                    append("\nRecording: ${state.recordingState.recordingTime}")
-                                }
-                                if (state.isStreaming) {
-                                    append("\n🔴 LIVE - ${state.viewerCount} viewer(s)")
-                                }
-                            },
-                            color = Color.White,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                }
-            }
-        }
-
-        DelayedVisibility(state.knownPeople.isEmpty()) {
-            Text(
-                text = "⚠️ NO PROFILES IN DATABASE",
-                color = Color.White,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 72.dp)
-                    .background(Color.Red.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
-                    .padding(12.dp),
-                textAlign = TextAlign.Center,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
         AppAlertDialog()
     }
 }

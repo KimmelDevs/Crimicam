@@ -9,6 +9,8 @@ data class FaceImageRecord(
     val personName: String = "",
     val faceEmbedding: List<Float> = emptyList(),
     val imageUri: String = "", // Optional - for known people images
+
+    val base64Image: String? = null, // ✅ ADD THIS
     val createdAt: Timestamp? = null, // Use Timestamp for consistency
     val confidence: Float = 0.0f,
 

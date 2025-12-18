@@ -9,7 +9,6 @@ import com.example.crimicam.facerecognitionnetface.models.data.RecognitionMetric
 import com.example.crimicam.facerecognitionnetface.models.domain.embeddings.FaceNet
 import com.example.crimicam.facerecognitionnetface.models.domain.embeddings.MediapipeFaceDetector
 import com.example.crimicam.facerecognitionnetface.models.domain.face_detection.FaceSpoofDetector
-import org.koin.core.annotation.Single
 import kotlin.math.pow
 import kotlin.math.sqrt
 import kotlin.time.DurationUnit
@@ -28,9 +27,18 @@ class ImageVectorUseCase(
         val confidence: Float = 0f
     )
 
-    // Add the person's image to the database - Updated to accept String personID
+    // ✅ Helper method to convert Bitmap to Base64
+    private fun bitmapToBase64(bitmap: Bitmap): String {
+        val outputStream = java.io.ByteArrayOutputStream()
+        // Compress to JPEG with 80% quality to reduce size
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
+        val byteArray = outputStream.toByteArray()
+        return android.util.Base64.encodeToString(byteArray, android.util.Base64.DEFAULT)
+    }
+
+    // Add the person's image to the database with URI input
     suspend fun addImage(
-        personID: String, // Changed from Long to String
+        personID: String,
         personName: String,
         imageUri: Uri,
     ): Result<Boolean> {
@@ -40,12 +48,16 @@ class ImageVectorUseCase(
                 val croppedFaceBitmap = faceDetectionResult.getOrNull()!!
                 val embedding = faceNet.getFaceEmbedding(croppedFaceBitmap)
 
+                // ✅ Convert bitmap to base64
+                val base64Image = bitmapToBase64(croppedFaceBitmap)
+
                 // Create FaceImageRecord with embedding as List<Float>
                 val faceRecord = FaceImageRecord(
-                    personID = personID, // Now using String
+                    personID = personID,
                     personName = personName,
-                    faceEmbedding = embedding.toList(), // Convert FloatArray to List<Float>
-                    imageUri = imageUri.toString()
+                    imageUri = imageUri.toString(),
+                    base64Image = base64Image, // ✅ Store base64
+                    faceEmbedding = embedding.toList() // Convert FloatArray to List<Float>
                 )
 
                 imagesVectorDB.addFaceImageRecord(faceRecord)
@@ -60,25 +72,65 @@ class ImageVectorUseCase(
 
     // Add image with Bitmap directly (alternative method)
     suspend fun addImage(
-        personID: String, // Changed from Long to String
+        personID: String,
         personName: String,
         faceBitmap: Bitmap,
     ): Result<Boolean> {
         return try {
             val embedding = faceNet.getFaceEmbedding(faceBitmap)
 
+            // ✅ Convert bitmap to base64
+            val base64Image = bitmapToBase64(faceBitmap)
+
             // Create FaceImageRecord with embedding as List<Float>
             val faceRecord = FaceImageRecord(
-                personID = personID, // Now using String
+                personID = personID,
                 personName = personName,
-                faceEmbedding = embedding.toList(), // Convert FloatArray to List<Float>
-                imageUri = "" // No URI for direct bitmap
+                imageUri = "", // No URI for direct bitmap
+                base64Image = base64Image, // ✅ Store base64
+                faceEmbedding = embedding.toList() // Convert FloatArray to List<Float>
             )
 
             imagesVectorDB.addFaceImageRecord(faceRecord)
             Result.success(true)
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    /**
+     * Get all image base64 strings for a specific person
+     * @param personID The person's ID
+     * @return List of base64 encoded images
+     */
+    suspend fun getPersonImages(personID: String): List<String> {
+        return try {
+            val faceRecords = imagesVectorDB.getFaceRecordsByPersonID(personID)
+            // Extract base64Image from each record, filter out empty ones
+            faceRecords.mapNotNull { record ->
+                record.base64Image?.takeIf { it.isNotBlank() }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ImageVectorUseCase", "Error getting person images: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Get all image URIs for a specific person (alternative method)
+     * @param personID The person's ID
+     * @return List of image URIs
+     */
+    suspend fun getPersonImageUris(personID: String): List<String> {
+        return try {
+            val faceRecords = imagesVectorDB.getFaceRecordsByPersonID(personID)
+            // Extract imageUri from each record, filter out empty ones
+            faceRecords.mapNotNull { record ->
+                record.imageUri.takeIf { it.isNotBlank() }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ImageVectorUseCase", "Error getting person image URIs: ${e.message}")
+            emptyList()
         }
     }
 
@@ -169,8 +221,8 @@ class ImageVectorUseCase(
         return imagesVectorDB.getFaceRecordsByPersonID(personID)
     }
 
-    // Remove all images for a specific person - Updated to accept String personID
-    suspend fun removeImages(personID: String) { // Changed from Long to String
+    // Remove all images for a specific person
+    suspend fun removeImages(personID: String) {
         imagesVectorDB.removeFaceRecordsWithPersonID(personID)
     }
 
