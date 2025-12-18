@@ -1,13 +1,13 @@
 package com.example.crimicam.presentation.main.KnownPeople
 
 import com.example.crimicam.facerecognitionnetface.models.data.PersonRecord
-
 data class KnownPeopleState(
     val isLoading: Boolean = false,
-    val people: List<PersonRecord> = emptyList(),
-    val errorMessage: String? = null,
     val isProcessing: Boolean = false,
-    val processingProgress: ProcessingProgress? = null
+    val processingProgress: ProcessingProgress? = null,
+    val people: List<PersonRecord> = emptyList(),
+    val personImages: Map<String, List<String>> = emptyMap(), // ✅ Map of personID to base64 images
+    val errorMessage: String? = null
 )
 
 data class ProcessingProgress(
@@ -19,8 +19,8 @@ enum class ProcessingStage {
     LOADING_IMAGE,
     DETECTING_FACE,
     CROPPING_FACE,
-    COMPRESSING,
     EXTRACTING_FEATURES,
+    CONVERTING_TO_BASE64, // ✅ New stage
     UPLOADING,
     COMPLETE
 }

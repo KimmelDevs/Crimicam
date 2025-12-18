@@ -1,11 +1,17 @@
 package com.example.crimicam.presentation.main.KnownPeople
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -17,14 +23,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.example.crimicam.facerecognitionnetface.models.data.PersonRecord
 import org.koin.androidx.compose.koinViewModel
+import kotlin.math.min
 
 @Composable
 fun KnownPeopleScreen(
@@ -34,7 +45,7 @@ fun KnownPeopleScreen(
     val state by viewModel.state.collectAsState()
     val context = LocalContext.current
     var showAddDialog by remember { mutableStateOf(false) }
-    var selectedPersonForImage by remember { mutableStateOf<PersonRecord?>(null) } // CHANGED
+    var selectedPersonForImage by remember { mutableStateOf<PersonRecord?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     // Show error messages
@@ -78,7 +89,7 @@ fun KnownPeopleScreen(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "${state.people.size} people • ${state.people.sumOf { it.numImages }} images", // CHANGED
+                        text = "${state.people.size} people • ${state.people.sumOf { it.numImages }} images",
                         fontSize = 14.sp,
                         color = Color.Gray
                     )
@@ -100,10 +111,11 @@ fun KnownPeopleScreen(
                     LazyColumn(
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(state.people, key = { it.personID }) { person -> // CHANGED
+                        items(state.people, key = { it.personID }) { person ->
                             KnownPersonCard(
                                 person = person,
-                                onDelete = { viewModel.deletePerson(person.personID) }, // CHANGED
+                                personImages = state.personImages[person.personID] ?: emptyList(),
+                                onDelete = { viewModel.deletePerson(person.personID) },
                                 onAddImage = { selectedPersonForImage = person }
                             )
                         }
@@ -136,10 +148,10 @@ fun KnownPeopleScreen(
         // Add Image to Existing Person
         selectedPersonForImage?.let { person ->
             AddImageDialog(
-                personName = person.personName, // CHANGED
+                personName = person.personName,
                 onDismiss = { selectedPersonForImage = null },
                 onAdd = { imageUri ->
-                    viewModel.addImageToPerson(context, person.personID, imageUri) // CHANGED
+                    viewModel.addImageToPerson(context, person.personID, imageUri)
                     selectedPersonForImage = null
                     onPersonAdded()
                 }
@@ -150,83 +162,145 @@ fun KnownPeopleScreen(
 
 @Composable
 fun KnownPersonCard(
-    person: PersonRecord, // CHANGED
+    person: PersonRecord,
+    personImages: List<String>, // ✅ Now this is List<String> of base64 images
     onDelete: () -> Unit,
     onAddImage: () -> Unit
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showFullImageDialog by remember { mutableStateOf<String?>(null) }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(16.dp)
         ) {
-            // Avatar
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primaryContainer),
-                contentAlignment = Alignment.Center
+            // Top Row: Avatar, Name, Buttons
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = person.personName.firstOrNull()?.uppercase() ?: "?", // CHANGED
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            Spacer(modifier = Modifier.width(16.dp))
-
-            // Person Info
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = person.personName, // CHANGED
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                // Avatar - try to show first image if available, otherwise first letter
+                val firstImageBase64 = personImages.firstOrNull()
+                Box(
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(CircleShape)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.PhotoLibrary,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        tint = Color.Gray
-                    )
+                    if (firstImageBase64 != null) {
+                        Base64Image(
+                            base64String = firstImageBase64,
+                            contentDescription = person.personName,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = person.personName.firstOrNull()?.uppercase() ?: "?",
+                                fontSize = 24.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(16.dp))
+
+                // Person Info
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "${person.numImages} image${if (person.numImages != 1L) "s" else ""}", // CHANGED
-                        fontSize = 12.sp,
-                        color = Color.Gray
+                        text = person.personName,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PhotoLibrary,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = Color.Gray
+                        )
+                        Text(
+                            text = "${person.numImages} image${if (person.numImages != 1L) "s" else ""}",
+                            fontSize = 12.sp,
+                            color = Color.Gray
+                        )
+                    }
+                }
+
+                // Add Image Button
+                IconButton(onClick = onAddImage) {
+                    Icon(
+                        imageVector = Icons.Default.AddAPhoto,
+                        contentDescription = "Add Image",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                // Delete Button
+                IconButton(onClick = { showDeleteConfirm = true }) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete",
+                        tint = Color.Gray
                     )
                 }
             }
 
-            // Add Image Button
-            IconButton(onClick = onAddImage) {
-                Icon(
-                    imageVector = Icons.Default.AddAPhoto,
-                    contentDescription = "Add Image",
-                    tint = MaterialTheme.colorScheme.primary
+            // ✅ Image Thumbnails Row (using base64)
+            if (personImages.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "Face Images:",
+                    fontSize = 12.sp,
+                    color = Color.Gray,
+                    fontWeight = FontWeight.Medium
                 )
-            }
-
-            // Delete Button
-            IconButton(onClick = { showDeleteConfirm = true }) {
-                Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = "Delete",
-                    tint = Color.Gray
-                )
+                Spacer(modifier = Modifier.height(4.dp))
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    items(personImages.take(10)) { base64Image ->
+                        PersonImageThumbnail(
+                            base64Image = base64Image,
+                            onClick = { showFullImageDialog = base64Image }
+                        )
+                    }
+                    if (personImages.size > 10) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .size(60.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color.Gray.copy(alpha = 0.1f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "+${personImages.size - 10}",
+                                    fontSize = 12.sp,
+                                    color = Color.Gray
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -237,7 +311,7 @@ fun KnownPersonCard(
             onDismissRequest = { showDeleteConfirm = false },
             title = { Text("Remove Person") },
             text = {
-                Text("Are you sure you want to remove ${person.personName}? This will delete all ${person.numImages} image(s).") // CHANGED
+                Text("Are you sure you want to remove ${person.personName}? This will delete all ${person.numImages} image(s).")
             },
             confirmButton = {
                 TextButton(
@@ -256,6 +330,90 @@ fun KnownPersonCard(
             }
         )
     }
+
+    // Full Image Dialog
+    showFullImageDialog?.let { base64Image ->
+        Dialog(onDismissRequest = { showFullImageDialog = null }) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth(0.9f)
+                    .aspectRatio(0.8f),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Base64Image(
+                    base64String = base64Image,
+                    contentDescription = "Full size image",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun PersonImageThumbnail(
+    base64Image: String,
+    onClick: () -> Unit = {}
+) {
+    Box(
+        modifier = Modifier
+            .size(60.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .border(
+                width = 1.dp,
+                color = Color.Gray.copy(alpha = 0.3f),
+                shape = RoundedCornerShape(8.dp)
+            )
+            .background(Color.Gray.copy(alpha = 0.1f))
+            .clickable(onClick = onClick)
+    ) {
+        Base64Image(
+            base64String = base64Image,
+            contentDescription = "Person Image",
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
+    }
+}
+
+@Composable
+fun Base64Image(
+    base64String: String,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Fit
+) {
+    val bitmap = remember(base64String) {
+        try {
+            val imageBytes = android.util.Base64.decode(base64String, android.util.Base64.DEFAULT)
+            BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.Center
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = contentDescription,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = contentScale
+            )
+        } else {
+            // Show error icon if base64 decode fails
+            Icon(
+                imageVector = Icons.Default.BrokenImage,
+                contentDescription = "Failed to load",
+                tint = Color.Gray,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+    }
 }
 
 @Composable
@@ -272,7 +430,7 @@ private fun InfoCard() {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                imageVector = Icons.Default.Person,
+                imageVector = Icons.Default.Info,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(24.dp)
@@ -280,13 +438,13 @@ private fun InfoCard() {
             Spacer(modifier = Modifier.width(12.dp))
             Column {
                 Text(
-                    text = "Add multiple photos per person for better recognition",
+                    text = "Face images are stored as base64 for offline access",
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "💡 Tip: 3-5 photos from different angles works best",
+                    text = "💡 Add 3-5 photos from different angles for better recognition",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.primary
@@ -539,8 +697,8 @@ fun ProcessingOverlay(progress: ProcessingProgress?) {
                         ProcessingStage.LOADING_IMAGE -> "Loading Image..."
                         ProcessingStage.DETECTING_FACE -> "Detecting Face..."
                         ProcessingStage.CROPPING_FACE -> "Cropping Face..."
-                        ProcessingStage.COMPRESSING -> "Compressing Image..."
                         ProcessingStage.EXTRACTING_FEATURES -> "Extracting Features..."
+                        ProcessingStage.CONVERTING_TO_BASE64 -> "Encoding Image..."
                         ProcessingStage.UPLOADING -> "Uploading..."
                         ProcessingStage.COMPLETE -> "Complete!"
                         null -> "Processing..."
@@ -600,11 +758,17 @@ fun EmptyStateView() {
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = "Add people and multiple photos for face recognition",
+                text = "Add people and their face photos for recognition",
                 fontSize = 14.sp,
                 color = Color.Gray,
                 textAlign = TextAlign.Center
             )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(onClick = {}) {
+                Text("Add Your First Person")
+            }
         }
     }
 }

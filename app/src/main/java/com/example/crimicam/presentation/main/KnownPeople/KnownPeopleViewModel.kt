@@ -44,13 +44,37 @@ class KnownPeopleViewModel(
                     isLoading = false,
                     people = personList
                 )
+
+                // ✅ Load base64 images for each person
+                loadPersonImages(personList)
             }
         }
     }
 
     /**
+     * ✅ Load base64 images for all people
+     */
+    private fun loadPersonImages(people: List<PersonRecord>) {
+        viewModelScope.launch {
+            val personImagesMap = mutableMapOf<String, List<String>>()
+
+            people.forEach { person ->
+                try {
+                    // Get all base64 images for this person
+                    val base64Images = imageVectorUseCase.getPersonImages(person.personID)
+                    personImagesMap[person.personID] = base64Images
+                } catch (e: Exception) {
+                    // If loading fails, just use empty list
+                    personImagesMap[person.personID] = emptyList()
+                }
+            }
+
+            _state.value = _state.value.copy(personImages = personImagesMap)
+        }
+    }
+
+    /**
      * Add a new person with their first image
-     * FIXED: Uses atomic increment instead of manual count update
      */
     fun processAndAddPerson(
         context: Context,
@@ -68,12 +92,12 @@ class KnownPeopleViewModel(
                 // Step 1: Add person with initial count of 0
                 val personId = personUseCase.addPerson(
                     name = name,
-                    numImages = 0 // Start with 0, will increment after successful image add
+                    numImages = 0
                 )
 
-                updateProgress(ProcessingStage.DETECTING_FACE, 0.3f)
+                updateProgress(ProcessingStage.DETECTING_FACE, 0.25f)
 
-                // Step 2: Add image with face detection and embedding
+                // Step 2: Add image with face detection, embedding, and base64 conversion
                 val result = imageVectorUseCase.addImage(
                     personID = personId,
                     personName = name,
@@ -93,7 +117,7 @@ class KnownPeopleViewModel(
 
                     numImagesProcessed.value += 1
 
-                    // Reload to get updated list
+                    // Reload to get updated list and images
                     loadKnownPeople()
 
                     // Clear form
@@ -121,7 +145,6 @@ class KnownPeopleViewModel(
 
     /**
      * Add another image to an existing person
-     * FIXED: Uses atomic increment
      */
     fun addImageToPerson(
         context: Context,
@@ -145,9 +168,12 @@ class KnownPeopleViewModel(
                     return@launch
                 }
 
-                updateProgress(ProcessingStage.DETECTING_FACE, 0.4f)
+                updateProgress(ProcessingStage.DETECTING_FACE, 0.3f)
+                updateProgress(ProcessingStage.CROPPING_FACE, 0.5f)
+                updateProgress(ProcessingStage.EXTRACTING_FEATURES, 0.7f)
+                updateProgress(ProcessingStage.CONVERTING_TO_BASE64, 0.85f)
 
-                // Add image with face detection and embedding
+                // Add image with face detection and embedding (includes base64 conversion)
                 val result = imageVectorUseCase.addImage(
                     personID = personId,
                     personName = person.personName,
@@ -167,7 +193,7 @@ class KnownPeopleViewModel(
 
                     numImagesProcessed.value += 1
 
-                    // Reload to get updated image count
+                    // Reload to get updated image count and images
                     loadKnownPeople()
                 } else {
                     _state.value = _state.value.copy(
@@ -207,7 +233,8 @@ class KnownPeopleViewModel(
 
                 // Update UI immediately
                 _state.value = _state.value.copy(
-                    people = _state.value.people.filter { it.personID != personId }
+                    people = _state.value.people.filter { it.personID != personId },
+                    personImages = _state.value.personImages.filterKeys { it != personId }
                 )
 
             } catch (e: Exception) {
