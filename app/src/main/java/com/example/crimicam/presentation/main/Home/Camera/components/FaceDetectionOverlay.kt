@@ -1,5 +1,5 @@
 // ============================================================================
-// FILE: FaceDetectionOverlay.kt - COMPLETE WITH ALL IMPORTS
+// FILE: FaceDetectionOverlay.kt - AUTO-SAVE ALL FACES TO FIRESTORE
 // ============================================================================
 package com.example.crimicam.presentation.main.Home.Camera.components
 
@@ -299,14 +299,19 @@ class FaceDetectionOverlay(
                     val displayBox = RectF(originalBox)
                     var personName = personResult.personName
 
+                    // ✅ FIX: Show "UNKNOWN FACE" for unknown people
+                    val isUnknown = personName == "Unknown" || personName.isNullOrBlank()
+
                     if (viewModel.getNumPeople() == 0L) {
-                        personName = ""
+                        personName = "UNKNOWN FACE"
+                    } else if (isUnknown) {
+                        personName = "UNKNOWN FACE"
                     }
 
                     val displayLabel = if (personResult.spoofResult != null && personResult.spoofResult.isSpoof) {
                         "$personName\n(SPOOF: ${(personResult.spoofResult.score * 100).toInt()}%)"
                     } else {
-                        personName
+                        personName  // ✅ Always show the name (including "UNKNOWN FACE")
                     }
 
                     boundingBoxTransform.mapRect(displayBox)
@@ -314,7 +319,7 @@ class FaceDetectionOverlay(
                     predictions.add(
                         Prediction(
                             bbox = displayBox,
-                            label = displayLabel,
+                            label = displayLabel,  // ✅ Now includes "UNKNOWN FACE"
                             isCriminal = false,
                             dangerLevel = null,
                             confidence = personResult.confidence,
@@ -327,13 +332,42 @@ class FaceDetectionOverlay(
                     detectedFaces.add(
                         DetectedFace(
                             boundingBox = displayBox,
-                            personName = if (personName.isNotBlank()) personName else null,
+                            personName = if (!isUnknown) personName else "Unknown",
                             confidence = personResult.confidence,
                             isCriminal = false,
                             spoofDetected = personResult.spoofResult?.isSpoof ?: false,
                             croppedBitmap = croppedFace
                         )
                     )
+
+                    // ✅ AUTO-SAVE ALL PEOPLE (KNOWN + UNKNOWN) TO FIRESTORE
+                    if (croppedFace != null) {
+                        // Generate unique ID for the person
+                        val personId = if (!isUnknown && personName != "UNKNOWN FACE") {
+                            // For known people, use their name as hash
+                            personName.hashCode().toString()
+                        } else {
+                            // ✅ For unknown people, use face position to group similar detections
+                            // Round coordinates to nearest 100px to group nearby faces together
+                            val roundedLeft = (originalBox.left.toInt() / 100) * 100
+                            val roundedTop = (originalBox.top.toInt() / 100) * 100
+                            val roundedWidth = (originalBox.width().toInt() / 50) * 50
+                            val roundedHeight = (originalBox.height().toInt() / 50) * 50
+                            "unknown_${roundedLeft}_${roundedTop}_${roundedWidth}_${roundedHeight}"
+                        }
+
+                        Log.d(TAG, "📸 Auto-saving person: ${if (isUnknown) "Unknown ($personId)" else personName}")
+
+                        // ✅ Let ViewModel handle cooldown check (same as criminals)
+                        viewModel.savePersonToFirestore(
+                            croppedFace = croppedFace,
+                            fullFrame = frameBitmap,
+                            personId = personId,
+                            personName = if (!isUnknown) personName else null,
+                            confidence = personResult.confidence,
+                            isUnknown = isUnknown
+                        )
+                    }
                 }
 
                 viewModel.faceDetectionMetricsState.value = peopleMetrics
@@ -405,21 +439,22 @@ class FaceDetectionOverlay(
             style = Paint.Style.FILL
         }
 
-        private val unknownBoxPaint = Paint().apply {
-            color = Color.parseColor("#4D808080")
-            style = Paint.Style.FILL
-        }
-
         private val recognizedStrokePaint = Paint().apply {
             color = Color.parseColor("#00FF00")
             style = Paint.Style.STROKE
             strokeWidth = 4f
         }
 
+        // ✅ Unknown people colors (Yellow)
+        private val unknownBoxPaint = Paint().apply {
+            color = Color.parseColor("#4DFFFF00")  // Yellow with transparency
+            style = Paint.Style.FILL
+        }
+
         private val unknownStrokePaint = Paint().apply {
-            color = Color.parseColor("#808080")
+            color = Color.parseColor("#FFFF00")  // Solid yellow
             style = Paint.Style.STROKE
-            strokeWidth = 3f
+            strokeWidth = 4f
         }
 
         // Text paints
@@ -461,6 +496,9 @@ class FaceDetectionOverlay(
 
         override fun onDraw(canvas: Canvas) {
             predictions.forEach { prediction ->
+                // ✅ Check if face is unknown
+                val isUnknown = prediction.label.contains("UNKNOWN", ignoreCase = true)
+
                 val (fillPaint, strokePaint) = when {
                     prediction.isCriminal -> {
                         when (prediction.dangerLevel) {
@@ -470,8 +508,9 @@ class FaceDetectionOverlay(
                             else -> Pair(criminalHighBoxPaint, criminalHighStrokePaint)
                         }
                     }
+                    isUnknown -> Pair(unknownBoxPaint, unknownStrokePaint)  // ✅ Yellow for unknown
                     prediction.label.isNotBlank() -> Pair(recognizedBoxPaint, recognizedStrokePaint)
-                    else -> Pair(unknownBoxPaint, unknownStrokePaint)
+                    else -> Pair(unknownBoxPaint, unknownStrokePaint)  // ✅ Fallback to yellow
                 }
 
                 canvas.drawRoundRect(prediction.bbox, 16f, 16f, fillPaint)
@@ -517,6 +556,7 @@ class FaceDetectionOverlay(
                             backgroundPaint
                         )
 
+                        // ✅ Set text color based on type
                         if (prediction.isCriminal && index == 0) {
                             paint.color = when (prediction.dangerLevel) {
                                 "HIGH" -> Color.parseColor("#FF0000")
@@ -524,6 +564,8 @@ class FaceDetectionOverlay(
                                 "LOW" -> Color.parseColor("#FFFF00")
                                 else -> Color.parseColor("#FF0000")
                             }
+                        } else if (isUnknown) {
+                            paint.color = Color.parseColor("#FFFF00")  // ✅ Yellow for unknown
                         } else {
                             paint.color = Color.WHITE
                         }
@@ -553,50 +595,9 @@ class FaceDetectionOverlay(
 }
 
 // ============================================================================
-// ADD THIS METHOD TO CameraViewModel.kt
+// FIRESTORE PATH:
+// users/{userId}/captured_faces/{captureId}
+//
+// This is handled by FirestoreCaptureService.saveCapturedFace()
+// which is called from CameraViewModel.savePersonToFirestore()
 // ============================================================================
-/*
-/**
- * Save criminal detection to Firestore (called from overlay analyzer)
- */
-fun saveCriminalToFirestore(
-    croppedFace: Bitmap,
-    fullFrame: Bitmap,
-    criminalId: String,
-    criminalName: String,
-    confidence: Float,
-    dangerLevel: String,
-    isSpoof: Boolean
-) {
-    viewModelScope.launch {
-        try {
-            val result = firestoreCaptureService.saveCapturedFace(
-                croppedFace = croppedFace,
-                fullFrame = fullFrame,
-                isRecognized = true,
-                isCriminal = true,
-                matchedPersonId = criminalId,
-                matchedPersonName = criminalName,
-                confidence = confidence,
-                dangerLevel = dangerLevel,
-                location = _state.value.currentLocation,
-                deviceId = android.provider.Settings.Secure.getString(
-                    context.contentResolver,
-                    android.provider.Settings.Secure.ANDROID_ID
-                )
-            )
-
-            result.onSuccess { captureId ->
-                _state.value = _state.value.copy(lastSavedCaptureId = captureId)
-                Log.d(TAG, "✅ Criminal saved to Firestore: $captureId")
-                updateStatusMessage("🚨 Criminal detected and saved!")
-            }.onFailure { e ->
-                Log.e(TAG, "❌ Failed to save criminal", e)
-            }
-
-        } catch (e: Exception) {
-            Log.e(TAG, "Error saving criminal to Firestore", e)
-        }
-    }
-}
-*/

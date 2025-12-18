@@ -385,80 +385,8 @@ fun RecordingControls(
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
 private fun ScreenUI(viewModel: CameraViewModel) {
-    val state by viewModel.state.collectAsState()
-
     Box(modifier = Modifier.fillMaxSize()) {
         Camera(viewModel)
-
-        DelayedVisibility(state.detectedFaces.isNotEmpty()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 72.dp, start = 16.dp, end = 16.dp)
-            ) {
-                Text(
-                    text = "Recognition on ${state.detectedFaces.size} face(s)",
-                    color = Color.White,
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold
-                )
-
-                Spacer(modifier = Modifier.weight(1f))
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 24.dp)
-                        .background(
-                            Color.Black.copy(alpha = 0.7f),
-                            RoundedCornerShape(8.dp)
-                        )
-                        .padding(12.dp)
-                ) {
-                    Column {
-                        Text(
-                            "SYSTEM PERFORMANCE",
-                            color = Color.Cyan,
-                            fontSize = 12.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = buildString {
-                                append("Database: ${state.knownPeople.size} profiles\n")
-                                append("Detected: ${state.detectedFaces.size}\n")
-                                append("Identified: ${state.detectedFaces.count { it.personName != null }}")
-                                if (state.recordingState.isRecording) {
-                                    append("\nRecording: ${state.recordingState.recordingTime}")
-                                }
-                            },
-                            color = Color.White,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                }
-            }
-        }
-
-        DelayedVisibility(state.knownPeople.isEmpty()) {
-            Text(
-                text = "⚠️ NO PROFILES IN DATABASE",
-                color = Color.White,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 72.dp)
-                    .background(Color.Red.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
-                    .padding(12.dp),
-                textAlign = TextAlign.Center,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
         AppAlertDialog()
     }
 }

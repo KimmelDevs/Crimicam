@@ -91,7 +91,12 @@ class CameraViewModel(
     // Per-person cooldown management
     private val personCooldowns = ConcurrentHashMap<String, Long>()
     private val PERSON_COOLDOWN_MS = 10000L
+    private val UNKNOWN_PERSON_COOLDOWN_MS = 15000L  // ✅ 15 seconds for unknown people
     private var cooldownCleanupJob: kotlinx.coroutines.Job? = null
+
+    // ✅ Global unknown person detection pause
+    private var lastUnknownDetectionTime: Long = 0
+    private val UNKNOWN_DETECTION_PAUSE_MS = 15000L  // Pause for 15 seconds after detecting ANY unknown
 
     companion object {
         private const val TAG = "CameraViewModel"
@@ -288,18 +293,34 @@ class CameraViewModel(
         }
     }
 
-    private fun isPersonInCooldown(personId: String): Boolean {
+    fun isPersonInCooldown(personId: String): Boolean {
         val lastDetectionTime = personCooldowns[personId] ?: return false
         val currentTime = System.currentTimeMillis()
-        return currentTime - lastDetectionTime < PERSON_COOLDOWN_MS
+
+        // ✅ Use different cooldown for unknown people
+        val cooldownDuration = if (personId.startsWith("unknown_")) {
+            UNKNOWN_PERSON_COOLDOWN_MS
+        } else {
+            PERSON_COOLDOWN_MS
+        }
+
+        return currentTime - lastDetectionTime < cooldownDuration
     }
 
     private fun getCooldownRemaining(personId: String): Long {
         val lastDetectionTime = personCooldowns[personId] ?: return 0L
         val currentTime = System.currentTimeMillis()
+
+        // ✅ Use different cooldown for unknown people
+        val cooldownDuration = if (personId.startsWith("unknown_")) {
+            UNKNOWN_PERSON_COOLDOWN_MS
+        } else {
+            PERSON_COOLDOWN_MS
+        }
+
         val elapsed = currentTime - lastDetectionTime
-        return if (elapsed < PERSON_COOLDOWN_MS) {
-            PERSON_COOLDOWN_MS - elapsed
+        return if (elapsed < cooldownDuration) {
+            cooldownDuration - elapsed
         } else {
             0L
         }
@@ -552,6 +573,139 @@ class CameraViewModel(
         )
     }
 
+    // ========== Methods Called from FaceDetectionOverlay ==========
+
+    /**
+     * Save criminal detection to Firestore (called from overlay analyzer)
+     * DON'T TOUCH THIS - IT WORKS!
+     */
+    fun saveCriminalToFirestore(
+        croppedFace: Bitmap,
+        fullFrame: Bitmap,
+        criminalId: String,
+        criminalName: String,
+        confidence: Float,
+        dangerLevel: String,
+        isSpoof: Boolean
+    ) {
+        viewModelScope.launch {
+            if (isPersonInCooldown(criminalId)) {
+                val remaining = getCooldownRemaining(criminalId) / 1000
+                Log.d(TAG, "Skipping criminal $criminalName due to cooldown: ${remaining}s remaining")
+                return@launch
+            }
+
+            try {
+                val result = firestoreCaptureService.saveCapturedFace(
+                    croppedFace = croppedFace,
+                    fullFrame = fullFrame,
+                    isRecognized = true,
+                    isCriminal = true,
+                    matchedPersonId = criminalId,
+                    matchedPersonName = criminalName,
+                    confidence = confidence,
+                    dangerLevel = dangerLevel,
+                    location = _state.value.currentLocation,
+                    deviceId = android.provider.Settings.Secure.getString(
+                        context.contentResolver,
+                        android.provider.Settings.Secure.ANDROID_ID
+                    )
+                )
+
+                result.onSuccess { captureId ->
+                    _state.value = _state.value.copy(lastSavedCaptureId = captureId)
+                    Log.d(TAG, "✅ Criminal saved to Firestore: $captureId")
+                    updateStatusMessage("🚨 Criminal $criminalName detected and saved!")
+                    startCooldownForPerson(criminalId)
+                }.onFailure { e ->
+                    Log.e(TAG, "❌ Failed to save criminal", e)
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Error saving criminal to Firestore", e)
+            }
+        }
+    }
+
+    /**
+     * Save known or unknown person to Firestore (called from overlay analyzer)
+     * ✅ FIXED: Disable ALL unknown saving for 15 seconds after first detection
+     */
+    fun savePersonToFirestore(
+        croppedFace: Bitmap,
+        fullFrame: Bitmap,
+        personId: String,
+        personName: String?,
+        confidence: Float,
+        isUnknown: Boolean
+    ) {
+        viewModelScope.launch {
+            // ✅ SPECIAL HANDLING FOR UNKNOWN PEOPLE - Global pause
+            if (isUnknown) {
+                val currentTime = System.currentTimeMillis()
+                val timeSinceLastUnknown = currentTime - lastUnknownDetectionTime
+
+                if (lastUnknownDetectionTime > 0 && timeSinceLastUnknown < UNKNOWN_DETECTION_PAUSE_MS) {
+                    val remainingSeconds = (UNKNOWN_DETECTION_PAUSE_MS - timeSinceLastUnknown) / 1000
+                    Log.d(TAG, "⏳ Unknown detection PAUSED - ${remainingSeconds}s remaining")
+                    return@launch
+                }
+
+                // ✅ First unknown or pause expired - SAVE and start new pause
+                lastUnknownDetectionTime = currentTime
+                Log.d(TAG, "📸 Saving unknown person - Starting 15 second pause for ALL unknowns")
+
+            } else {
+                // ✅ KNOWN PEOPLE - Use normal cooldown
+                if (isPersonInCooldown(personId)) {
+                    val remaining = getCooldownRemaining(personId) / 1000
+                    Log.d(TAG, "⏳ Skipping person $personName due to cooldown: ${remaining}s remaining")
+                    return@launch
+                }
+
+                startCooldownForPerson(personId)
+                Log.d(TAG, "📸 Saving known person: $personName - Cooldown started")
+            }
+
+            try {
+                val result = firestoreCaptureService.saveCapturedFace(
+                    croppedFace = croppedFace,
+                    fullFrame = fullFrame,
+                    isRecognized = !isUnknown,
+                    isCriminal = false,
+                    matchedPersonId = personId,
+                    matchedPersonName = personName,
+                    confidence = confidence,
+                    dangerLevel = null,
+                    location = _state.value.currentLocation,
+                    deviceId = android.provider.Settings.Secure.getString(
+                        context.contentResolver,
+                        android.provider.Settings.Secure.ANDROID_ID
+                    )
+                )
+
+                result.onSuccess { captureId ->
+                    _state.value = _state.value.copy(lastSavedCaptureId = captureId)
+
+                    val message = if (isUnknown) {
+                        "📸 Unknown person captured!"
+                    } else {
+                        "✅ $personName identified and saved!"
+                    }
+
+                    Log.d(TAG, "✅ Person saved to Firestore: $captureId - ${personName ?: "Unknown"}")
+                    updateStatusMessage(message)
+
+                }.onFailure { e ->
+                    Log.e(TAG, "❌ Failed to save person", e)
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Error saving person to Firestore", e)
+            }
+        }
+    }
+
     // ========== Utility Methods ==========
 
     fun getNumPeople(): Long = _state.value.peopleCount
@@ -612,57 +766,6 @@ class CameraViewModel(
         )
     }
 
-    /**
-     * Save criminal detection to Firestore (called from overlay analyzer)
-     */
-    fun saveCriminalToFirestore(
-        croppedFace: Bitmap,
-        fullFrame: Bitmap,
-        criminalId: String,
-        criminalName: String,
-        confidence: Float,
-        dangerLevel: String,
-        isSpoof: Boolean
-    ) {
-        viewModelScope.launch {
-            if (isPersonInCooldown(criminalId)) {
-                val remaining = getCooldownRemaining(criminalId) / 1000
-                Log.d(TAG, "Skipping criminal $criminalName due to cooldown: ${remaining}s remaining")
-                return@launch
-            }
-
-            try {
-                val result = firestoreCaptureService.saveCapturedFace(
-                    croppedFace = croppedFace,
-                    fullFrame = fullFrame,
-                    isRecognized = true,
-                    isCriminal = true,
-                    matchedPersonId = criminalId,
-                    matchedPersonName = criminalName,
-                    confidence = confidence,
-                    dangerLevel = dangerLevel,
-                    location = _state.value.currentLocation,
-                    deviceId = android.provider.Settings.Secure.getString(
-                        context.contentResolver,
-                        android.provider.Settings.Secure.ANDROID_ID
-                    )
-                )
-
-                result.onSuccess { captureId ->
-                    _state.value = _state.value.copy(lastSavedCaptureId = captureId)
-                    Log.d(TAG, "✅ Criminal saved to Firestore: $captureId")
-                    updateStatusMessage("🚨 Criminal $criminalName detected and saved!")
-                    startCooldownForPerson(criminalId)
-                }.onFailure { e ->
-                    Log.e(TAG, "❌ Failed to save criminal", e)
-                }
-
-            } catch (e: Exception) {
-                Log.e(TAG, "Error saving criminal to Firestore", e)
-            }
-        }
-    }
-
     override fun onCleared() {
         super.onCleared()
         recordingJob?.cancel()
@@ -672,5 +775,6 @@ class CameraViewModel(
         lastFullFrameBitmap?.recycle()
         lastFullFrameBitmap = null
         personCooldowns.clear()
+        lastUnknownDetectionTime = 0  // ✅ Reset unknown detection timer
     }
 }
