@@ -155,7 +155,7 @@ val appModule = module {
 
     viewModel {
         MonitorViewModel(
-            repository = get()
+            context = androidContext()
         )
     }
 
