@@ -142,12 +142,14 @@ class ActivityDetailViewModel : ViewModel() {
             SimpleDateFormat("MMM dd, yyyy h:mm a", Locale.getDefault()).format(date)
         } ?: "Unknown time"
 
-        // Get cropped face image (base64)
+        // Get images (base64)
         val croppedFaceBase64 = data["cropped_face_image_base64"] as? String
+        val fullFrameBase64 = data["full_frame_image_base64"] as? String
 
         // Recognition info
         val isRecognized = data["is_recognized"] as? Boolean ?: false
         val isCriminal = data["is_criminal"] as? Boolean ?: false
+        val matchedPersonId = data["matched_person_id"] as? String
         val matchedPersonName = data["matched_person_name"] as? String
         val confidence = (data["confidence"] as? Number)?.toFloat() ?: 0f
         val dangerLevel = data["danger_level"] as? String
@@ -157,18 +159,30 @@ class ActivityDetailViewModel : ViewModel() {
         val longitude = (data["longitude"] as? Number)?.toDouble()
         val address = data["address"] as? String
 
+        // Device info
+        val deviceId = data["device_id"] as? String
+        val deviceModel = data["device_model"] as? String
+
+        // Additional metadata
+        val detectionTime = (data["detection_time_ms"] as? Number)?.toLong()
+
         return CapturedFaceData(
             id = id,
             croppedFaceBase64 = croppedFaceBase64,
+            fullFrameBase64 = fullFrameBase64,
             isRecognized = isRecognized,
             isCriminal = isCriminal,
+            matchedPersonId = matchedPersonId,
             matchedPersonName = matchedPersonName,
             confidence = confidence,
             dangerLevel = dangerLevel,
             timestamp = timestampString,
             latitude = latitude,
             longitude = longitude,
-            address = address
+            address = address,
+            deviceId = deviceId,
+            deviceModel = deviceModel,
+            detectionTimeMs = detectionTime
         )
     }
 
@@ -280,13 +294,18 @@ class ActivityDetailViewModel : ViewModel() {
 data class CapturedFaceData(
     val id: String = "",
     val croppedFaceBase64: String? = null,
+    val fullFrameBase64: String? = null,
     val isRecognized: Boolean = false,
     val isCriminal: Boolean = false,
+    val matchedPersonId: String? = null,
     val matchedPersonName: String? = null,
     val confidence: Float = 0f,
     val dangerLevel: String? = null,
     val timestamp: String = "",
     val latitude: Double? = null,
     val longitude: Double? = null,
-    val address: String? = null
+    val address: String? = null,
+    val deviceId: String? = null,
+    val deviceModel: String? = null,
+    val detectionTimeMs: Long? = null
 )

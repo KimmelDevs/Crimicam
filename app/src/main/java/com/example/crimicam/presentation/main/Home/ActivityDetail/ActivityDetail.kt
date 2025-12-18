@@ -4,6 +4,7 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import android.util.Log
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -13,6 +14,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -35,7 +41,6 @@ fun ActivityDetailScreen(
     val viewModel: ActivityDetailViewModel = viewModel()
     val state by viewModel.state.collectAsState()
 
-    // Log the captureId for debugging
     LaunchedEffect(captureId) {
         Log.d("ActivityDetailScreen", "Received captureId: $captureId")
 
@@ -158,31 +163,27 @@ fun ActivityDetailScreen(
                             .verticalScroll(rememberScrollState())
                             .padding(16.dp)
                     ) {
-                        // Activity Info Card (if viewing single capture)
-                        state.selectedCapture?.let { capture ->
-                            CaptureInfoCard(capture = capture)
-                            Spacer(modifier = Modifier.height(16.dp))
-                        }
+                        // Show detailed view if single capture
+                        if (captureId != null && captureId != "null" && state.selectedCapture != null) {
+                            DetailedCaptureView(capture = state.selectedCapture!!)
+                        } else {
+                            // Show grid for all captures
+                            Text(
+                                text = "All Captured Faces (${state.captures.size})",
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(bottom = 12.dp)
+                            )
 
-                        Text(
-                            text = if (captureId != null && captureId != "null")
-                                "Captured Media"
-                            else
-                                "All Captured Faces (${state.captures.size})",
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(bottom = 12.dp)
-                        )
-
-                        // Photo Grid
-                        LazyVerticalGrid(
-                            columns = GridCells.Fixed(2),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.heightIn(max = 800.dp)
-                        ) {
-                            items(state.captures) { capture ->
-                                CapturedFaceCard(capture = capture)
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(2),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.heightIn(max = 1000.dp)
+                            ) {
+                                items(state.captures) { capture ->
+                                    CapturedFaceCard(capture = capture)
+                                }
                             }
                         }
 
@@ -195,119 +196,274 @@ fun ActivityDetailScreen(
 }
 
 @Composable
-fun CaptureInfoCard(capture: CapturedFaceData) {
+fun DetailedCaptureView(capture: CapturedFaceData) {
     val backgroundColor = when {
         capture.isCriminal && capture.dangerLevel == "CRITICAL" -> Color(0xFFFFEBEE)
         capture.isCriminal -> Color(0xFFFFF3E0)
         capture.isRecognized -> Color(0xFFE8F5E9)
-        else -> Color(0xFFFCE4EC)
+        else -> Color(0xFFF5F5F5)
     }
 
-    val textColor = when {
+    val accentColor = when {
         capture.isCriminal && capture.dangerLevel == "CRITICAL" -> Color(0xFFB71C1C)
         capture.isCriminal -> Color(0xFFE65100)
         capture.isRecognized -> Color(0xFF2E7D32)
-        else -> Color(0xFFC2185B)
+        else -> Color(0xFF616161)
     }
 
-    Card(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = backgroundColor),
-        shape = RoundedCornerShape(12.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            // Title
-            Text(
-                text = when {
-                    capture.isCriminal && capture.dangerLevel != null -> {
-                        "🚨 ${capture.dangerLevel} DANGER: ${capture.matchedPersonName ?: "Unknown Criminal"}"
-                    }
-                    capture.isRecognized -> {
-                        "✅ Identified: ${capture.matchedPersonName ?: "Unknown"}"
-                    }
-                    else -> "⚠️ Unknown Person Detected"
-                },
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                color = textColor
-            )
+        // Status Header Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = backgroundColor),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = when {
+                        capture.isCriminal && capture.dangerLevel != null -> {
+                            "🚨 ${capture.dangerLevel} DANGER"
+                        }
+                        capture.isRecognized -> "✅ IDENTIFIED"
+                        else -> "⚠️ UNKNOWN PERSON"
+                    },
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = accentColor
+                )
 
-            Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = capture.matchedPersonName ?: "Unknown Person",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = accentColor,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
 
-            // Confidence
-            if (capture.confidence > 0) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(vertical = 4.dp)
-                ) {
+                if (capture.confidence > 0) {
                     Text(
-                        text = "Confidence: ",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = textColor.copy(alpha = 0.8f)
-                    )
-                    Text(
-                        text = "${(capture.confidence * 100).toInt()}%",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = textColor
+                        text = "Confidence: ${(capture.confidence * 100).toInt()}%",
+                        fontSize = 16.sp,
+                        color = accentColor.copy(alpha = 0.8f),
+                        modifier = Modifier.padding(top = 8.dp)
                     )
                 }
             }
+        }
 
-            // Timestamp
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(vertical = 4.dp)
+        // Full Frame Image
+        if (capture.fullFrameBase64 != null) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column {
+                    Text(
+                        text = "Full Frame",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(12.dp)
+                    )
+
+                    val fullFrameBitmap = remember(capture.fullFrameBase64) {
+                        decodeBase64ToBitmap(capture.fullFrameBase64)
+                    }
+
+                    fullFrameBitmap?.let { bitmap ->
+                        Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = "Full Frame",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 400.dp),
+                            contentScale = ContentScale.Fit
+                        )
+                    }
+                }
+            }
+        }
+
+        // Cropped Face Image
+        if (capture.croppedFaceBase64 != null) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column {
+                    Text(
+                        text = "Detected Face",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(12.dp)
+                    )
+
+                    val croppedBitmap = remember(capture.croppedFaceBase64) {
+                        decodeBase64ToBitmap(capture.croppedFaceBase64)
+                    }
+
+                    croppedBitmap?.let { bitmap ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Image(
+                                bitmap = bitmap.asImageBitmap(),
+                                contentDescription = "Cropped Face",
+                                modifier = Modifier
+                                    .size(200.dp),
+                                contentScale = ContentScale.Fit
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Capture Information Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "Captured: ",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = textColor.copy(alpha = 0.8f)
+                    text = "Capture Information",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
                 )
-                Text(
-                    text = capture.timestamp,
-                    fontSize = 14.sp,
-                    color = textColor
-                )
-            }
 
-            // Location
-            if (capture.address != null) {
-                Row(
-                    verticalAlignment = Alignment.Top,
-                    modifier = Modifier.padding(vertical = 4.dp)
-                ) {
-                    Text(
-                        text = "Location: ",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = textColor.copy(alpha = 0.8f)
-                    )
-                    Text(
-                        text = capture.address,
-                        fontSize = 14.sp,
-                        color = textColor,
-                        modifier = Modifier.weight(1f)
+                Divider()
+
+                // Person Info
+                if (capture.matchedPersonId != null) {
+                    InfoRow(
+                        icon = Icons.Default.Person,
+                        label = "Person ID",
+                        value = capture.matchedPersonId
                     )
                 }
-            } else if (capture.latitude != null && capture.longitude != null) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(vertical = 4.dp)
+
+                // Timestamp
+                InfoRow(
+                    icon = Icons.Default.AccessTime,
+                    label = "Captured At",
+                    value = capture.timestamp
+                )
+
+                // Detection Time
+                if (capture.detectionTimeMs != null) {
+                    InfoRow(
+                        icon = Icons.Default.AccessTime,
+                        label = "Detection Time",
+                        value = "${capture.detectionTimeMs}ms"
+                    )
+                }
+
+                // Danger Level
+                if (capture.dangerLevel != null) {
+                    InfoRow(
+                        icon = Icons.Default.Shield,
+                        label = "Danger Level",
+                        value = capture.dangerLevel,
+                        valueColor = Color.Red
+                    )
+                }
+
+                // Status
+                InfoRow(
+                    icon = Icons.Default.Shield,
+                    label = "Status",
+                    value = when {
+                        capture.isCriminal -> "Criminal"
+                        capture.isRecognized -> "Recognized"
+                        else -> "Unknown"
+                    },
+                    valueColor = when {
+                        capture.isCriminal -> Color.Red
+                        capture.isRecognized -> Color.Green
+                        else -> Color.Gray
+                    }
+                )
+            }
+        }
+
+        // Location Information Card
+        if (capture.latitude != null && capture.longitude != null || capture.address != null) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "Coordinates: ",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = textColor.copy(alpha = 0.8f)
+                        text = "Location Information",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
                     )
+
+                    Divider()
+
+                    if (capture.address != null) {
+                        InfoRow(
+                            icon = Icons.Default.LocationOn,
+                            label = "Address",
+                            value = capture.address
+                        )
+                    }
+
+                    if (capture.latitude != null && capture.longitude != null) {
+                        InfoRow(
+                            icon = Icons.Default.LocationOn,
+                            label = "Coordinates",
+                            value = "${"%.6f".format(capture.latitude)}, ${"%.6f".format(capture.longitude)}"
+                        )
+                    }
+                }
+            }
+        }
+
+        // Device Information Card
+        if (capture.deviceId != null || capture.deviceModel != null) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     Text(
-                        text = "${"%.4f".format(capture.latitude)}, ${"%.4f".format(capture.longitude)}",
-                        fontSize = 14.sp,
-                        color = textColor
+                        text = "Device Information",
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
                     )
+
+                    Divider()
+
+                    if (capture.deviceModel != null) {
+                        InfoRow(
+                            icon = Icons.Default.Phone,
+                            label = "Device Model",
+                            value = capture.deviceModel
+                        )
+                    }
+
+                    if (capture.deviceId != null) {
+                        InfoRow(
+                            icon = Icons.Default.Phone,
+                            label = "Device ID",
+                            value = capture.deviceId.take(16) + "..."
+                        )
+                    }
                 }
             }
         }
@@ -315,9 +471,45 @@ fun CaptureInfoCard(capture: CapturedFaceData) {
 }
 
 @Composable
+fun InfoRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    value: String,
+    valueColor: Color = Color.Black
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = Color.Gray,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(modifier = Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                fontSize = 12.sp,
+                color = Color.Gray,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = value,
+                fontSize = 14.sp,
+                color = valueColor,
+                fontWeight = FontWeight.Normal
+            )
+        }
+    }
+}
+
+@Composable
 fun CapturedFaceCard(capture: CapturedFaceData) {
-    val decodedBitmap = remember(capture.croppedFaceBase64) {
-        decodeBase64ToBitmap(capture.croppedFaceBase64)
+    val decodedBitmap = remember(capture.fullFrameBase64, capture.croppedFaceBase64) {
+        // Prefer full frame, fallback to cropped
+        decodeBase64ToBitmap(capture.fullFrameBase64 ?: capture.croppedFaceBase64)
     }
 
     val cardColor = when {
@@ -336,7 +528,6 @@ fun CapturedFaceCard(capture: CapturedFaceData) {
         colors = CardDefaults.cardColors(containerColor = cardColor)
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            // Display the cropped face image
             decodedBitmap?.let { bitmap ->
                 Image(
                     bitmap = bitmap.asImageBitmap(),
@@ -345,7 +536,6 @@ fun CapturedFaceCard(capture: CapturedFaceData) {
                     contentScale = ContentScale.Crop
                 )
             } ?: run {
-                // Fallback if no image
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
