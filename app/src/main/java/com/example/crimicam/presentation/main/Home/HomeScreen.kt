@@ -61,15 +61,6 @@ fun HomeScreen(
         }
     }
 
-    // Clean up when leaving screen
-    DisposableEffect(Unit) {
-        onDispose {
-            // We don't stop realtime updates here because we want to keep listening
-            // even when screen is not visible, but we should cleanup ringtone
-            // Actually, let the ViewModel handle cleanup when it's destroyed
-        }
-    }
-
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             // App Header
