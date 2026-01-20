@@ -1,6 +1,8 @@
 package com.example.crimicam.presentation.main.Map
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.location.Location
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -20,9 +22,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.app.ActivityCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.crimicam.data.service.CriminalLocation
-import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.*
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -47,6 +50,8 @@ fun MapScreen() {
     var selectedMarker by remember { mutableStateOf<CriminalMapMarker?>(null) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
+    var isLocationEnabled by remember { mutableStateOf(false) }
+    var locationAccuracy by remember { mutableStateOf<Float?>(null) }
 
     // Destination mode states
     var isSelectingDestination by remember { mutableStateOf(false) }
@@ -60,17 +65,57 @@ fun MapScreen() {
         )
         Configuration.getInstance().userAgentValue = context.packageName
 
-        // Get user location
-        try {
-            val fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
-            fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
-                location?.let {
-                    userLocation = GeoPoint(it.latitude, it.longitude)
+        // Check location permission
+        val hasLocationPermission = ActivityCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (hasLocationPermission) {
+            // Get user location
+            try {
+                val fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
+                val locationRequest = LocationRequest.create().apply {
+                    priority = LocationRequest.PRIORITY_HIGH_ACCURACY
+                    interval = 5000
+                    fastestInterval = 2000
                 }
+
+                val locationCallback = object : LocationCallback() {
+                    override fun onLocationResult(locationResult: LocationResult) {
+                        locationResult.lastLocation?.let { location ->
+                            userLocation = GeoPoint(location.latitude, location.longitude)
+                            locationAccuracy = location.accuracy
+                            isLocationEnabled = true
+                        }
+                    }
+                }
+
+                // Get last known location first
+                fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
+                    location?.let {
+                        userLocation = GeoPoint(it.latitude, it.longitude)
+                        locationAccuracy = it.accuracy
+                        isLocationEnabled = true
+                    }
+                }
+
+                // Request location updates
+                fusedLocationClient.requestLocationUpdates(
+                    locationRequest,
+                    locationCallback,
+                    null
+                )
+
+            } catch (e: SecurityException) {
+                // If location permission not granted, use default (Calbayog City)
+                userLocation = GeoPoint(12.0667, 124.6000)
+                isLocationEnabled = false
             }
-        } catch (e: SecurityException) {
+        } else {
             // If location permission not granted, use default (Calbayog City)
             userLocation = GeoPoint(12.0667, 124.6000)
+            isLocationEnabled = false
         }
 
         viewModel.loadCriminalLocations()
@@ -96,6 +141,7 @@ fun MapScreen() {
                 criminalLocations = state.criminalLocations,
                 selectedDestination = selectedDestination,
                 isSelectingDestination = isSelectingDestination,
+                isLocationEnabled = isLocationEnabled,
                 onMarkerClick = { marker ->
                     if (!isSelectingDestination) {
                         selectedMarker = marker
@@ -140,6 +186,18 @@ fun MapScreen() {
             MapControlButton(
                 icon = Icons.Default.Refresh,
                 onClick = { viewModel.loadCriminalLocations() }
+            )
+        }
+
+        // Location Indicator (only shows if location is enabled)
+        if (isLocationEnabled && userLocation != null && !isSelectingDestination && selectedDestination == null) {
+            LocationIndicator(
+                location = userLocation!!,
+                accuracy = locationAccuracy,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(16.dp)
+                    .padding(top = 80.dp) // Adjusted to not overlap with stats
             )
         }
 
@@ -292,6 +350,7 @@ fun OpenStreetMapView(
     criminalLocations: List<CriminalLocation>,
     selectedDestination: GeoPoint?,
     isSelectingDestination: Boolean,
+    isLocationEnabled: Boolean,
     onMarkerClick: (CriminalMapMarker) -> Unit,
     onMapClick: (GeoPoint) -> Unit,
     onMapReady: (MapView) -> Unit
@@ -313,11 +372,6 @@ fun OpenStreetMapView(
                 controller.setZoom(zoomLevel)
                 controller.setCenter(center)
 
-                // Add map click listener
-                setOnClickListener {
-                    // This doesn't work well for OSM, we'll use overlay instead
-                }
-
                 // Add compass
                 val compassOverlay = CompassOverlay(
                     context,
@@ -328,10 +382,12 @@ fun OpenStreetMapView(
                 }
                 overlays.add(compassOverlay)
 
-                // Add location overlay
-                val locationOverlay = MyLocationNewOverlay(GpsMyLocationProvider(context), this)
-                locationOverlay.enableMyLocation()
-                overlays.add(locationOverlay)
+                // Add location overlay if location is enabled
+                if (isLocationEnabled) {
+                    val locationOverlay = MyLocationNewOverlay(GpsMyLocationProvider(context), this)
+                    locationOverlay.enableMyLocation()
+                    overlays.add(locationOverlay)
+                }
 
                 currentMapView = this
                 onMapReady(this)
@@ -344,6 +400,19 @@ fun OpenStreetMapView(
             }
             mapView.overlays.clear()
             mapView.overlays.addAll(overlaysToKeep)
+
+            // Update location overlay if location is enabled
+            if (isLocationEnabled) {
+                val existingLocationOverlay = mapView.overlays.firstOrNull { it is MyLocationNewOverlay }
+                if (existingLocationOverlay == null) {
+                    val locationOverlay = MyLocationNewOverlay(GpsMyLocationProvider(context), mapView)
+                    locationOverlay.enableMyLocation()
+                    mapView.overlays.add(locationOverlay)
+                }
+            } else {
+                // Remove location overlay if location is disabled
+                mapView.overlays.removeIf { it is MyLocationNewOverlay }
+            }
 
             // Add tap listener for destination selection
             mapView.setOnTouchListener { _, event ->
@@ -423,6 +492,68 @@ fun OpenStreetMapView(
         },
         modifier = Modifier.fillMaxSize()
     )
+}
+
+@Composable
+fun LocationIndicator(
+    location: GeoPoint,
+    accuracy: Float?,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = Color.White.copy(alpha = 0.95f)
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Location icon
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF2196F3))
+                    .padding(8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.LocationOn,
+                    contentDescription = "Your Location",
+                    tint = Color.White,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            // Location details
+            Column {
+                Text(
+                    text = "Your Location",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.Black
+                )
+                Text(
+                    text = "${"%.6f".format(location.latitude)}, ${"%.6f".format(location.longitude)}",
+                    fontSize = 12.sp,
+                    color = Color.Gray
+                )
+
+                accuracy?.let {
+                    Text(
+                        text = "Accuracy: ${"%.1f".format(it)}m",
+                        fontSize = 11.sp,
+                        color = Color(0xFF4CAF50)
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
