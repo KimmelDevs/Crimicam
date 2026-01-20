@@ -7,10 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.MyLocation
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -50,6 +47,10 @@ fun MapScreen() {
     var selectedMarker by remember { mutableStateOf<CriminalMapMarker?>(null) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
+
+    // Destination mode states
+    var isSelectingDestination by remember { mutableStateOf(false) }
+    var selectedDestination by remember { mutableStateOf<GeoPoint?>(null) }
 
     // Get user's current location
     LaunchedEffect(Unit) {
@@ -93,8 +94,17 @@ fun MapScreen() {
                 center = initialCenter,
                 zoomLevel = initialZoom,
                 criminalLocations = state.criminalLocations,
+                selectedDestination = selectedDestination,
+                isSelectingDestination = isSelectingDestination,
                 onMarkerClick = { marker ->
-                    selectedMarker = marker
+                    if (!isSelectingDestination) {
+                        selectedMarker = marker
+                    }
+                },
+                onMapClick = { geoPoint ->
+                    if (isSelectingDestination) {
+                        selectedDestination = geoPoint
+                    }
                 },
                 onMapReady = { map ->
                     mapView = map
@@ -133,18 +143,124 @@ fun MapScreen() {
             )
         }
 
-        // Bottom Info Card
-        selectedMarker?.let { marker ->
-            CriminalInfoCard(
-                marker = marker,
-                onDismiss = { selectedMarker = null },
-                onViewHistory = {
-                    viewModel.loadLocationHistory(marker.criminalId)
-                },
+        // Add Destination Button
+        if (!isSelectingDestination && selectedDestination == null) {
+            FloatingActionButton(
+                onClick = { isSelectingDestination = true },
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp),
+                containerColor = MaterialTheme.colorScheme.primary
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Default.AddLocation, contentDescription = "Add Destination")
+                    Text("Add Destination")
+                }
+            }
+        }
+
+        // Destination Selection Banner
+        if (isSelectingDestination) {
+            Card(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
                     .padding(16.dp)
-            )
+                    .fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Place,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            "Tap on map to set destination",
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+
+                    TextButton(
+                        onClick = {
+                            isSelectingDestination = false
+                            selectedDestination = null
+                        }
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            }
+        }
+
+        // Destination Confirmation Card
+        selectedDestination?.let { destination ->
+            if (!isSelectingDestination) {
+                DestinationCard(
+                    destination = destination,
+                    onConfirm = {
+                        // TODO: Handle navigation to destination
+                        // You can add navigation logic here
+                    },
+                    onRemove = {
+                        selectedDestination = null
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(16.dp)
+                )
+            } else {
+                // Show confirm button when destination is selected in selection mode
+                FloatingActionButton(
+                    onClick = { isSelectingDestination = false },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp),
+                    containerColor = Color(0xFF4CAF50)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Default.Check, contentDescription = "Confirm", tint = Color.White)
+                        Text("Confirm", color = Color.White)
+                    }
+                }
+            }
+        }
+
+        // Bottom Info Card (Criminal info)
+        if (!isSelectingDestination && selectedDestination == null) {
+            selectedMarker?.let { marker ->
+                CriminalInfoCard(
+                    marker = marker,
+                    onDismiss = { selectedMarker = null },
+                    onViewHistory = {
+                        viewModel.loadLocationHistory(marker.criminalId)
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(16.dp)
+                )
+            }
         }
 
         // Top Stats Bar
@@ -174,7 +290,10 @@ fun OpenStreetMapView(
     center: GeoPoint,
     zoomLevel: Double,
     criminalLocations: List<CriminalLocation>,
+    selectedDestination: GeoPoint?,
+    isSelectingDestination: Boolean,
     onMarkerClick: (CriminalMapMarker) -> Unit,
+    onMapClick: (GeoPoint) -> Unit,
     onMapReady: (MapView) -> Unit
 ) {
     val context = LocalContext.current
@@ -186,13 +305,18 @@ fun OpenStreetMapView(
                 setTileSource(TileSourceFactory.MAPNIK)
                 setMultiTouchControls(true)
 
-                // FIXED: Set proper zoom levels
+                // Set proper zoom levels
                 minZoomLevel = 3.0
                 maxZoomLevel = 20.0
 
                 // Set initial position and zoom
                 controller.setZoom(zoomLevel)
                 controller.setCenter(center)
+
+                // Add map click listener
+                setOnClickListener {
+                    // This doesn't work well for OSM, we'll use overlay instead
+                }
 
                 // Add compass
                 val compassOverlay = CompassOverlay(
@@ -220,6 +344,29 @@ fun OpenStreetMapView(
             }
             mapView.overlays.clear()
             mapView.overlays.addAll(overlaysToKeep)
+
+            // Add tap listener for destination selection
+            mapView.setOnTouchListener { _, event ->
+                if (isSelectingDestination && event.action == android.view.MotionEvent.ACTION_UP) {
+                    val projection = mapView.projection
+                    val geoPoint = projection.fromPixels(event.x.toInt(), event.y.toInt()) as GeoPoint
+                    onMapClick(geoPoint)
+                }
+                false
+            }
+
+            // Add destination marker if selected
+            selectedDestination?.let { destination ->
+                val destinationMarker = Marker(mapView).apply {
+                    position = destination
+                    title = "Destination"
+                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                    icon = context.getDrawable(android.R.drawable.ic_menu_mylocation)?.apply {
+                        setTint(android.graphics.Color.BLUE)
+                    }
+                }
+                mapView.overlays.add(destinationMarker)
+            }
 
             // Add criminal markers
             criminalLocations.forEach { criminalLocation ->
@@ -252,18 +399,20 @@ fun OpenStreetMapView(
                     }
 
                     setOnMarkerClickListener { _, _ ->
-                        onMarkerClick(
-                            CriminalMapMarker(
-                                criminalId = criminalLocation.criminalId,
-                                name = criminalLocation.criminalName,
-                                latitude = criminalLocation.latitude,
-                                longitude = criminalLocation.longitude,
-                                address = criminalLocation.address,
-                                lastSeen = criminalLocation.lastSeen?.toDate(),
-                                dangerLevel = criminalLocation.dangerLevel,
-                                totalSightings = criminalLocation.totalSightings
+                        if (!isSelectingDestination) {
+                            onMarkerClick(
+                                CriminalMapMarker(
+                                    criminalId = criminalLocation.criminalId,
+                                    name = criminalLocation.criminalName,
+                                    latitude = criminalLocation.latitude,
+                                    longitude = criminalLocation.longitude,
+                                    address = criminalLocation.address,
+                                    lastSeen = criminalLocation.lastSeen?.toDate(),
+                                    dangerLevel = criminalLocation.dangerLevel,
+                                    totalSightings = criminalLocation.totalSightings
+                                )
                             )
-                        )
+                        }
                         true
                     }
                 }
@@ -274,6 +423,112 @@ fun OpenStreetMapView(
         },
         modifier = Modifier.fillMaxSize()
     )
+}
+
+@Composable
+fun DestinationCard(
+    destination: GeoPoint,
+    onConfirm: () -> Unit,
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Place,
+                        contentDescription = null,
+                        tint = Color(0xFF2196F3),
+                        modifier = Modifier.size(28.dp)
+                    )
+                    Column {
+                        Text(
+                            text = "Destination Set",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.Black
+                        )
+                        Text(
+                            text = "Lat: ${"%.4f".format(destination.latitude)}, Lon: ${"%.4f".format(destination.longitude)}",
+                            fontSize = 12.sp,
+                            color = Color.Gray
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = {
+                        // Open Google Maps with navigation to destination
+                        val uri = android.net.Uri.parse(
+                            "google.navigation:q=${destination.latitude},${destination.longitude}"
+                        )
+                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri).apply {
+                            setPackage("com.google.android.apps.maps")
+                        }
+
+                        try {
+                            context.startActivity(intent)
+                        } catch (e: android.content.ActivityNotFoundException) {
+                            // If Google Maps not installed, open in browser
+                            val browserUri = android.net.Uri.parse(
+                                "https://www.google.com/maps/dir/?api=1&destination=${destination.latitude},${destination.longitude}"
+                            )
+                            val browserIntent = android.content.Intent(android.content.Intent.ACTION_VIEW, browserUri)
+                            context.startActivity(browserIntent)
+                        }
+
+                        onConfirm()
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF4CAF50)
+                    )
+                ) {
+                    Icon(Icons.Default.Navigation, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Navigate", color = Color.White, fontSize = 13.sp)
+                }
+
+                OutlinedButton(
+                    onClick = onRemove,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFFD32F2F)
+                    )
+                ) {
+                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Remove", fontSize = 13.sp)
+                }
+            }
+        }
+    }
 }
 
 @Composable
