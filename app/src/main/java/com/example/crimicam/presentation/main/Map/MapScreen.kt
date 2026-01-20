@@ -1,13 +1,13 @@
 package com.example.crimicam.presentation.main.Map
 
 import android.content.Context
+import android.location.Location
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.   icons.filled.Add
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.crimicam.data.service.CriminalLocation
+import com.google.android.gms.location.LocationServices
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -41,7 +42,6 @@ import java.util.*
 fun MapScreen() {
     val context = LocalContext.current
 
-    // FIXED: Use ViewModelFactory to provide Context
     val viewModel: MapViewModel = viewModel(
         factory = MapViewModelFactory(context)
     )
@@ -49,11 +49,9 @@ fun MapScreen() {
     val state by viewModel.state.collectAsState()
     var selectedMarker by remember { mutableStateOf<CriminalMapMarker?>(null) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
+    var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
 
-    // Philippines center coordinates
-    val philippinesCenter = remember { GeoPoint(12.8797, 121.7740) }
-
-    // Initialize OpenStreetMap configuration
+    // Get user's current location
     LaunchedEffect(Unit) {
         Configuration.getInstance().load(
             context,
@@ -61,9 +59,25 @@ fun MapScreen() {
         )
         Configuration.getInstance().userAgentValue = context.packageName
 
-        // Load criminal locations
+        // Get user location
+        try {
+            val fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
+            fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
+                location?.let {
+                    userLocation = GeoPoint(it.latitude, it.longitude)
+                }
+            }
+        } catch (e: SecurityException) {
+            // If location permission not granted, use default (Calbayog City)
+            userLocation = GeoPoint(12.0667, 124.6000)
+        }
+
         viewModel.loadCriminalLocations()
     }
+
+    // Default center point (Calbayog City) with proper zoom
+    val initialCenter = userLocation ?: GeoPoint(12.0667, 124.6000)
+    val initialZoom = 13.0 // City-level zoom (13-15 is good for city view)
 
     Box(modifier = Modifier.fillMaxSize()) {
         // OpenStreetMap View
@@ -76,8 +90,8 @@ fun MapScreen() {
             }
         } else {
             OpenStreetMapView(
-                center = philippinesCenter,
-                zoomLevel = 6.0,
+                center = initialCenter,
+                zoomLevel = initialZoom,
                 criminalLocations = state.criminalLocations,
                 onMarkerClick = { marker ->
                     selectedMarker = marker
@@ -106,7 +120,12 @@ fun MapScreen() {
             )
             MapControlButton(
                 icon = Icons.Default.MyLocation,
-                onClick = { mapView?.controller?.animateTo(philippinesCenter) }
+                onClick = {
+                    userLocation?.let { location ->
+                        mapView?.controller?.animateTo(location)
+                        mapView?.controller?.setZoom(15.0)
+                    }
+                }
             )
             MapControlButton(
                 icon = Icons.Default.Refresh,
@@ -167,6 +186,10 @@ fun OpenStreetMapView(
                 setTileSource(TileSourceFactory.MAPNIK)
                 setMultiTouchControls(true)
 
+                // FIXED: Set proper zoom levels
+                minZoomLevel = 3.0
+                maxZoomLevel = 20.0
+
                 // Set initial position and zoom
                 controller.setZoom(zoomLevel)
                 controller.setCenter(center)
@@ -208,18 +231,23 @@ fun OpenStreetMapView(
 
                     // Set icon based on danger level
                     icon = when (criminalLocation.dangerLevel?.uppercase()) {
-                        "CRITICAL" -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply {
-                            setTint(android.graphics.Color.RED)
-                        }
+                        "CRITICAL" -> context.getDrawable(android.R.drawable.ic_dialog_alert)
+                            ?.apply {
+                                setTint(android.graphics.Color.RED)
+                            }
+
                         "HIGH" -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply {
                             setTint(android.graphics.Color.parseColor("#FF6B00"))
                         }
+
                         "MEDIUM" -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply {
                             setTint(android.graphics.Color.parseColor("#FFA726"))
                         }
+
                         "LOW" -> context.getDrawable(android.R.drawable.ic_dialog_info)?.apply {
                             setTint(android.graphics.Color.parseColor("#FFC107"))
                         }
+
                         else -> context.getDrawable(android.R.drawable.ic_dialog_alert)
                     }
 
