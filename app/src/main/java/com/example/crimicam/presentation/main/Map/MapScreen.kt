@@ -2,8 +2,11 @@ package com.example.crimicam.presentation.main.Map
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
+import android.net.Uri
+import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -14,6 +17,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -26,6 +30,8 @@ import androidx.core.app.ActivityCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.crimicam.data.service.CriminalLocation
 import com.google.android.gms.location.*
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -38,9 +44,18 @@ import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 import java.text.SimpleDateFormat
 import java.util.*
 
+@OptIn(ExperimentalPermissionsApi::class)
 @Composable
 fun MapScreen() {
     val context = LocalContext.current
+
+    // Request location permissions
+    val locationPermissionsState = rememberMultiplePermissionsState(
+        permissions = listOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
+    )
 
     val viewModel: MapViewModel = viewModel(
         factory = MapViewModelFactory(context)
@@ -52,33 +67,39 @@ fun MapScreen() {
     var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
     var isLocationEnabled by remember { mutableStateOf(false) }
     var locationAccuracy by remember { mutableStateOf<Float?>(null) }
+    var isRequestingLocation by remember { mutableStateOf(false) }
 
     // Destination mode states
     var isSelectingDestination by remember { mutableStateOf(false) }
     var selectedDestination by remember { mutableStateOf<GeoPoint?>(null) }
 
-    // Get user's current location
+    // Check if location permissions are granted
+    val hasLocationPermission = locationPermissionsState.allPermissionsGranted
+
+    // Default center point (Calbayog City) with proper zoom
+    val initialCenter = userLocation ?: GeoPoint(12.0667, 124.6000)
+    val initialZoom = 13.0 // City-level zoom (13-15 is good for city view)
+
+    // Initialize OpenStreetMap configuration
     LaunchedEffect(Unit) {
         Configuration.getInstance().load(
             context,
             context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE)
         )
         Configuration.getInstance().userAgentValue = context.packageName
+        viewModel.loadCriminalLocations()
+    }
 
-        // Check location permission
-        val hasLocationPermission = ActivityCompat.checkSelfPermission(
-            context,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (hasLocationPermission) {
-            // Get user location
+    // Get user location when permission is granted
+    LaunchedEffect(hasLocationPermission, isRequestingLocation) {
+        if (hasLocationPermission && isRequestingLocation) {
             try {
                 val fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
                 val locationRequest = LocationRequest.create().apply {
                     priority = LocationRequest.PRIORITY_HIGH_ACCURACY
                     interval = 5000
                     fastestInterval = 2000
+                    maxWaitTime = 10000
                 }
 
                 val locationCallback = object : LocationCallback() {
@@ -87,6 +108,13 @@ fun MapScreen() {
                             userLocation = GeoPoint(location.latitude, location.longitude)
                             locationAccuracy = location.accuracy
                             isLocationEnabled = true
+                            isRequestingLocation = false
+                        }
+                    }
+
+                    override fun onLocationAvailability(availability: LocationAvailability) {
+                        if (!availability.isLocationAvailable) {
+                            isLocationEnabled = false
                         }
                     }
                 }
@@ -97,7 +125,11 @@ fun MapScreen() {
                         userLocation = GeoPoint(it.latitude, it.longitude)
                         locationAccuracy = it.accuracy
                         isLocationEnabled = true
+                        isRequestingLocation = false
                     }
+                }.addOnFailureListener {
+                    isLocationEnabled = false
+                    isRequestingLocation = false
                 }
 
                 // Request location updates
@@ -108,24 +140,36 @@ fun MapScreen() {
                 )
 
             } catch (e: SecurityException) {
-                // If location permission not granted, use default (Calbayog City)
-                userLocation = GeoPoint(12.0667, 124.6000)
                 isLocationEnabled = false
+                isRequestingLocation = false
+            } catch (e: Exception) {
+                isLocationEnabled = false
+                isRequestingLocation = false
             }
-        } else {
-            // If location permission not granted, use default (Calbayog City)
+        } else if (!hasLocationPermission) {
             userLocation = GeoPoint(12.0667, 124.6000)
             isLocationEnabled = false
         }
-
-        viewModel.loadCriminalLocations()
     }
 
-    // Default center point (Calbayog City) with proper zoom
-    val initialCenter = userLocation ?: GeoPoint(12.0667, 124.6000)
-    val initialZoom = 13.0 // City-level zoom (13-15 is good for city view)
-
     Box(modifier = Modifier.fillMaxSize()) {
+        // Permission Dialog
+        if (!hasLocationPermission && locationPermissionsState.shouldShowRationale) {
+            PermissionRationaleDialog(
+                onDismiss = { /* Do nothing */ },
+                onRequestPermission = {
+                    locationPermissionsState.launchMultiplePermissionRequest()
+                    isRequestingLocation = true
+                },
+                onGoToSettings = {
+                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.fromParts("package", context.packageName, null)
+                    }
+                    context.startActivity(intent)
+                }
+            )
+        }
+
         // OpenStreetMap View
         if (state.isLoading && state.criminalLocations.isEmpty()) {
             Box(
@@ -142,6 +186,7 @@ fun MapScreen() {
                 selectedDestination = selectedDestination,
                 isSelectingDestination = isSelectingDestination,
                 isLocationEnabled = isLocationEnabled,
+                hasLocationPermission = hasLocationPermission,
                 onMarkerClick = { marker ->
                     if (!isSelectingDestination) {
                         selectedMarker = marker
@@ -177,16 +222,36 @@ fun MapScreen() {
             MapControlButton(
                 icon = Icons.Default.MyLocation,
                 onClick = {
-                    userLocation?.let { location ->
-                        mapView?.controller?.animateTo(location)
-                        mapView?.controller?.setZoom(15.0)
+                    if (hasLocationPermission) {
+                        isRequestingLocation = true
+                        userLocation?.let { location ->
+                            mapView?.controller?.animateTo(location)
+                            mapView?.controller?.setZoom(15.0)
+                        }
+                    } else {
+                        locationPermissionsState.launchMultiplePermissionRequest()
+                        isRequestingLocation = true
                     }
-                }
+                },
+                enabled = hasLocationPermission || !locationPermissionsState.shouldShowRationale
             )
             MapControlButton(
                 icon = Icons.Default.Refresh,
                 onClick = { viewModel.loadCriminalLocations() }
             )
+
+            // Location Permission Button
+            if (!hasLocationPermission) {
+                MapControlButton(
+                    icon = Icons.Default.LocationDisabled,
+                    onClick = {
+                        locationPermissionsState.launchMultiplePermissionRequest()
+                        isRequestingLocation = true
+                    },
+                    containerColor = Color.Red.copy(alpha = 0.8f),
+                    contentColor = Color.White
+                )
+            }
         }
 
         // Location Indicator (only shows if location is enabled)
@@ -199,6 +264,33 @@ fun MapScreen() {
                     .padding(16.dp)
                     .padding(top = 80.dp) // Adjusted to not overlap with stats
             )
+        }
+
+        // Location Loading Indicator
+        if (isRequestingLocation) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.3f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.White)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        CircularProgressIndicator()
+                        Text(
+                            text = "Getting your location...",
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            }
         }
 
         // Add Destination Button
@@ -325,6 +417,16 @@ fun MapScreen() {
         MapStatsBar(
             criminalCount = state.criminalLocations.size,
             totalSightings = state.criminalLocations.sumOf { it.totalSightings },
+            hasLocationPermission = hasLocationPermission,
+            isLocationEnabled = isLocationEnabled,
+            onRequestLocation = {
+                if (!hasLocationPermission) {
+                    locationPermissionsState.launchMultiplePermissionRequest()
+                    isRequestingLocation = true
+                } else {
+                    isRequestingLocation = true
+                }
+            },
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(16.dp)
@@ -351,6 +453,7 @@ fun OpenStreetMapView(
     selectedDestination: GeoPoint?,
     isSelectingDestination: Boolean,
     isLocationEnabled: Boolean,
+    hasLocationPermission: Boolean,
     onMarkerClick: (CriminalMapMarker) -> Unit,
     onMapClick: (GeoPoint) -> Unit,
     onMapReady: (MapView) -> Unit
@@ -382,8 +485,8 @@ fun OpenStreetMapView(
                 }
                 overlays.add(compassOverlay)
 
-                // Add location overlay if location is enabled
-                if (isLocationEnabled) {
+                // Add location overlay if location is enabled and permission is granted
+                if (isLocationEnabled && hasLocationPermission) {
                     val locationOverlay = MyLocationNewOverlay(GpsMyLocationProvider(context), this)
                     locationOverlay.enableMyLocation()
                     overlays.add(locationOverlay)
@@ -401,8 +504,8 @@ fun OpenStreetMapView(
             mapView.overlays.clear()
             mapView.overlays.addAll(overlaysToKeep)
 
-            // Update location overlay if location is enabled
-            if (isLocationEnabled) {
+            // Update location overlay if location is enabled and permission is granted
+            if (isLocationEnabled && hasLocationPermission) {
                 val existingLocationOverlay = mapView.overlays.firstOrNull { it is MyLocationNewOverlay }
                 if (existingLocationOverlay == null) {
                     val locationOverlay = MyLocationNewOverlay(GpsMyLocationProvider(context), mapView)
@@ -410,7 +513,7 @@ fun OpenStreetMapView(
                     mapView.overlays.add(locationOverlay)
                 }
             } else {
-                // Remove location overlay if location is disabled
+                // Remove location overlay if location is disabled or no permission
                 mapView.overlays.removeIf { it is MyLocationNewOverlay }
             }
 
@@ -491,6 +594,49 @@ fun OpenStreetMapView(
             mapView.invalidate()
         },
         modifier = Modifier.fillMaxSize()
+    )
+}
+
+@Composable
+fun PermissionRationaleDialog(
+    onDismiss: () -> Unit,
+    onRequestPermission: () -> Unit,
+    onGoToSettings: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Location Permission Required",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column {
+                Text("This app needs location permission to:")
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("• Show your current location on the map")
+                Text("• Navigate to destinations")
+                Text("• Provide accurate crime location data")
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Please grant location permission to use all features.")
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onRequestPermission,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary
+                )
+            ) {
+                Text("Grant Permission")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onGoToSettings) {
+                Text("Open Settings")
+            }
+        }
     )
 }
 
@@ -616,10 +762,10 @@ fun DestinationCard(
                 Button(
                     onClick = {
                         // Open Google Maps with navigation to destination
-                        val uri = android.net.Uri.parse(
+                        val uri = Uri.parse(
                             "google.navigation:q=${destination.latitude},${destination.longitude}"
                         )
-                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri).apply {
+                        val intent = Intent(Intent.ACTION_VIEW, uri).apply {
                             setPackage("com.google.android.apps.maps")
                         }
 
@@ -627,10 +773,10 @@ fun DestinationCard(
                             context.startActivity(intent)
                         } catch (e: android.content.ActivityNotFoundException) {
                             // If Google Maps not installed, open in browser
-                            val browserUri = android.net.Uri.parse(
+                            val browserUri = Uri.parse(
                                 "https://www.google.com/maps/dir/?api=1&destination=${destination.latitude},${destination.longitude}"
                             )
-                            val browserIntent = android.content.Intent(android.content.Intent.ACTION_VIEW, browserUri)
+                            val browserIntent = Intent(Intent.ACTION_VIEW, browserUri)
                             context.startActivity(browserIntent)
                         }
 
@@ -661,17 +807,25 @@ fun DestinationCard(
         }
     }
 }
-
 @Composable
 fun MapControlButton(
     icon: ImageVector,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    containerColor: Color = Color.White,
+    contentColor: Color = MaterialTheme.colorScheme.primary
 ) {
     FloatingActionButton(
-        onClick = onClick,
-        modifier = Modifier.size(48.dp),
-        containerColor = Color.White,
-        contentColor = MaterialTheme.colorScheme.primary
+        onClick = {
+            if (enabled) {
+                onClick()
+            }
+        },
+        modifier = Modifier
+            .size(48.dp)
+            .alpha(if (enabled) 1f else 0.5f),
+        containerColor = containerColor,
+        contentColor = contentColor
     ) {
         Icon(imageVector = icon, contentDescription = null)
     }
@@ -798,6 +952,9 @@ fun CriminalInfoCard(
 fun MapStatsBar(
     criminalCount: Int,
     totalSightings: Int,
+    hasLocationPermission: Boolean,
+    isLocationEnabled: Boolean,
+    onRequestLocation: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -806,21 +963,63 @@ fun MapStatsBar(
         colors = CardDefaults.cardColors(containerColor = Color.White),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier.padding(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            StatItem(
-                label = "Criminals",
-                value = criminalCount.toString(),
-                color = Color(0xFFD32F2F)
-            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                StatItem(
+                    label = "Criminals",
+                    value = criminalCount.toString(),
+                    color = Color(0xFFD32F2F)
+                )
 
-            StatItem(
-                label = "Total Sightings",
-                value = totalSightings.toString(),
-                color = Color(0xFFF57C00)
-            )
+                StatItem(
+                    label = "Total Sightings",
+                    value = totalSightings.toString(),
+                    color = Color(0xFFF57C00)
+                )
+            }
+
+            // Location status indicator
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(
+                            when {
+                                !hasLocationPermission -> Color.Red
+                                isLocationEnabled -> Color(0xFF4CAF50)
+                                else -> Color(0xFFFF9800)
+                            }
+                        )
+                )
+                Text(
+                    text = when {
+                        !hasLocationPermission -> "Location permission required"
+                        isLocationEnabled -> "Location active"
+                        else -> "Getting location..."
+                    },
+                    fontSize = 12.sp,
+                    color = Color.Gray
+                )
+
+                if (!hasLocationPermission) {
+                    Spacer(modifier = Modifier.weight(1f))
+                    TextButton(
+                        onClick = onRequestLocation,
+                        modifier = Modifier.padding(start = 8.dp)
+                    ) {
+                        Text("Enable", fontSize = 12.sp)
+                    }
+                }
+            }
         }
     }
 }
