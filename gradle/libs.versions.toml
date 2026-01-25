@@ -37,6 +37,7 @@ googleGmsGoogleServicesVersion = "4.4.4"
 firebaseFirestore = "26.0.2"
 litertSupportApi = "1.4.1"
 roomCommonJvm = "2.8.4"
+androidxFoundationVersion = "1.10.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -84,6 +85,7 @@ firebase-auth-ktx = { group = "com.google.firebase", name = "firebase-auth-ktx",
 firebase-firestore = { group = "com.google.firebase", name = "firebase-firestore", version.ref = "firebaseFirestore" }
 litert-support-api = { group = "com.google.ai.edge.litert", name = "litert-support-api", version.ref = "litertSupportApi" }
 androidx-room-common-jvm = { group = "androidx.room", name = "room-common-jvm", version.ref = "roomCommonJvm" }
+androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation", version.ref = "androidxFoundationVersion" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
