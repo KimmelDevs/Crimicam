@@ -38,6 +38,7 @@ firebaseFirestore = "26.0.2"
 litertSupportApi = "1.4.1"
 roomCommonJvm = "2.8.4"
 androidxFoundationVersion = "1.10.1"
+firebaseStorageKtxVersion = "22.0.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -86,6 +87,7 @@ firebase-firestore = { group = "com.google.firebase", name = "firebase-firestore
 litert-support-api = { group = "com.google.ai.edge.litert", name = "litert-support-api", version.ref = "litertSupportApi" }
 androidx-room-common-jvm = { group = "androidx.room", name = "room-common-jvm", version.ref = "roomCommonJvm" }
 androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation", version.ref = "androidxFoundationVersion" }
+google-firebase-storage-ktx = { group = "com.google.firebase", name = "firebase-storage-ktx", version.ref = "firebaseStorageKtxVersion" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

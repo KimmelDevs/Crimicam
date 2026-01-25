@@ -1,15 +1,15 @@
 package com.example.crimicam.presentation.main.Home
 
-import android.content.Context
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,27 +31,45 @@ fun HomeScreen(
     navController: NavController
 ) {
     val viewModel: HomeViewModel = viewModel()
+    val emergencyViewModel: EmergencyReportViewModel = viewModel()
     val context = LocalContext.current
     val scrollState = rememberScrollState()
     val homeState by viewModel.homeState.collectAsState()
+    val reportState by emergencyViewModel.reportState.collectAsState()
+    val createReportState by emergencyViewModel.createReportState.collectAsState()
+
+    var showEmergencyDialog by remember { mutableStateOf(false) }
+    var showNotificationsDialog by remember { mutableStateOf(false) }
 
     // Initialize ringtone player
     LaunchedEffect(Unit) {
         viewModel.initializeRingtonePlayer(context)
     }
 
-    // Start realtime updates with a small delay to ensure ringtone player is initialized
+    // Start realtime updates
     LaunchedEffect(Unit) {
-        kotlinx.coroutines.delay(500) // Small delay to ensure initialization
+        kotlinx.coroutines.delay(500)
         viewModel.startRealtimeUpdates()
     }
 
-    // Reset new activity count when user views the screen
+    // Load friend reports
+    LaunchedEffect(Unit) {
+        emergencyViewModel.loadFriendReports()
+    }
+
+    // Reset new activity count
     LaunchedEffect(Unit) {
         viewModel.resetNewActivityCount()
     }
 
-    // Show new activity badge when new activities arrive
+    // Handle create report success
+    LaunchedEffect(createReportState) {
+        if (createReportState is CreateReportState.Success) {
+            showEmergencyDialog = false
+            emergencyViewModel.resetCreateReportState()
+        }
+    }
+
     val newActivityCount = homeState.newActivityCount
     var showNewActivityBadge by remember { mutableStateOf(false) }
 
@@ -63,28 +81,68 @@ fun HomeScreen(
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // App Header
+            // App Header with Notification Icon
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 12.dp)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Image(
-                        painter = painterResource(id = R.drawable.ic_launcher_foreground),
-                        contentDescription = "App Logo",
-                        modifier = Modifier
-                            .size(40.dp)
-                            .height(6.dp)
-                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_launcher_foreground),
+                            contentDescription = "App Logo",
+                            modifier = Modifier
+                                .size(40.dp)
+                                .height(6.dp)
+                        )
 
-                    Spacer(modifier = Modifier.width(10.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
 
-                    Text(
-                        text = "Crimicam",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 24.sp
-                    )
+                        Text(
+                            text = "Crimicam",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 24.sp
+                        )
+                    }
+
+                    // Notification Icon with Badge
+                    Box {
+                        IconButton(
+                            onClick = {
+                                showNotificationsDialog = true
+                                emergencyViewModel.clearUnreadCount()
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Notifications,
+                                contentDescription = "Emergency Reports",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+
+                        // Unread badge
+                        if (reportState.unreadCount > 0) {
+                            Badge(
+                                containerColor = Color.Red,
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .offset(x = (-4).dp, y = 4.dp)
+                            ) {
+                                Text(
+                                    text = "${reportState.unreadCount}",
+                                    fontSize = 10.sp,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -122,7 +180,7 @@ fun HomeScreen(
 
                 Spacer(modifier = Modifier.height(6.dp))
 
-                // Recent Activity Header with Refresh Button and New Activity Badge
+                // Recent Activity Header
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -136,7 +194,6 @@ fun HomeScreen(
                             )
                         )
 
-                        // New Activity Badge
                         if (showNewActivityBadge && newActivityCount > 0) {
                             Spacer(modifier = Modifier.width(8.dp))
                             Badge(
@@ -144,7 +201,6 @@ fun HomeScreen(
                                 modifier = Modifier
                                     .size(24.dp)
                                     .clickable {
-                                        // Clear badge when clicked
                                         showNewActivityBadge = false
                                         viewModel.resetNewActivityCount()
                                     }
@@ -160,7 +216,6 @@ fun HomeScreen(
                     }
 
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        // Refresh Button
                         IconButton(
                             onClick = { viewModel.refreshActivities() },
                             modifier = Modifier.size(36.dp),
@@ -182,7 +237,6 @@ fun HomeScreen(
                     }
                 }
 
-                // Show realtime connection status
                 if (!homeState.isRealtimeActive && !homeState.isLoadingActivities) {
                     Text(
                         text = "🔄 Realtime updates paused",
@@ -194,7 +248,6 @@ fun HomeScreen(
 
                 // Recent Activity Content
                 when {
-                    // Loading state (only show spinner if no activities yet)
                     homeState.isLoadingActivities && homeState.recentActivities.isEmpty() -> {
                         Box(
                             modifier = Modifier
@@ -218,7 +271,6 @@ fun HomeScreen(
                         }
                     }
 
-                    // Error state
                     homeState.activitiesError != null -> {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -255,7 +307,6 @@ fun HomeScreen(
                         }
                     }
 
-                    // Empty state
                     homeState.recentActivities.isEmpty() -> {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -298,7 +349,6 @@ fun HomeScreen(
                         }
                     }
 
-                    // Activities list
                     else -> {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -324,10 +374,63 @@ fun HomeScreen(
                     }
                 }
 
-                // Bottom spacing
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(80.dp))
             }
         }
+
+        // Floating Emergency Report Button
+        FloatingActionButton(
+            onClick = { showEmergencyDialog = true },
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(16.dp),
+            containerColor = Color(0xFFD32F2F),
+            contentColor = Color.White
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = "Emergency Report",
+                    modifier = Modifier.size(24.dp)
+                )
+                Text(
+                    text = "EMERGENCY",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+
+    // Emergency Report Dialog - REMOVED audioUri parameter
+    if (showEmergencyDialog) {
+        CreateEmergencyReportDialog(
+            onDismiss = {
+                showEmergencyDialog = false
+                emergencyViewModel.resetCreateReportState()
+            },
+            onReportCreated = { title, description, lat, lon, address, type ->
+                emergencyViewModel.createReport(title, description, lat, lon, address, type)
+            }
+        )
+    }
+
+    // Friend Reports Dialog
+    if (showNotificationsDialog) {
+        FriendReportsDialog(
+            friendReports = reportState.friendReports,
+            isLoading = reportState.isLoading,
+            error = reportState.error,
+            onDismiss = { showNotificationsDialog = false },
+            onRefresh = { emergencyViewModel.loadFriendReports() },
+            onUpdateStatus = { reportId, status ->
+                emergencyViewModel.updateReportStatus(reportId, status)
+            }
+        )
     }
 }
 
@@ -350,7 +453,6 @@ fun FeatureCard(
         Box(
             modifier = Modifier.fillMaxSize()
         ) {
-            // Background Image
             Image(
                 painter = painterResource(id = imageRes),
                 contentDescription = null,
@@ -359,7 +461,6 @@ fun FeatureCard(
                 alpha = 0.25f
             )
 
-            // Gradient Overlay
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -373,7 +474,6 @@ fun FeatureCard(
                     )
             )
 
-            // Content
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -398,7 +498,6 @@ fun FeatureCard(
                     )
                 }
 
-                // Arrow Icon
                 Icon(
                     painter = painterResource(id = R.drawable.ic_open),
                     contentDescription = "Navigate",
@@ -426,7 +525,6 @@ fun RecentActivityCard(
                 .padding(horizontal = 12.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Icon based on activity type
             Surface(
                 shape = RoundedCornerShape(10.dp),
                 color = when {
@@ -455,7 +553,6 @@ fun RecentActivityCard(
 
             Spacer(modifier = Modifier.width(12.dp))
 
-            // Activity Info
             Column(
                 modifier = Modifier.weight(1f)
             ) {
@@ -477,7 +574,6 @@ fun RecentActivityCard(
 
             Spacer(modifier = Modifier.width(8.dp))
 
-            // Arrow Icon
             Icon(
                 painter = painterResource(id = R.drawable.ic_open),
                 contentDescription = "View Details",
@@ -486,7 +582,6 @@ fun RecentActivityCard(
             )
         }
 
-        // Divider
         if (showDivider) {
             HorizontalDivider(
                 modifier = Modifier.padding(horizontal = 12.dp),
