@@ -10,17 +10,12 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-
-    <!-- New permissions for notification system -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- Add this for Android 12+ media playback -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <application
@@ -33,6 +28,12 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Crimicam">
+
+        <!-- Add Firebase Cloud Messaging default configuration -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_notification" />
+
         <service
             android:name=".presentation.main.Home.Camera.components.ScreenRecordingService"
             android:foregroundServiceType="mediaProjection"
@@ -49,6 +50,17 @@
             </intent-filter>
         </activity>
 
+        <!-- Updated FirebaseMessagingService with better configuration -->
+        <service
+            android:name=".presentation.main.notif.FirebaseMessagingService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:directBootAware="true">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
         <!-- Sound Service for notification ringtones -->
         <service
             android:name=".service.SoundService"
@@ -56,19 +68,10 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
-        <service
-            android:name=".presentation.main.notif.FirebaseMessagingService"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.google.firebase.MESSAGING_EVENT" />
-            </intent-filter>
-        </service>
-
-        <!-- Add this for background notifications -->
+        <!-- Ensure you have this icon in drawable folder -->
         <meta-data
-            android:name="com.google.firebase.messaging.default_notification_channel_id"
-            android:value="@string/default_notification_channel_id" />
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_notification" />
 
     </application>
-
 </manifest>

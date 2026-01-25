@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,7 +17,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -36,6 +37,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.example.crimicam.presentation.main.Home.EmergencyReportViewModel
+import com.example.crimicam.presentation.main.Home.HomeViewModel
 import com.example.crimicam.presentation.login.LoginScreen
 import com.example.crimicam.presentation.main.Admin.AdminScreen
 import com.example.crimicam.presentation.main.BottomNav.BottomNavItem
@@ -54,10 +57,11 @@ import com.example.crimicam.presentation.signup.SignupScreen
 import com.example.crimicam.ui.theme.CrimicamTheme
 import com.example.crimicam.util.NotificationHelper
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.BuildConfig
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
 import com.google.firebase.messaging.FirebaseMessaging
 import timber.log.Timber
+import androidx.lifecycle.viewmodel.compose.viewModel
 
 class MainActivity : ComponentActivity() {
     private val requestPermissionLauncher = registerForActivityResult(
@@ -74,10 +78,6 @@ class MainActivity : ComponentActivity() {
     @RequiresApi(Build.VERSION_CODES.O)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        if (BuildConfig.DEBUG) {
-            Timber.plant(Timber.DebugTree())
-        }
 
         Timber.d("🚀 MainActivity onCreate")
 
@@ -136,6 +136,13 @@ class MainActivity : ComponentActivity() {
         handleNotificationIntent(intent)
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        Timber.d("🎯 MainActivity onNewIntent")
+
+        handleNotificationIntent(intent)
+    }
+
     private fun requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             when {
@@ -170,78 +177,176 @@ class MainActivity : ComponentActivity() {
         try {
             Timber.d("🔄 Initializing FCM...")
 
+            // Debug: Check current token first
+            debugFCMToken()
+
             // Get FCM token
             FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
                 if (task.isSuccessful) {
                     val token = task.result
-                    Timber.d("✅ FCM Token: ${token?.take(10)}...")
+                    Timber.d("✅ FCM Token: ${token?.take(20)}...")
+                    Timber.d("📱 Token length: ${token?.length}")
 
-                    // Store token in Firestore
-                    storeFCMToken(token)
+                    // Store token in user document
+                    storeFCMTokenInUserDocument(token)
+
                 } else {
                     Timber.e(task.exception, "❌ Failed to get FCM token")
                 }
             }
 
-            // Subscribe to broadcast topic (ALL users will get notifications)
+            // Subscribe to broadcast topic (ALL users will get activity notifications)
             FirebaseMessaging.getInstance().subscribeToTopic("activity_broadcast")
                 .addOnCompleteListener { task ->
                     if (task.isSuccessful) {
                         Timber.d("✅ SUCCESS: Subscribed to 'activity_broadcast' topic")
-                        Timber.d("📢 This device will now receive notifications from ALL users!")
+                        Timber.d("📢 This device will now receive activity notifications from ALL users!")
                     } else {
-                        Timber.e(task.exception, "❌ FAILED to subscribe to topic")
+                        Timber.e(task.exception, "❌ FAILED to subscribe to activity broadcast topic")
                     }
                 }
 
-            val userId = FirebaseAuth.getInstance().currentUser?.uid
-            userId?.let {
-                FirebaseMessaging.getInstance().subscribeToTopic("user_$it")
-                    .addOnCompleteListener { task ->
-                        if (task.isSuccessful) {
-                            Timber.d("✅ Also subscribed to user topic: user_$it")
-                        }
+            // Subscribe to emergency reports topic for admin notifications
+            FirebaseMessaging.getInstance().subscribeToTopic("emergency_reports")
+                .addOnCompleteListener { task ->
+                    if (task.isSuccessful) {
+                        Timber.d("✅ SUCCESS: Subscribed to 'emergency_reports' topic")
+                        Timber.d("📢 Will receive emergency reports via topic")
+                    } else {
+                        Timber.e(task.exception, "❌ FAILED to subscribe to emergency reports topic")
                     }
-            }
+                }
 
         } catch (e: Exception) {
             Timber.e(e, "❌ Error initializing FCM")
         }
     }
 
-    private fun storeFCMToken(token: String?) {
+    private fun debugFCMToken() {
+        FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+            if (task.isSuccessful) {
+                val token = task.result
+                Timber.d("🎯 FCM Token Debug:")
+                Timber.d("   Token exists: ${!token.isNullOrEmpty()}")
+                Timber.d("   Token length: ${token?.length}")
+                Timber.d("   Token preview: ${token?.take(20)}...")
+
+                if (token.isNullOrEmpty()) {
+                    Timber.e("⚠️ FCM token is empty or null!")
+                } else if (token.length < 100) {
+                    Timber.w("⚠️ FCM token seems short (${token.length} chars)")
+                }
+            } else {
+                Timber.e(task.exception, "❌ Failed to get FCM token in debug")
+            }
+        }
+    }
+
+    private fun storeFCMTokenInUserDocument(token: String?) {
         token?.let { fcmToken ->
             val currentUser = FirebaseAuth.getInstance().currentUser
             if (currentUser != null) {
-                val deviceId = "${Build.BRAND}_${Build.MODEL}_${Build.SERIAL}"
+                Timber.d("💾 Storing FCM token in user document: ${currentUser.uid}")
+                Timber.d("📱 Token to store: ${fcmToken.take(20)}...")
 
-                Timber.d("💾 Storing FCM token for user: ${currentUser.uid}")
-
+                // Use set() with merge option instead of update()
                 FirebaseFirestore.getInstance()
-                    .collection("user_tokens")
+                    .collection("users")
                     .document(currentUser.uid)
-                    .collection("devices")
-                    .document(deviceId)
-                    .set(mapOf(
-                        "token" to fcmToken,
-                        "platform" to "android",
-                        "active" to true,
-                        "lastUpdated" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
-                        "deviceId" to deviceId,
-                        "userId" to currentUser.uid,
-                        "model" to "${Build.BRAND} ${Build.MODEL}",
-                        "androidVersion" to Build.VERSION.RELEASE
-                    ))
+                    .set(
+                        mapOf(
+                            "fcmToken" to fcmToken,
+                            "fcmTokenUpdated" to com.google.firebase.firestore.FieldValue.serverTimestamp()
+                        ),
+                        SetOptions.merge()
+                    )
                     .addOnSuccessListener {
-                        Timber.d("✅ FCM token stored successfully in Firestore")
+                        Timber.d("✅ FCM token stored in user document")
+
+                        // Verify it was stored
+                        verifyStoredToken(currentUser.uid, fcmToken)
+
+                        // Also store in user_tokens collection as backup
+                        storeBackupToken(fcmToken)
                     }
                     .addOnFailureListener { e ->
-                        Timber.e(e, "❌ Failed to store FCM token in Firestore")
+                        Timber.e(e, "❌ Failed to store FCM token in user document")
+                        // Try alternative approach
+                        forceStoreFCMToken(currentUser.uid, fcmToken)
                     }
-            } else {
-                Timber.w("⚠️ No authenticated user, skipping token storage")
             }
         }
+    }
+
+    private fun storeBackupToken(fcmToken: String) {
+        val currentUser = FirebaseAuth.getInstance().currentUser
+        if (currentUser != null) {
+            val deviceId = "${Build.BRAND}_${Build.MODEL}_${Build.SERIAL}"
+
+            val tokenData = mapOf(
+                "token" to fcmToken,
+                "userId" to currentUser.uid,
+                "platform" to "android",
+                "deviceId" to deviceId,
+                "active" to true,
+                "lastUpdated" to com.google.firebase.firestore.FieldValue.serverTimestamp()
+            )
+
+            FirebaseFirestore.getInstance()
+                .collection("user_tokens")
+                .document("${currentUser.uid}_$deviceId")
+                .set(tokenData)
+                .addOnSuccessListener {
+                    Timber.d("✅ Backup token stored in user_tokens collection")
+                }
+                .addOnFailureListener { e ->
+                    Timber.e(e, "❌ Failed to store backup token")
+                }
+        }
+    }
+
+    private fun verifyStoredToken(userId: String, expectedToken: String) {
+        FirebaseFirestore.getInstance()
+            .collection("users")
+            .document(userId)
+            .get()
+            .addOnSuccessListener { doc ->
+                val storedToken = doc.getString("fcmToken")
+                Timber.d("🔍 Verifying stored token:")
+                Timber.d("   Expected: ${expectedToken.take(20)}...")
+                Timber.d("   Stored: ${storedToken?.take(20)}...")
+                Timber.d("   Match: ${storedToken == expectedToken}")
+
+                if (storedToken.isNullOrEmpty()) {
+                    Timber.e("❌ Token verification failed: No token stored")
+                } else if (storedToken != expectedToken) {
+                    Timber.w("⚠️ Token mismatch, forcing update...")
+                    forceStoreFCMToken(userId, expectedToken)
+                }
+            }
+            .addOnFailureListener { e ->
+                Timber.e(e, "❌ Failed to verify stored token")
+            }
+    }
+
+    private fun forceStoreFCMToken(userId: String, fcmToken: String) {
+        Timber.d("🔄 Force storing FCM token for user: $userId")
+
+        val userData = hashMapOf<String, Any>(
+            "fcmToken" to fcmToken,
+            "fcmTokenUpdated" to com.google.firebase.firestore.FieldValue.serverTimestamp()
+        )
+
+        FirebaseFirestore.getInstance()
+            .collection("users")
+            .document(userId)
+            .update(userData)
+            .addOnSuccessListener {
+                Timber.d("✅ FCM token force updated in existing document")
+            }
+            .addOnFailureListener { e ->
+                Timber.e(e, "❌ Failed to force update token")
+            }
     }
 
     private fun handleNotificationIntent(intent: Intent?) {
@@ -252,33 +357,31 @@ class MainActivity : ComponentActivity() {
             val type = extras.getString("type")
             Timber.d("📋 Notification type: $type")
 
-            if (type == "ACTIVITY_BROADCAST") {
-                Timber.d("🎯 RECEIVED BROADCAST NOTIFICATION!")
+            when (type) {
+                "ACTIVITY_BROADCAST" -> {
+                    Timber.d("🎯 RECEIVED BROADCAST NOTIFICATION!")
+                    showToast("Activity notification received!")
+                }
 
-                val notificationData = mutableMapOf<String, String>()
+                "EMERGENCY_REPORT" -> {
+                    Timber.d("🚨 RECEIVED EMERGENCY REPORT NOTIFICATION!")
+                    showToast("Emergency report notification received!")
 
-                listOf("type", "title", "body", "userId", "faceId",
-                    "isCriminal", "dangerLevel", "personName", "address", "timestamp")
-                    .forEach { key ->
-                        notificationData[key] = extras.getString(key) ?: ""
-                    }
+                    // Trigger UI update via LiveData or similar
+                    EmergencyReportNotificationManager.hasNewEmergencyReport = true
+                }
 
-                val filteredData = notificationData.filterValues { it.isNotEmpty() }
-
-                Timber.d("📊 Notification data: $filteredData")
-
-                handleNotificationData(filteredData)
+                else -> {
+                    Timber.d("ℹ️ Unknown notification type: $type")
+                }
             }
         }
     }
 
-    private fun handleNotificationData(data: Map<String, String>) {
-        Timber.d("🎯 Processing broadcast notification:")
-        data.forEach { (key, value) ->
-            Timber.d("   $key: $value")
+    private fun showToast(message: String) {
+        runOnUiThread {
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
         }
-
-        Timber.d("✅ Notification processed successfully")
     }
 
     override fun onPause() {
@@ -290,12 +393,33 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         Timber.d("❌ MainActivity onDestroy")
     }
+
+    companion object {
+        // Static flag to track if we should open emergency reports
+        var shouldOpenEmergencyReports = false
+    }
+}
+
+// Helper object to manage emergency report notifications
+object EmergencyReportNotificationManager {
+    var hasNewEmergencyReport = false
 }
 
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
 fun AppNavigation() {
     val navController = rememberNavController()
+    val homeViewModel: HomeViewModel = viewModel()
+    val emergencyViewModel: EmergencyReportViewModel = viewModel()
+
+    // Check for notification intent when app starts
+    LaunchedEffect(Unit) {
+        // Check if we should open emergency reports from notification
+        if (MainActivity.shouldOpenEmergencyReports) {
+            MainActivity.shouldOpenEmergencyReports = false
+            // You can trigger a state change here to show emergency reports dialog
+        }
+    }
 
     NavHost(
         navController = navController,
@@ -320,7 +444,9 @@ fun AppNavigation() {
 
         composable("main") {
             MainScreen(
-                mainNavController = navController
+                mainNavController = navController,
+                homeViewModel = homeViewModel,
+                emergencyViewModel = emergencyViewModel
             )
         }
     }
@@ -329,7 +455,9 @@ fun AppNavigation() {
 @RequiresApi(Build.VERSION_CODES.O)
 @Composable
 fun MainScreen(
-    mainNavController: androidx.navigation.NavHostController
+    mainNavController: androidx.navigation.NavHostController,
+    homeViewModel: HomeViewModel,
+    emergencyViewModel: EmergencyReportViewModel
 ) {
     val bottomNavController = rememberNavController()
     val context = LocalContext.current
@@ -343,6 +471,12 @@ fun MainScreen(
         checkAdminStatus { adminStatus ->
             isAdmin = adminStatus
         }
+    }
+
+    // Handle notification data when app opens from notification
+    LaunchedEffect(Unit) {
+        // Process any pending notification data
+        // This would come from MainActivity's intent extras
     }
 
     val allItems = listOf(
@@ -381,7 +515,11 @@ fun MainScreen(
             exitTransition = { fadeOut(animationSpec = tween(50)) }
         ) {
             composable(BottomNavItem.Home.route) {
-                HomeScreen(navController = bottomNavController)
+                HomeScreen(
+                    navController = bottomNavController,
+                    homeViewModel = homeViewModel,
+                    emergencyViewModel = emergencyViewModel
+                )
             }
             composable(BottomNavItem.Map.route) {
                 MapScreen()
@@ -400,6 +538,23 @@ fun MainScreen(
                                     Timber.d("✅ Unsubscribed from broadcast topic")
                                 }
                             }
+
+                        FirebaseMessaging.getInstance().unsubscribeFromTopic("emergency_reports")
+                            .addOnCompleteListener { task ->
+                                if (task.isSuccessful) {
+                                    Timber.d("✅ Unsubscribed from emergency reports topic")
+                                }
+                            }
+
+                        val userId = FirebaseAuth.getInstance().currentUser?.uid
+                        userId?.let {
+                            FirebaseMessaging.getInstance().unsubscribeFromTopic("user_$it")
+                                .addOnCompleteListener { task ->
+                                    if (task.isSuccessful) {
+                                        Timber.d("✅ Unsubscribed from user topic: user_$it")
+                                    }
+                                }
+                        }
 
                         mainNavController.navigate("login") {
                             popUpTo("main") { inclusive = true }

@@ -24,17 +24,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import com.example.crimicam.EmergencyReportNotificationManager
 import com.example.crimicam.R
+import com.google.firebase.messaging.FirebaseMessaging
+import kotlinx.coroutines.delay
+import timber.log.Timber
 
 @Composable
 fun HomeScreen(
-    navController: NavController
+    navController: NavController,
+    homeViewModel: HomeViewModel,
+    emergencyViewModel: EmergencyReportViewModel
 ) {
-    val viewModel: HomeViewModel = viewModel()
-    val emergencyViewModel: EmergencyReportViewModel = viewModel()
     val context = LocalContext.current
     val scrollState = rememberScrollState()
-    val homeState by viewModel.homeState.collectAsState()
+    val homeState by homeViewModel.homeState.collectAsState()
     val reportState by emergencyViewModel.reportState.collectAsState()
     val createReportState by emergencyViewModel.createReportState.collectAsState()
 
@@ -43,23 +47,45 @@ fun HomeScreen(
 
     // Initialize ringtone player
     LaunchedEffect(Unit) {
-        viewModel.initializeRingtonePlayer(context)
+        homeViewModel.initializeRingtonePlayer(context)
+    }
+
+    LaunchedEffect(Unit) {
+        // Check if there are new emergency reports from notifications
+        if (EmergencyReportNotificationManager.hasNewEmergencyReport) {
+            delay(1000) // Small delay to ensure UI is ready
+            showNotificationsDialog = true
+            EmergencyReportNotificationManager.hasNewEmergencyReport = false
+            emergencyViewModel.loadFriendReports() // Refresh data
+        }
     }
 
     // Start realtime updates
     LaunchedEffect(Unit) {
         kotlinx.coroutines.delay(500)
-        viewModel.startRealtimeUpdates()
+        homeViewModel.startRealtimeUpdates()
     }
 
-    // Load friend reports
+    // Load friend reports and notifications
     LaunchedEffect(Unit) {
         emergencyViewModel.loadFriendReports()
+        emergencyViewModel.loadNotifications()
+
+        // Subscribe to user-specific topic for emergency reports
+        val currentUser = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+        currentUser?.let { user ->
+            FirebaseMessaging.getInstance().subscribeToTopic("emergency_user_${user.uid}")
+                .addOnCompleteListener { task ->
+                    if (task.isSuccessful) {
+                        Timber.d("✅ Subscribed to emergency_user_${user.uid} topic")
+                    }
+                }
+        }
     }
 
     // Reset new activity count
     LaunchedEffect(Unit) {
-        viewModel.resetNewActivityCount()
+        homeViewModel.resetNewActivityCount()
     }
 
     // Handle create report success
@@ -68,6 +94,12 @@ fun HomeScreen(
             showEmergencyDialog = false
             emergencyViewModel.resetCreateReportState()
         }
+    }
+
+    // Handle notification from MainActivity
+    LaunchedEffect(Unit) {
+        // Check if we should open emergency reports from notification
+        // This is handled by MainActivity.shouldOpenEmergencyReports flag
     }
 
     val newActivityCount = homeState.newActivityCount
@@ -126,7 +158,7 @@ fun HomeScreen(
                             )
                         }
 
-                        // Unread badge
+                        // Unread badge (shows emergency report notifications)
                         if (reportState.unreadCount > 0) {
                             Badge(
                                 containerColor = Color.Red,
@@ -202,7 +234,7 @@ fun HomeScreen(
                                     .size(24.dp)
                                     .clickable {
                                         showNewActivityBadge = false
-                                        viewModel.resetNewActivityCount()
+                                        homeViewModel.resetNewActivityCount()
                                     }
                             ) {
                                 Text(
@@ -217,7 +249,7 @@ fun HomeScreen(
 
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         IconButton(
-                            onClick = { viewModel.refreshActivities() },
+                            onClick = { homeViewModel.refreshActivities() },
                             modifier = Modifier.size(36.dp),
                             enabled = !homeState.isLoadingActivities
                         ) {
@@ -296,7 +328,7 @@ fun HomeScreen(
                                     fontSize = 14.sp
                                 )
                                 Button(
-                                    onClick = { viewModel.startRealtimeUpdates() },
+                                    onClick = { homeViewModel.startRealtimeUpdates() },
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = Color(0xFFD32F2F)
                                     )
@@ -339,7 +371,7 @@ fun HomeScreen(
                                 )
                                 if (!homeState.isRealtimeActive) {
                                     Button(
-                                        onClick = { viewModel.startRealtimeUpdates() },
+                                        onClick = { homeViewModel.startRealtimeUpdates() },
                                         modifier = Modifier.padding(top = 12.dp)
                                     ) {
                                         Text("Enable Realtime Updates")
@@ -406,7 +438,7 @@ fun HomeScreen(
         }
     }
 
-    // Emergency Report Dialog - REMOVED audioUri parameter
+    // Emergency Report Dialog
     if (showEmergencyDialog) {
         CreateEmergencyReportDialog(
             onDismiss = {
@@ -419,14 +451,17 @@ fun HomeScreen(
         )
     }
 
-    // Friend Reports Dialog
+    // Friend Reports Dialog (shows emergency reports from friends)
     if (showNotificationsDialog) {
         FriendReportsDialog(
             friendReports = reportState.friendReports,
             isLoading = reportState.isLoading,
             error = reportState.error,
             onDismiss = { showNotificationsDialog = false },
-            onRefresh = { emergencyViewModel.loadFriendReports() },
+            onRefresh = {
+                emergencyViewModel.loadFriendReports()
+                emergencyViewModel.loadNotifications()
+            },
             onUpdateStatus = { reportId, status ->
                 emergencyViewModel.updateReportStatus(reportId, status)
             }

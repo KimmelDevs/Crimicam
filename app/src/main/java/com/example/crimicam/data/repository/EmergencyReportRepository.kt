@@ -18,6 +18,8 @@ class EmergencyReportRepository {
     companion object {
         private const val TAG = "EmergencyReportRepo"
         private const val REPORTS_COLLECTION = "emergency_reports"
+        private const val USERS_COLLECTION = "users"
+        private const val NOTIFICATIONS_COLLECTION = "notifications"
     }
 
     /**
@@ -38,7 +40,7 @@ class EmergencyReportRepository {
             val reportId = UUID.randomUUID().toString()
 
             // Get user's friends list
-            val userDoc = firestore.collection("users")
+            val userDoc = firestore.collection(USERS_COLLECTION)
                 .document(currentUser.uid)
                 .get()
                 .await()
@@ -71,9 +73,16 @@ class EmergencyReportRepository {
                 .await()
 
             Log.d(TAG, "✅ Emergency report created: $reportId")
+            Log.d(TAG, "📢 Will notify ${friendIds.size} friends")
 
-            // Send notifications to friends (handled separately)
-            notifyFriends(reportId, friendIds, currentUser.displayName ?: "A friend", title, type)
+            // Also create a local notification for the user
+            createLocalNotificationForUser(
+                userId = currentUser.uid,
+                reportId = reportId,
+                title = "Report Created",
+                body = "Your emergency report has been submitted",
+                type = "REPORT_CREATED"
+            )
 
             Result.Success(reportId)
         } catch (e: Exception) {
@@ -136,6 +145,161 @@ class EmergencyReportRepository {
     }
 
     /**
+     * Get unread notifications count
+     */
+    suspend fun getUnreadNotificationsCount(): Result<Int> {
+        return try {
+            val currentUser = auth.currentUser
+                ?: return Result.Error(Exception("User not authenticated"))
+
+            val querySnapshot = firestore.collection(USERS_COLLECTION)
+                .document(currentUser.uid)
+                .collection(NOTIFICATIONS_COLLECTION)
+                .whereEqualTo("read", false)
+                .get()
+                .await()
+
+            val count = querySnapshot.documents.size
+            Log.d(TAG, "📊 Unread notifications: $count")
+            Result.Success(count)
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error getting unread notifications count", e)
+            Result.Error(e)
+        }
+    }
+
+    /**
+     * Get notifications for user
+     */
+    suspend fun getUserNotifications(): Result<List<NotificationItem>> {
+        return try {
+            val currentUser = auth.currentUser
+                ?: return Result.Error(Exception("User not authenticated"))
+
+            val querySnapshot = firestore.collection(USERS_COLLECTION)
+                .document(currentUser.uid)
+                .collection(NOTIFICATIONS_COLLECTION)
+                .orderBy("timestamp", Query.Direction.DESCENDING)
+                .limit(20)
+                .get()
+                .await()
+
+            val notifications = querySnapshot.documents.mapNotNull { doc ->
+                try {
+                    NotificationItem(
+                        id = doc.id,
+                        reportId = doc.getString("reportId") ?: "",
+                        userId = doc.getString("userId") ?: "",
+                        userName = doc.getString("userName") ?: "Unknown",
+                        title = doc.getString("title") ?: "",
+                        body = doc.getString("body") ?: "",
+                        type = doc.getString("type") ?: "",
+                        reportType = doc.getString("reportType") ?: "",
+                        address = doc.getString("address") ?: "",
+                        timestamp = doc.getTimestamp("timestamp"),
+                        read = doc.getBoolean("read") ?: false
+                    )
+                } catch (e: Exception) {
+                    null
+                }
+            }
+
+            Log.d(TAG, "✅ Loaded ${notifications.size} notifications")
+            Result.Success(notifications)
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error loading notifications", e)
+            Result.Error(e)
+        }
+    }
+
+    /**
+     * Mark notification as read
+     */
+    suspend fun markNotificationAsRead(notificationId: String): Result<Unit> {
+        return try {
+            val currentUser = auth.currentUser
+                ?: return Result.Error(Exception("User not authenticated"))
+
+            firestore.collection(USERS_COLLECTION)
+                .document(currentUser.uid)
+                .collection(NOTIFICATIONS_COLLECTION)
+                .document(notificationId)
+                .update("read", true)
+                .await()
+
+            Log.d(TAG, "✅ Notification marked as read: $notificationId")
+            Result.Success(Unit)
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error marking notification as read", e)
+            Result.Error(e)
+        }
+    }
+
+    /**
+     * Mark all notifications as read
+     */
+    suspend fun markAllNotificationsAsRead(): Result<Unit> {
+        return try {
+            val currentUser = auth.currentUser
+                ?: return Result.Error(Exception("User not authenticated"))
+
+            val querySnapshot = firestore.collection(USERS_COLLECTION)
+                .document(currentUser.uid)
+                .collection(NOTIFICATIONS_COLLECTION)
+                .whereEqualTo("read", false)
+                .get()
+                .await()
+
+            val batch = firestore.batch()
+            querySnapshot.documents.forEach { doc ->
+                batch.update(doc.reference, "read", true)
+            }
+
+            if (querySnapshot.documents.isNotEmpty()) {
+                batch.commit().await()
+                Log.d(TAG, "✅ Marked ${querySnapshot.documents.size} notifications as read")
+            }
+
+            Result.Success(Unit)
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error marking all notifications as read", e)
+            Result.Error(e)
+        }
+    }
+
+    /**
+     * Create local notification for user
+     */
+    private suspend fun createLocalNotificationForUser(
+        userId: String,
+        reportId: String,
+        title: String,
+        body: String,
+        type: String
+    ) {
+        try {
+            val notification = hashMapOf<String, Any>(
+                "reportId" to reportId,
+                "title" to title,
+                "body" to body,
+                "type" to type,
+                "timestamp" to FieldValue.serverTimestamp(),
+                "read" to false
+            )
+
+            firestore.collection(USERS_COLLECTION)
+                .document(userId)
+                .collection(NOTIFICATIONS_COLLECTION)
+                .add(notification)
+                .await()
+
+            Log.d(TAG, "✅ Local notification created for user: $userId")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error creating local notification", e)
+        }
+    }
+
+    /**
      * Update report status
      */
     suspend fun updateReportStatus(reportId: String, status: String): Result<Unit> {
@@ -177,44 +341,18 @@ class EmergencyReportRepository {
             Result.Error(e)
         }
     }
-
-    /**
-     * Send notifications to friends about the emergency report
-     */
-    private suspend fun notifyFriends(
-        reportId: String,
-        friendIds: List<String>,
-        userName: String,
-        title: String,
-        type: String
-    ) {
-        try {
-            // Create notification data
-            val notificationData = hashMapOf<String, Any>(
-                "reportId" to reportId,
-                "type" to "EMERGENCY_REPORT",
-                "senderName" to userName,
-                "title" to title,
-                "reportType" to type,
-                "timestamp" to FieldValue.serverTimestamp()
-            )
-
-            // Add notification for each friend
-            friendIds.forEach { friendId ->
-                try {
-                    firestore.collection("users")
-                        .document(friendId)
-                        .collection("notifications")
-                        .add(notificationData)
-                        .await()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to notify friend $friendId", e)
-                }
-            }
-
-            Log.d(TAG, "✅ Notified ${friendIds.size} friends")
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error notifying friends", e)
-        }
-    }
 }
+
+data class NotificationItem(
+    val id: String = "",
+    val reportId: String = "",
+    val userId: String = "",
+    val userName: String = "",
+    val title: String = "",
+    val body: String = "",
+    val type: String = "",
+    val reportType: String = "",
+    val address: String = "",
+    val timestamp: com.google.firebase.Timestamp? = null,
+    val read: Boolean = false
+)
