@@ -17,7 +17,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -821,9 +820,7 @@ fun MapControlButton(
                 onClick()
             }
         },
-        modifier = Modifier
-            .size(48.dp)
-            .alpha(if (enabled) 1f else 0.5f),
+        modifier = Modifier.size(48.dp),
         containerColor = containerColor,
         contentColor = contentColor
     ) {
