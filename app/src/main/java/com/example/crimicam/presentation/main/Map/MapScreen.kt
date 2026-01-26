@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.crimicam.data.model.EmergencyReport
 import com.example.crimicam.data.service.CriminalLocation
 import com.google.android.gms.location.*
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
@@ -36,8 +37,6 @@ import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.compass.CompassOverlay
 import org.osmdroid.views.overlay.compass.InternalCompassOrientationProvider
-import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
-import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -58,13 +57,22 @@ fun MapScreen() {
     )
 
     val state by viewModel.state.collectAsState()
+
+    // State variables
     var selectedMarker by remember { mutableStateOf<CriminalMapMarker?>(null) }
+    var selectedReport by remember { mutableStateOf<EmergencyReport?>(null) }
+    var selectedFriendReport by remember { mutableStateOf<EmergencyReport?>(null) }
     var mapView by remember { mutableStateOf<MapView?>(null) }
     var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
     var locationAccuracy by remember { mutableStateOf<Float?>(null) }
 
+    // Destination selection state
     var isSelectingDestination by remember { mutableStateOf(false) }
     var selectedDestination by remember { mutableStateOf<GeoPoint?>(null) }
+
+    // Layer visibility state
+    var showReportsLayer by remember { mutableStateOf(true) }
+    var showFriendReportsLayer by remember { mutableStateOf(true) }
 
     val hasLocationPermission = locationPermissionsState.allPermissionsGranted
 
@@ -73,15 +81,17 @@ fun MapScreen() {
     }
     val initialZoom = 13.0
 
+    // Load data on initialization
     LaunchedEffect(Unit) {
         Configuration.getInstance().load(
             context,
             context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE)
         )
         Configuration.getInstance().userAgentValue = context.packageName
-        viewModel.loadCriminalLocations()
+        viewModel.refresh() // This loads all data
     }
 
+    // Location updates
     DisposableEffect(hasLocationPermission) {
         var locationCallback: LocationCallback? = null
         var fusedLocationClient: FusedLocationProviderClient? = null
@@ -142,6 +152,8 @@ fun MapScreen() {
                 center = initialCenter,
                 zoomLevel = initialZoom,
                 criminalLocations = state.criminalLocations,
+                unresolvedReports = if (showReportsLayer) state.unresolvedReports else emptyList(),
+                friendReports = if (showFriendReportsLayer) state.friendReports else emptyList(),
                 selectedDestination = selectedDestination,
                 isSelectingDestination = isSelectingDestination,
                 userLocation = userLocation,
@@ -149,6 +161,22 @@ fun MapScreen() {
                 onMarkerClick = { marker ->
                     if (!isSelectingDestination) {
                         selectedMarker = marker
+                        selectedReport = null
+                        selectedFriendReport = null
+                    }
+                },
+                onReportMarkerClick = { report ->
+                    if (!isSelectingDestination) {
+                        selectedReport = report
+                        selectedMarker = null
+                        selectedFriendReport = null
+                    }
+                },
+                onFriendReportClick = { report ->
+                    if (!isSelectingDestination) {
+                        selectedFriendReport = report
+                        selectedMarker = null
+                        selectedReport = null
                     }
                 },
                 onMapClick = { geoPoint ->
@@ -162,9 +190,12 @@ fun MapScreen() {
             )
         }
 
+        // Stats bar
         MapStatsBar(
             criminalCount = state.criminalLocations.size,
             totalSightings = state.criminalLocations.sumOf { it.totalSightings },
+            unresolvedReportsCount = state.unresolvedReports.size,
+            friendReportsCount = state.friendReports.size,
             hasLocationPermission = hasLocationPermission,
             isLocationEnabled = userLocation != null,
             onRequestLocation = {
@@ -175,6 +206,7 @@ fun MapScreen() {
                 .padding(16.dp)
         )
 
+        // Location indicator
         userLocation?.let { location ->
             if (!isSelectingDestination && selectedDestination == null) {
                 LocationIndicator(
@@ -188,6 +220,7 @@ fun MapScreen() {
             }
         }
 
+        // Map controls (right side buttons)
         Column(
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -218,7 +251,23 @@ fun MapScreen() {
             )
             MapControlButton(
                 icon = Icons.Default.Refresh,
-                onClick = { viewModel.loadCriminalLocations() }
+                onClick = { viewModel.refresh() }
+            )
+
+            // Toggle reports layer button
+            MapControlButton(
+                icon = Icons.Default.Notifications,
+                onClick = { showReportsLayer = !showReportsLayer },
+                containerColor = if (showReportsLayer) Color(0xFFEF5350) else Color.White,
+                contentColor = if (showReportsLayer) Color.White else Color(0xFFEF5350)
+            )
+
+            // Toggle friend reports layer button
+            MapControlButton(
+                icon = Icons.Default.Group,
+                onClick = { showFriendReportsLayer = !showFriendReportsLayer },
+                containerColor = if (showFriendReportsLayer) Color(0xFF2196F3) else Color.White,
+                contentColor = if (showFriendReportsLayer) Color.White else Color(0xFF2196F3)
             )
 
             if (!hasLocationPermission) {
@@ -233,7 +282,8 @@ fun MapScreen() {
             }
         }
 
-        if (!isSelectingDestination && selectedDestination == null && selectedMarker == null) {
+        // Add destination FAB
+        if (!isSelectingDestination && selectedDestination == null) {
             FloatingActionButton(
                 onClick = { isSelectingDestination = true },
                 modifier = Modifier
@@ -252,6 +302,7 @@ fun MapScreen() {
             }
         }
 
+        // Destination selection card
         if (isSelectingDestination) {
             Card(
                 modifier = Modifier
@@ -298,6 +349,7 @@ fun MapScreen() {
             }
         }
 
+        // Destination card
         selectedDestination?.let { destination ->
             if (!isSelectingDestination) {
                 DestinationCard(
@@ -332,7 +384,8 @@ fun MapScreen() {
             }
         }
 
-        if (!isSelectingDestination && selectedDestination == null) {
+        // Criminal marker info card
+        if (!isSelectingDestination && selectedDestination == null && selectedReport == null && selectedFriendReport == null) {
             selectedMarker?.let { marker ->
                 CriminalInfoCard(
                     marker = marker,
@@ -347,6 +400,41 @@ fun MapScreen() {
             }
         }
 
+        // Emergency report info card
+        if (!isSelectingDestination && selectedDestination == null && selectedMarker == null && selectedFriendReport == null) {
+            selectedReport?.let { report ->
+                EmergencyReportInfoCard(
+                    report = report,
+                    onDismiss = { selectedReport = null },
+                    onResolve = {
+                        viewModel.updateReportStatus(report.id, "RESOLVED")
+                        selectedReport = null
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(16.dp)
+                )
+            }
+        }
+
+        // Friend report info card
+        if (!isSelectingDestination && selectedDestination == null && selectedMarker == null && selectedReport == null) {
+            selectedFriendReport?.let { report ->
+                FriendReportInfoCard(
+                    report = report,
+                    onDismiss = { selectedFriendReport = null },
+                    onResolve = {
+                        viewModel.updateReportStatus(report.id, "RESOLVED")
+                        selectedFriendReport = null
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(16.dp)
+                )
+            }
+        }
+
+        // Permission rationale dialog
         if (!hasLocationPermission && locationPermissionsState.shouldShowRationale) {
             PermissionRationaleDialog(
                 onDismiss = { },
@@ -362,6 +450,7 @@ fun MapScreen() {
             )
         }
 
+        // Error snackbar
         state.error?.let { error ->
             Snackbar(
                 modifier = Modifier
@@ -374,16 +463,21 @@ fun MapScreen() {
     }
 }
 
+
 @Composable
 fun OpenStreetMapView(
     center: GeoPoint,
     zoomLevel: Double,
     criminalLocations: List<CriminalLocation>,
+    unresolvedReports: List<EmergencyReport>,
+    friendReports: List<EmergencyReport>,
     selectedDestination: GeoPoint?,
     isSelectingDestination: Boolean,
     userLocation: GeoPoint?,
     hasLocationPermission: Boolean,
     onMarkerClick: (CriminalMapMarker) -> Unit,
+    onReportMarkerClick: (EmergencyReport) -> Unit,
+    onFriendReportClick: (EmergencyReport) -> Unit,
     onMapClick: (GeoPoint) -> Unit,
     onMapReady: (MapView) -> Unit
 ) {
@@ -418,7 +512,7 @@ fun OpenStreetMapView(
             mapView.overlays.clear()
             mapView.overlays.addAll(overlaysToKeep)
 
-            // Add user location marker (blue dot)
+            // Add user location marker
             userLocation?.let { location ->
                 val userMarker = Marker(mapView).apply {
                     position = location
@@ -432,27 +526,83 @@ fun OpenStreetMapView(
                 mapView.overlays.add(userMarker)
             }
 
-            mapView.setOnTouchListener { _, event ->
-                if (isSelectingDestination && event.action == android.view.MotionEvent.ACTION_UP) {
-                    val projection = mapView.projection
-                    val geoPoint = projection.fromPixels(event.x.toInt(), event.y.toInt()) as GeoPoint
-                    onMapClick(geoPoint)
-                }
-                false
-            }
+            // Add friend report markers (NEW)
+            friendReports.forEach { report ->
+                report.location?.let { location ->
+                    val friendMarker = Marker(mapView).apply {
+                        position = GeoPoint(location.latitude, location.longitude)
+                        title = "👤 ${report.userName}"
+                        snippet = report.title
+                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
 
-            selectedDestination?.let { destination ->
-                val destinationMarker = Marker(mapView).apply {
-                    position = destination
-                    title = "Destination"
-                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                    icon = context.getDrawable(android.R.drawable.ic_menu_mylocation)?.apply {
-                        setTint(android.graphics.Color.BLUE)
+                        // Friend-specific icon (blue person)
+                        icon = context.getDrawable(android.R.drawable.ic_menu_myplaces)?.apply {
+                            setTint(android.graphics.Color.parseColor("#2196F3"))
+                            setBounds(0, 0, 80, 80)
+                        }
+
+                        // Add friend indicator (small star)
+                        val starOverlay = Marker(mapView).apply {
+                            position = GeoPoint(location.latitude + 0.0002, location.longitude + 0.0002)
+                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                            icon = context.getDrawable(android.R.drawable.star_on)?.apply {
+                                setTint(android.graphics.Color.parseColor("#FFD700"))
+                                setBounds(0, 0, 30, 30)
+                            }
+                        }
+                        mapView.overlays.add(starOverlay)
+
+                        setOnMarkerClickListener { _, _ ->
+                            if (!isSelectingDestination) {
+                                onFriendReportClick(report)
+                            }
+                            true
+                        }
                     }
+                    mapView.overlays.add(friendMarker)
                 }
-                mapView.overlays.add(destinationMarker)
             }
 
+            // Add unresolved report markers
+            unresolvedReports.forEach { report ->
+                report.location?.let { location ->
+                    val reportMarker = Marker(mapView).apply {
+                        position = GeoPoint(location.latitude, location.longitude)
+                        title = report.title
+                        snippet = report.userName
+                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+
+                        icon = when (report.type) {
+                            "EMERGENCY" -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply {
+                                setTint(android.graphics.Color.parseColor("#EF5350"))
+                                setBounds(0, 0, 80, 80)
+                            }
+                            "SUSPICIOUS" -> context.getDrawable(android.R.drawable.ic_menu_info_details)?.apply {
+                                setTint(android.graphics.Color.parseColor("#FF9800"))
+                                setBounds(0, 0, 80, 80)
+                            }
+                            "HELP_NEEDED" -> context.getDrawable(android.R.drawable.ic_menu_help)?.apply {
+                                setTint(android.graphics.Color.parseColor("#42A5F5"))
+                                setBounds(0, 0, 80, 80)
+                            }
+                            else -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply {
+                                setTint(android.graphics.Color.GRAY)
+                                setBounds(0, 0, 80, 80)
+                            }
+                        }
+
+                        setOnMarkerClickListener { _, _ ->
+                            if (!isSelectingDestination) {
+                                onReportMarkerClick(report)
+                            }
+                            true
+                        }
+                    }
+                    mapView.overlays.add(reportMarker)
+                }
+            }
+
+            // Add criminal markers
             criminalLocations.forEach { criminalLocation ->
                 val marker = Marker(mapView).apply {
                     position = GeoPoint(criminalLocation.latitude, criminalLocation.longitude)
@@ -502,11 +652,322 @@ fun OpenStreetMapView(
                 mapView.overlays.add(marker)
             }
 
+            // Add destination marker
+            selectedDestination?.let { destination ->
+                val destinationMarker = Marker(mapView).apply {
+                    position = destination
+                    title = "Destination"
+                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                    icon = context.getDrawable(android.R.drawable.ic_menu_mylocation)?.apply {
+                        setTint(android.graphics.Color.BLUE)
+                    }
+                }
+                mapView.overlays.add(destinationMarker)
+            }
+
+            // Map click listener for destination selection
+            mapView.setOnTouchListener { _, event ->
+                if (isSelectingDestination && event.action == android.view.MotionEvent.ACTION_UP) {
+                    val projection = mapView.projection
+                    val geoPoint = projection.fromPixels(event.x.toInt(), event.y.toInt()) as GeoPoint
+                    onMapClick(geoPoint)
+                }
+                false
+            }
+
             mapView.invalidate()
         },
         modifier = Modifier.fillMaxSize()
     )
 }
+
+@Composable
+fun FriendReportInfoCard(
+    report: EmergencyReport,
+    onDismiss: () -> Unit,
+    onResolve: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            // Header with friend indicator
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color(0xFF2196F3).copy(alpha = 0.2f),
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.Group,
+                                contentDescription = "Friend",
+                                tint = Color(0xFF2196F3),
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "Friend's Report",
+                            fontSize = 12.sp,
+                            color = Color(0xFF2196F3),
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = report.userName,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.Black
+                        )
+                    }
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, "Close", tint = Color.Gray)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Report content
+            Text(
+                text = report.title,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.Black,
+                maxLines = 2
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            if (report.description.isNotBlank()) {
+                Text(
+                    text = report.description,
+                    fontSize = 14.sp,
+                    color = Color.DarkGray,
+                    lineHeight = 20.sp
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            // Location info
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.LocationOn,
+                    contentDescription = "Location",
+                    tint = Color(0xFFEF5350),
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = report.address.ifBlank { "Location unknown" },
+                    fontSize = 13.sp,
+                    color = Color.DarkGray
+                )
+            }
+
+            report.location?.let { location ->
+                Text(
+                    text = "Coordinates: ${"%.4f".format(location.latitude)}, ${"%.4f".format(location.longitude)}",
+                    fontSize = 11.sp,
+                    color = Color.Gray
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Timestamp
+            Text(
+                text = "Reported: ${formatFriendReportTime(report.timestamp)}",
+                fontSize = 11.sp,
+                color = Color.Gray
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Action buttons
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (!report.isResolved) {
+                    Button(
+                        onClick = onResolve,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF66BB6A)
+                        )
+                    ) {
+                        Icon(
+                            Icons.Default.Check,
+                            contentDescription = "Mark Safe",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Mark Safe", fontSize = 13.sp, color = Color.White)
+                    }
+                }
+
+                // Navigation button
+                report.location?.let { location ->
+                    Button(
+                        onClick = {
+                            // Navigate to friend's location
+                            val uri = Uri.parse(
+                                "google.navigation:q=${location.latitude},${location.longitude}"
+                            )
+                            val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                                setPackage("com.google.android.apps.maps")
+                            }
+                            try {
+                                context.startActivity(intent)
+                            } catch (e: android.content.ActivityNotFoundException) {
+                                val browserUri = Uri.parse(
+                                    "https://www.google.com/maps/dir/?api=1&destination=${location.latitude},${location.longitude}"
+                                )
+                                val browserIntent = Intent(Intent.ACTION_VIEW, browserUri)
+                                context.startActivity(browserIntent)
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF2196F3)
+                        )
+                    ) {
+                        Icon(
+                            Icons.Default.Navigation,
+                            contentDescription = "Navigate",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Navigate", fontSize = 13.sp, color = Color.White)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Helper function for friend report time formatting
+private fun formatFriendReportTime(timestamp: com.google.firebase.Timestamp): String {
+    val date = timestamp.toDate()
+    val now = Date()
+    val diff = now.time - date.time
+    val minutes = diff / (1000 * 60)
+    val hours = diff / (1000 * 60 * 60)
+
+    return when {
+        minutes < 1 -> "Just now"
+        minutes < 60 -> "$minutes minutes ago"
+        hours < 24 -> "$hours hours ago"
+        else -> SimpleDateFormat("MMM dd, h:mm a", Locale.getDefault()).format(date)
+    }
+}
+
+@Composable
+fun MapStatsBar(
+    criminalCount: Int,
+    totalSightings: Int,
+    unresolvedReportsCount: Int,
+    friendReportsCount: Int,
+    hasLocationPermission: Boolean,
+    isLocationEnabled: Boolean,
+    onRequestLocation: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.95f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                StatItem(
+                    label = "Criminals",
+                    value = criminalCount.toString(),
+                    color = Color(0xFFD32F2F)
+                )
+
+                StatItem(
+                    label = "Sightings",
+                    value = totalSightings.toString(),
+                    color = Color(0xFFF57C00)
+                )
+
+                StatItem(
+                    label = "Reports",
+                    value = unresolvedReportsCount.toString(),
+                    color = Color(0xFFEF5350)
+                )
+
+                StatItem(
+                    label = "Friends",
+                    value = friendReportsCount.toString(),
+                    color = Color(0xFF2196F3)
+                )
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(
+                            when {
+                                !hasLocationPermission -> Color.Red
+                                isLocationEnabled -> Color(0xFF4CAF50)
+                                else -> Color(0xFFFF9800)
+                            }
+                        )
+                )
+                Text(
+                    text = when {
+                        !hasLocationPermission -> "Location permission required"
+                        isLocationEnabled -> "Location active"
+                        else -> "Getting location..."
+                    },
+                    fontSize = 12.sp,
+                    color = Color.Gray)
+
+                if (!hasLocationPermission) {
+                    Spacer(modifier = Modifier.weight(1f))
+                    TextButton(
+                        onClick = onRequestLocation,
+                        modifier = Modifier.padding(start = 8.dp)
+                    ) {
+                        Text("Enable", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 @Composable
 fun PermissionRationaleDialog(
@@ -550,7 +1011,208 @@ fun PermissionRationaleDialog(
         }
     )
 }
+@Composable
+fun EmergencyReportInfoCard(
+    report: EmergencyReport,
+    onDismiss: () -> Unit,
+    onResolve: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val typeColor = when (report.type) {
+        "EMERGENCY" -> Color(0xFFEF5350)
+        "SUSPICIOUS" -> Color(0xFFFF9800)
+        "HELP_NEEDED" -> Color(0xFF42A5F5)
+        else -> Color(0xFF9E9E9E)
+    }
 
+    val typeEmoji = when (report.type) {
+        "EMERGENCY" -> "🚨"
+        "SUSPICIOUS" -> "⚠️"
+        "HELP_NEEDED" -> "🆘"
+        else -> "📢"
+    }
+
+    val lastSeenText = try {
+        val date = report.timestamp.toDate()
+        val formatter = SimpleDateFormat("MMM dd, yyyy h:mm a", Locale.getDefault())
+        formatter.format(date)
+    } catch (e: Exception) {
+        "Unknown"
+    }
+
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = typeEmoji,
+                            fontSize = 24.sp,
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Column {
+                            Text(
+                                text = report.title,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.Black,
+                                maxLines = 2
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = typeColor
+                            ) {
+                                Text(
+                                    text = report.type.replace("_", " "),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Person,
+                            contentDescription = null,
+                            tint = Color.Gray,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = report.userName,
+                            fontSize = 12.sp,
+                            color = Color.Gray
+                        )
+                    }
+                    Text(
+                        text = "Reported: $lastSeenText",
+                        fontSize = 11.sp,
+                        color = Color.Gray
+                    )
+                }
+
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "Close",
+                        tint = Color.Gray
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            if (report.description.isNotBlank()) {
+                Text(
+                    text = report.description,
+                    fontSize = 13.sp,
+                    color = Color.DarkGray,
+                    maxLines = 3
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            Text(
+                text = "📍 ${report.address.ifBlank { "Location unknown" }}",
+                fontSize = 13.sp,
+                color = Color.DarkGray
+            )
+
+            report.location?.let { location ->
+                Text(
+                    text = "Coordinates: ${"%.4f".format(location.latitude)}, ${"%.4f".format(location.longitude)}",
+                    fontSize = 11.sp,
+                    color = Color.Gray
+                )
+            }
+
+            if (!report.isResolved) {
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = onResolve,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF66BB6A)
+                        )
+                    ) {
+                        Icon(
+                            Icons.Default.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Mark Resolved", color = Color.White, fontSize = 13.sp)
+                    }
+
+                    report.location?.let { location ->
+                        OutlinedButton(
+                            onClick = {
+                                // Navigate to report location - implement similar to destination
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                Icons.Default.Navigation,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Navigate", fontSize = 13.sp)
+                        }
+                    }
+                }
+            } else {
+                Spacer(modifier = Modifier.height(8.dp))
+                Surface(
+                    color = Color(0xFF66BB6A).copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = Color(0xFF66BB6A),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "This report has been resolved",
+                            fontSize = 13.sp,
+                            color = Color(0xFF66BB6A),
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 @Composable
 fun LocationIndicator(
     location: GeoPoint,
@@ -610,6 +1272,39 @@ fun LocationIndicator(
         }
     }
 }
+@Composable
+fun StatItem(
+    label: String,
+    value: String,
+    color: Color
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(12.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+
+        Column {
+            Text(
+                text = value,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.Black
+            )
+            Text(
+                text = label,
+                fontSize = 12.sp,
+                color = Color.Gray
+            )
+        }
+    }
+}
+
 
 @Composable
 fun DestinationCard(
@@ -854,112 +1549,6 @@ fun CriminalInfoCard(
     }
 }
 
-@Composable
-fun MapStatsBar(
-    criminalCount: Int,
-    totalSightings: Int,
-    hasLocationPermission: Boolean,
-    isLocationEnabled: Boolean,
-    onRequestLocation: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.95f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                StatItem(
-                    label = "Criminals",
-                    value = criminalCount.toString(),
-                    color = Color(0xFFD32F2F)
-                )
-
-                StatItem(
-                    label = "Total Sightings",
-                    value = totalSightings.toString(),
-                    color = Color(0xFFF57C00)
-                )
-            }
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(
-                            when {
-                                !hasLocationPermission -> Color.Red
-                                isLocationEnabled -> Color(0xFF4CAF50)
-                                else -> Color(0xFFFF9800)
-                            }
-                        )
-                )
-                Text(
-                    text = when {
-                        !hasLocationPermission -> "Location permission required"
-                        isLocationEnabled -> "Location active"
-                        else -> "Getting location..."
-                    },
-                    fontSize = 12.sp,
-                    color = Color.Gray)
-
-                if (!hasLocationPermission) {
-                    Spacer(modifier = Modifier.weight(1f))
-                    TextButton(
-                        onClick = onRequestLocation,
-                        modifier = Modifier.padding(start = 8.dp)
-                    ) {
-                        Text("Enable", fontSize = 12.sp)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun StatItem(
-    label: String,
-    value: String,
-    color: Color
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(12.dp)
-                .clip(CircleShape)
-                .background(color)
-        )
-
-        Column {
-            Text(
-                text = value,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.Black
-            )
-            Text(
-                text = label,
-                fontSize = 12.sp,
-                color = Color.Gray
-            )
-        }
-    }
-}
 
 data class CriminalMapMarker(
     val criminalId: String,
