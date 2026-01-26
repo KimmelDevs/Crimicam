@@ -78,7 +78,6 @@ class EmergencyReportViewModel : ViewModel() {
         try {
             friendReportsListener = firestore.collection("emergency_reports")
                 .whereArrayContains("friendsNotified", currentUser.uid)
-                .orderBy("timestamp", Query.Direction.DESCENDING)
                 .limit(50)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
@@ -95,7 +94,7 @@ class EmergencyReportViewModel : ViewModel() {
                         try {
                             val reports = snapshot.documents.mapNotNull { doc ->
                                 doc.toObject(EmergencyReport::class.java)?.copy(id = doc.id)
-                            }
+                            }.sortedByDescending { it.timestamp.toDate() } // Sort in memory
 
                             val unreadCount = reports.count { !it.isResolved }
 
@@ -474,9 +473,8 @@ class EmergencyReportViewModel : ViewModel() {
                         val unreadCount = _reportState.value.friendReports.count { !it.isResolved }
                         _reportState.value = _reportState.value.copy(unreadCount = unreadCount)
 
-                        // Refresh both lists
-                        loadFriendReports()
-                        loadUserReports()
+                        // Real-time listener will update automatically, no need to manual refresh
+                        Log.d(TAG, "✅ Local state updated, real-time listener will sync")
                     }
                     is Result.Error -> {
                         Log.e(TAG, "❌ Error updating report status", result.exception)

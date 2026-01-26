@@ -45,6 +45,20 @@ fun FriendReportsDialog(
     onUpdateStatus: (String, String) -> Unit
 ) {
     var selectedReport by remember { mutableStateOf<EmergencyReport?>(null) }
+    var showResolved by remember { mutableStateOf(false) }
+
+    // Track locally resolved reports to prevent button from reappearing
+    val locallyResolvedReports = remember { mutableStateSetOf<String>() }
+
+    // Filter reports based on resolved status
+    val displayReports = if (showResolved) {
+        friendReports
+    } else {
+        friendReports.filter { !it.isResolved && !locallyResolvedReports.contains(it.id) }
+    }
+
+    val unresolvedCount = friendReports.count { !it.isResolved }
+    val resolvedCount = friendReports.count { it.isResolved }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -82,7 +96,11 @@ fun FriendReportsDialog(
                                 color = TextPrimary
                             )
                             Text(
-                                text = "${friendReports.size} reports",
+                                text = if (showResolved) {
+                                    "$unresolvedCount active • $resolvedCount resolved"
+                                } else {
+                                    "$unresolvedCount active reports"
+                                },
                                 fontSize = 12.sp,
                                 color = TextSecondary
                             )
@@ -93,6 +111,16 @@ fun FriendReportsDialog(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // Toggle resolved button
+                        IconButton(
+                            onClick = { showResolved = !showResolved }
+                        ) {
+                            Icon(
+                                if (showResolved) Icons.Default.CheckCircle else Icons.Default.CheckCircleOutline,
+                                contentDescription = "Toggle Resolved",
+                                tint = if (showResolved) Color(0xFF66BB6A) else TextPrimary
+                            )
+                        }
                         IconButton(onClick = onRefresh) {
                             Icon(Icons.Default.Refresh, "Refresh", tint = TextPrimary)
                         }
@@ -146,7 +174,7 @@ fun FriendReportsDialog(
                         }
                     }
 
-                    friendReports.isEmpty() -> {
+                    displayReports.isEmpty() -> {
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -154,17 +182,28 @@ fun FriendReportsDialog(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center
                         ) {
-                            Text(text = "📭", fontSize = 64.sp)
+                            Text(
+                                text = if (showResolved) "📭" else "✅",
+                                fontSize = 64.sp
+                            )
                             Spacer(modifier = Modifier.height(16.dp))
                             Text(
-                                text = "No Emergency Reports",
+                                text = if (showResolved) {
+                                    "No Emergency Reports"
+                                } else {
+                                    "All Reports Resolved!"
+                                },
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = TextPrimary
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = "Reports from your friends will appear here",
+                                text = if (showResolved) {
+                                    "Reports from your friends will appear here"
+                                } else {
+                                    "Great job! All emergencies have been addressed"
+                                },
                                 fontSize = 14.sp,
                                 color = TextSecondary
                             )
@@ -177,11 +216,18 @@ fun FriendReportsDialog(
                             contentPadding = PaddingValues(16.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            items(friendReports) { report ->
+                            items(
+                                items = displayReports,
+                                key = { it.id }
+                            ) { report ->
                                 EmergencyReportCard(
                                     report = report,
+                                    isLocallyResolved = locallyResolvedReports.contains(report.id),
                                     onClick = { selectedReport = report },
-                                    onResolve = { onUpdateStatus(report.id, "RESOLVED") }
+                                    onResolve = {
+                                        locallyResolvedReports.add(report.id)
+                                        onUpdateStatus(report.id, "RESOLVED")
+                                    }
                                 )
                             }
                         }
@@ -195,8 +241,10 @@ fun FriendReportsDialog(
     selectedReport?.let { report ->
         ReportDetailDialog(
             report = report,
+            isLocallyResolved = locallyResolvedReports.contains(report.id),
             onDismiss = { selectedReport = null },
             onResolve = {
+                locallyResolvedReports.add(report.id)
                 onUpdateStatus(report.id, "RESOLVED")
                 selectedReport = null
             }
@@ -207,9 +255,13 @@ fun FriendReportsDialog(
 @Composable
 fun EmergencyReportCard(
     report: EmergencyReport,
+    isLocallyResolved: Boolean,
     onClick: () -> Unit,
     onResolve: () -> Unit
 ) {
+    // Check if resolved either from server or locally
+    val isResolved = report.isResolved || isLocallyResolved
+
     val typeColor = when (report.type) {
         "EMERGENCY" -> Color(0xFFEF5350)
         "SUSPICIOUS" -> Color(0xFFFF9800)
@@ -229,7 +281,7 @@ fun EmergencyReportCard(
             .fillMaxWidth()
             .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(
-            containerColor = if (report.isResolved) DarkCard else DarkCardElevated
+            containerColor = if (isResolved) DarkCard else DarkCardElevated
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
         shape = RoundedCornerShape(12.dp)
@@ -244,14 +296,22 @@ fun EmergencyReportCard(
                 // Type Icon
                 Surface(
                     shape = CircleShape,
-                    color = typeColor.copy(alpha = 0.25f),
+                    color = if (isResolved) {
+                        Color(0xFF66BB6A).copy(alpha = 0.25f)
+                    } else {
+                        typeColor.copy(alpha = 0.25f)
+                    },
                     modifier = Modifier.size(48.dp)
                 ) {
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        Text(text = typeEmoji, fontSize = 24.sp)
+                        Text(
+                            text = if (isResolved) "✓" else typeEmoji,
+                            fontSize = 24.sp,
+                            color = if (isResolved) Color(0xFF66BB6A) else Color.Unspecified
+                        )
                     }
                 }
 
@@ -263,7 +323,7 @@ fun EmergencyReportCard(
                         text = report.userName,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold,
-                        color = typeColor
+                        color = if (isResolved) TextSecondary else typeColor
                     )
 
                     Spacer(modifier = Modifier.height(4.dp))
@@ -308,7 +368,7 @@ fun EmergencyReportCard(
                     )
 
                     // Status Badge
-                    if (report.isResolved) {
+                    if (isResolved) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Surface(
                             color = Color(0xFF66BB6A).copy(alpha = 0.25f),
@@ -326,8 +386,8 @@ fun EmergencyReportCard(
                 }
             }
 
-            // Action Buttons
-            if (!report.isResolved) {
+            // Action Buttons - ONLY show if NOT resolved
+            if (!isResolved) {
                 Spacer(modifier = Modifier.height(12.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -356,9 +416,13 @@ fun EmergencyReportCard(
 @Composable
 fun ReportDetailDialog(
     report: EmergencyReport,
+    isLocallyResolved: Boolean,
     onDismiss: () -> Unit,
     onResolve: () -> Unit
 ) {
+    // Check if resolved either from server or locally
+    val isResolved = report.isResolved || isLocallyResolved
+
     val headerColor = when (report.type) {
         "EMERGENCY" -> Color(0xFFEF5350)
         "SUSPICIOUS" -> Color(0xFFFF9800)
@@ -379,7 +443,7 @@ fun ReportDetailDialog(
             ) {
                 // Header
                 Surface(
-                    color = headerColor
+                    color = if (isResolved) Color(0xFF66BB6A) else headerColor
                 ) {
                     Row(
                         modifier = Modifier
@@ -389,7 +453,11 @@ fun ReportDetailDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = report.type.replace("_", " "),
+                            text = if (isResolved) {
+                                "✓ RESOLVED"
+                            } else {
+                                report.type.replace("_", " ")
+                            },
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color.White
@@ -511,8 +579,8 @@ fun ReportDetailDialog(
                     }
                 }
 
-                // Action Buttons
-                if (!report.isResolved) {
+                // Action Buttons - ONLY show if NOT resolved
+                if (!isResolved) {
                     Surface(
                         color = DarkCard,
                         modifier = Modifier.fillMaxWidth()
@@ -541,6 +609,32 @@ fun ReportDetailDialog(
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("Resolve")
                             }
+                        }
+                    }
+                } else {
+                    // Show resolved status
+                    Surface(
+                        color = Color(0xFF66BB6A).copy(alpha = 0.15f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = Color(0xFF66BB6A),
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "This report has been resolved",
+                                fontSize = 14.sp,
+                                color = Color(0xFF66BB6A),
+                                fontWeight = FontWeight.Medium
+                            )
                         }
                     }
                 }
