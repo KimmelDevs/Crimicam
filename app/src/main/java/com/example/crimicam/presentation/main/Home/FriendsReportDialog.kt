@@ -26,6 +26,15 @@ import com.example.crimicam.data.model.EmergencyReport
 import java.text.SimpleDateFormat
 import java.util.*
 
+// Dark theme colors
+private val DarkBackground = Color(0xFF121212)
+private val DarkSurface = Color(0xFF1E1E1E)
+private val DarkCard = Color(0xFF2C2C2C)
+private val DarkCardElevated = Color(0xFF383838)
+private val TextPrimary = Color(0xFFE0E0E0)
+private val TextSecondary = Color(0xFFB0B0B0)
+private val DarkDivider = Color(0xFF404040)
+
 @Composable
 fun FriendReportsDialog(
     friendReports: List<EmergencyReport>,
@@ -42,7 +51,8 @@ fun FriendReportsDialog(
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.85f),
-            shape = RoundedCornerShape(20.dp)
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = DarkSurface)
         ) {
             Column(
                 modifier = Modifier.fillMaxSize()
@@ -51,6 +61,7 @@ fun FriendReportsDialog(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .background(DarkCard)
                         .padding(20.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
@@ -59,7 +70,7 @@ fun FriendReportsDialog(
                         Icon(
                             imageVector = Icons.Default.Notifications,
                             contentDescription = null,
-                            tint = Color(0xFFD32F2F),
+                            tint = Color(0xFFEF5350),
                             modifier = Modifier.size(28.dp)
                         )
                         Spacer(modifier = Modifier.width(12.dp))
@@ -67,12 +78,13 @@ fun FriendReportsDialog(
                             Text(
                                 text = "Emergency Reports",
                                 fontSize = 20.sp,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
                             )
                             Text(
                                 text = "${friendReports.size} reports",
                                 fontSize = 12.sp,
-                                color = Color.Gray
+                                color = TextSecondary
                             )
                         }
                     }
@@ -82,15 +94,15 @@ fun FriendReportsDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(onClick = onRefresh) {
-                            Icon(Icons.Default.Refresh, "Refresh")
+                            Icon(Icons.Default.Refresh, "Refresh", tint = TextPrimary)
                         }
                         IconButton(onClick = onDismiss) {
-                            Icon(Icons.Default.Close, "Close")
+                            Icon(Icons.Default.Close, "Close", tint = TextPrimary)
                         }
                     }
                 }
 
-                HorizontalDivider()
+                HorizontalDivider(color = DarkDivider)
 
                 // Content
                 when {
@@ -99,7 +111,7 @@ fun FriendReportsDialog(
                             modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
                         ) {
-                            CircularProgressIndicator()
+                            CircularProgressIndicator(color = Color(0xFFEF5350))
                         }
                     }
 
@@ -114,16 +126,21 @@ fun FriendReportsDialog(
                             Icon(
                                 Icons.Default.Error,
                                 contentDescription = null,
-                                tint = Color(0xFFD32F2F),
+                                tint = Color(0xFFEF5350),
                                 modifier = Modifier.size(48.dp)
                             )
                             Spacer(modifier = Modifier.height(16.dp))
                             Text(
                                 text = error,
-                                color = Color(0xFFD32F2F)
+                                color = Color(0xFFEF5350)
                             )
                             Spacer(modifier = Modifier.height(16.dp))
-                            Button(onClick = onRefresh) {
+                            Button(
+                                onClick = onRefresh,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFEF5350)
+                                )
+                            ) {
                                 Text("Retry")
                             }
                         }
@@ -142,13 +159,14 @@ fun FriendReportsDialog(
                             Text(
                                 text = "No Emergency Reports",
                                 fontSize = 18.sp,
-                                fontWeight = FontWeight.Medium
+                                fontWeight = FontWeight.Medium,
+                                color = TextPrimary
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
                                 text = "Reports from your friends will appear here",
                                 fontSize = 14.sp,
-                                color = Color.Gray
+                                color = TextSecondary
                             )
                         }
                     }
@@ -193,10 +211,10 @@ fun EmergencyReportCard(
     onResolve: () -> Unit
 ) {
     val typeColor = when (report.type) {
-        "EMERGENCY" -> Color(0xFFD32F2F)
-        "SUSPICIOUS" -> Color(0xFFF57C00)
-        "HELP_NEEDED" -> Color(0xFF1976D2)
-        else -> Color.Gray
+        "EMERGENCY" -> Color(0xFFEF5350)
+        "SUSPICIOUS" -> Color(0xFFFF9800)
+        "HELP_NEEDED" -> Color(0xFF42A5F5)
+        else -> Color(0xFF9E9E9E)
     }
 
     val typeEmoji = when (report.type) {
@@ -211,9 +229,9 @@ fun EmergencyReportCard(
             .fillMaxWidth()
             .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(
-            containerColor = if (report.isResolved) Color(0xFFF5F5F5) else Color.White
+            containerColor = if (report.isResolved) DarkCard else DarkCardElevated
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
         shape = RoundedCornerShape(12.dp)
     ) {
         Column(
@@ -226,7 +244,7 @@ fun EmergencyReportCard(
                 // Type Icon
                 Surface(
                     shape = CircleShape,
-                    color = typeColor.copy(alpha = 0.2f),
+                    color = typeColor.copy(alpha = 0.25f),
                     modifier = Modifier.size(48.dp)
                 ) {
                     Box(
@@ -255,7 +273,8 @@ fun EmergencyReportCard(
                         text = report.title,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold,
-                        maxLines = 2
+                        maxLines = 2,
+                        color = TextPrimary
                     )
 
                     Spacer(modifier = Modifier.height(4.dp))
@@ -266,14 +285,14 @@ fun EmergencyReportCard(
                             Icon(
                                 Icons.Default.LocationOn,
                                 contentDescription = null,
-                                tint = Color.Gray,
+                                tint = TextSecondary,
                                 modifier = Modifier.size(14.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
                                 text = report.address,
                                 fontSize = 12.sp,
-                                color = Color.Gray,
+                                color = TextSecondary,
                                 maxLines = 1
                             )
                         }
@@ -285,20 +304,20 @@ fun EmergencyReportCard(
                     Text(
                         text = formatTimestamp(report.timestamp),
                         fontSize = 11.sp,
-                        color = Color.Gray
+                        color = TextSecondary
                     )
 
                     // Status Badge
                     if (report.isResolved) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Surface(
-                            color = Color(0xFF4CAF50).copy(alpha = 0.2f),
+                            color = Color(0xFF66BB6A).copy(alpha = 0.25f),
                             shape = RoundedCornerShape(4.dp)
                         ) {
                             Text(
                                 text = "✓ Resolved",
                                 fontSize = 11.sp,
-                                color = Color(0xFF388E3C),
+                                color = Color(0xFF66BB6A),
                                 fontWeight = FontWeight.Medium,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
@@ -314,7 +333,12 @@ fun EmergencyReportCard(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End
                 ) {
-                    TextButton(onClick = onResolve) {
+                    TextButton(
+                        onClick = onResolve,
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = Color(0xFF66BB6A)
+                        )
+                    ) {
                         Icon(
                             Icons.Default.Check,
                             contentDescription = null,
@@ -335,24 +359,27 @@ fun ReportDetailDialog(
     onDismiss: () -> Unit,
     onResolve: () -> Unit
 ) {
+    val headerColor = when (report.type) {
+        "EMERGENCY" -> Color(0xFFEF5350)
+        "SUSPICIOUS" -> Color(0xFFFF9800)
+        "HELP_NEEDED" -> Color(0xFF42A5F5)
+        else -> Color(0xFF9E9E9E)
+    }
+
     Dialog(onDismissRequest = onDismiss) {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.8f),
-            shape = RoundedCornerShape(20.dp)
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = DarkSurface)
         ) {
             Column(
                 modifier = Modifier.fillMaxSize()
             ) {
                 // Header
                 Surface(
-                    color = when (report.type) {
-                        "EMERGENCY" -> Color(0xFFD32F2F)
-                        "SUSPICIOUS" -> Color(0xFFF57C00)
-                        "HELP_NEEDED" -> Color(0xFF1976D2)
-                        else -> Color.Gray
-                    }
+                    color = headerColor
                 ) {
                     Row(
                         modifier = Modifier
@@ -384,7 +411,7 @@ fun ReportDetailDialog(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Surface(
                             shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                            color = headerColor.copy(alpha = 0.25f),
                             modifier = Modifier.size(48.dp)
                         ) {
                             Box(
@@ -394,7 +421,8 @@ fun ReportDetailDialog(
                                 Text(
                                     text = report.userName.take(2).uppercase(),
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 18.sp
+                                    fontSize = 18.sp,
+                                    color = headerColor
                                 )
                             }
                         }
@@ -403,12 +431,13 @@ fun ReportDetailDialog(
                             Text(
                                 text = report.userName,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
+                                fontSize = 16.sp,
+                                color = TextPrimary
                             )
                             Text(
                                 text = formatTimestamp(report.timestamp),
                                 fontSize = 12.sp,
-                                color = Color.Gray
+                                color = TextSecondary
                             )
                         }
                     }
@@ -419,7 +448,8 @@ fun ReportDetailDialog(
                     Text(
                         text = report.title,
                         fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary
                     )
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -428,13 +458,13 @@ fun ReportDetailDialog(
                     if (report.description.isNotBlank()) {
                         Card(
                             colors = CardDefaults.cardColors(
-                                containerColor = Color(0xFFF5F5F5)
+                                containerColor = DarkCard
                             )
                         ) {
                             Text(
                                 text = report.description,
                                 fontSize = 14.sp,
-                                color = Color.DarkGray,
+                                color = TextSecondary,
                                 lineHeight = 20.sp,
                                 modifier = Modifier.padding(16.dp)
                             )
@@ -446,7 +476,7 @@ fun ReportDetailDialog(
                     if (report.location != null) {
                         Card(
                             colors = CardDefaults.cardColors(
-                                containerColor = Color(0xFFE3F2FD)
+                                containerColor = Color(0xFF1E3A5F)
                             )
                         ) {
                             Row(
@@ -456,7 +486,7 @@ fun ReportDetailDialog(
                                 Icon(
                                     Icons.Default.LocationOn,
                                     contentDescription = null,
-                                    tint = Color(0xFF1976D2),
+                                    tint = Color(0xFF42A5F5),
                                     modifier = Modifier.size(24.dp)
                                 )
                                 Spacer(modifier = Modifier.width(12.dp))
@@ -465,7 +495,7 @@ fun ReportDetailDialog(
                                         text = "Location",
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Medium,
-                                        color = Color(0xFF1976D2)
+                                        color = Color(0xFF42A5F5)
                                     )
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
@@ -473,7 +503,7 @@ fun ReportDetailDialog(
                                             "${report.location.latitude}, ${report.location.longitude}"
                                         },
                                         fontSize = 14.sp,
-                                        color = Color.Gray
+                                        color = TextSecondary
                                     )
                                 }
                             }
@@ -484,7 +514,7 @@ fun ReportDetailDialog(
                 // Action Buttons
                 if (!report.isResolved) {
                     Surface(
-                        color = Color(0xFFF5F5F5),
+                        color = DarkCard,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
@@ -493,7 +523,10 @@ fun ReportDetailDialog(
                         ) {
                             OutlinedButton(
                                 onClick = onDismiss,
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = TextPrimary
+                                )
                             ) {
                                 Text("Close")
                             }
@@ -501,7 +534,7 @@ fun ReportDetailDialog(
                                 onClick = onResolve,
                                 modifier = Modifier.weight(1f),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF4CAF50)
+                                    containerColor = Color(0xFF66BB6A)
                                 )
                             ) {
                                 Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))

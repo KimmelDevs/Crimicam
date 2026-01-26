@@ -32,14 +32,34 @@ class EmergencyReportViewModel : ViewModel() {
     private val _notificationsState = MutableStateFlow<NotificationsState>(NotificationsState())
     val notificationsState: StateFlow<NotificationsState> = _notificationsState.asStateFlow()
 
+    // Theme state - defaults to dark theme
+    private val _isDarkTheme = MutableStateFlow(true)
+    val isDarkTheme: StateFlow<Boolean> = _isDarkTheme.asStateFlow()
+
     companion object {
         private const val TAG = "EmergencyReportVM"
     }
 
     init {
-        Log.d(TAG, "EmergencyReportViewModel initialized")
+        Log.d(TAG, "EmergencyReportViewModel initialized with dark theme")
         startRealtimeReportUpdates()
         startRealtimeNotificationUpdates()
+    }
+
+    /**
+     * Toggle theme between dark and light
+     */
+    fun toggleTheme() {
+        _isDarkTheme.value = !_isDarkTheme.value
+        Log.d(TAG, "🎨 Theme toggled to: ${if (_isDarkTheme.value) "Dark" else "Light"}")
+    }
+
+    /**
+     * Set theme explicitly
+     */
+    fun setDarkTheme(isDark: Boolean) {
+        _isDarkTheme.value = isDark
+        Log.d(TAG, "🎨 Theme set to: ${if (isDark) "Dark" else "Light"}")
     }
 
     /**

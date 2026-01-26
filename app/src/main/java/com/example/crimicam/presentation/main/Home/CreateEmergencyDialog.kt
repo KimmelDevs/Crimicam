@@ -25,6 +25,15 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
 
+// Dark theme colors
+private val DarkBackground = Color(0xFF121212)
+private val DarkSurface = Color(0xFF1E1E1E)
+private val DarkCard = Color(0xFF2C2C2C)
+private val DarkCardElevated = Color(0xFF383838)
+private val TextPrimary = Color(0xFFE0E0E0)
+private val TextSecondary = Color(0xFFB0B0B0)
+private val DarkDivider = Color(0xFF404040)
+
 @Composable
 fun CreateEmergencyReportDialog(
     onDismiss: () -> Unit,
@@ -106,14 +115,15 @@ fun CreateEmergencyReportDialog(
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.9f),
-            shape = RoundedCornerShape(20.dp)
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = DarkSurface)
         ) {
             Column(
                 modifier = Modifier.fillMaxSize()
             ) {
                 // Header
                 Surface(
-                    color = Color(0xFFD32F2F)
+                    color = Color(0xFFEF5350)
                 ) {
                     Row(
                         modifier = Modifier
@@ -160,7 +170,7 @@ fun CreateEmergencyReportDialog(
                         text = "Emergency Type",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
-                        color = Color.Gray
+                        color = TextSecondary
                     )
 
                     Row(
@@ -200,21 +210,28 @@ fun CreateEmergencyReportDialog(
                     OutlinedTextField(
                         value = title,
                         onValueChange = { title = it },
-                        label = { Text("Title") },
-                        placeholder = { Text("Brief description of the emergency") },
+                        label = { Text("Title", color = TextSecondary) },
+                        placeholder = { Text("Brief description of the emergency", color = TextSecondary) },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         leadingIcon = {
-                            Icon(Icons.Default.Title, contentDescription = null)
-                        }
+                            Icon(Icons.Default.Title, contentDescription = null, tint = TextSecondary)
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            focusedBorderColor = Color(0xFFEF5350),
+                            unfocusedBorderColor = DarkDivider,
+                            cursorColor = Color(0xFFEF5350)
+                        )
                     )
 
                     // Description Input
                     OutlinedTextField(
                         value = description,
                         onValueChange = { description = it },
-                        label = { Text("Description") },
-                        placeholder = { Text("Provide detailed information about the situation") },
+                        label = { Text("Description", color = TextSecondary) },
+                        placeholder = { Text("Provide detailed information about the situation", color = TextSecondary) },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(120.dp),
@@ -222,15 +239,23 @@ fun CreateEmergencyReportDialog(
                         leadingIcon = {
                             Icon(
                                 Icons.Default.Description,
-                                contentDescription = null
+                                contentDescription = null,
+                                tint = TextSecondary
                             )
-                        }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            focusedBorderColor = Color(0xFFEF5350),
+                            unfocusedBorderColor = DarkDivider,
+                            cursorColor = Color(0xFFEF5350)
+                        )
                     )
 
                     // Location Section
                     Card(
                         colors = CardDefaults.cardColors(
-                            containerColor = Color(0xFFE3F2FD)
+                            containerColor = Color(0xFF1E3A5F)
                         )
                     ) {
                         Column(
@@ -246,7 +271,7 @@ fun CreateEmergencyReportDialog(
                                     text = "Location",
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Medium,
-                                    color = Color(0xFF1976D2)
+                                    color = Color(0xFF42A5F5)
                                 )
 
                                 if (!hasLocationPermission) {
@@ -258,7 +283,10 @@ fun CreateEmergencyReportDialog(
                                                     Manifest.permission.ACCESS_COARSE_LOCATION
                                                 )
                                             )
-                                        }
+                                        },
+                                        colors = ButtonDefaults.textButtonColors(
+                                            contentColor = Color(0xFF42A5F5)
+                                        )
                                     ) {
                                         Icon(
                                             Icons.Default.LocationOn,
@@ -271,7 +299,8 @@ fun CreateEmergencyReportDialog(
                                 } else if (isLoadingLocation) {
                                     CircularProgressIndicator(
                                         modifier = Modifier.size(24.dp),
-                                        strokeWidth = 2.dp
+                                        strokeWidth = 2.dp,
+                                        color = Color(0xFF42A5F5)
                                     )
                                 } else {
                                     IconButton(
@@ -296,7 +325,7 @@ fun CreateEmergencyReportDialog(
                                         Icon(
                                             Icons.Default.Refresh,
                                             contentDescription = "Refresh Location",
-                                            tint = Color(0xFF1976D2)
+                                            tint = Color(0xFF42A5F5)
                                         )
                                     }
                                 }
@@ -306,19 +335,19 @@ fun CreateEmergencyReportDialog(
                                 Text(
                                     text = "⚠️ $locationError",
                                     fontSize = 12.sp,
-                                    color = Color(0xFFD32F2F)
+                                    color = Color(0xFFEF5350)
                                 )
                             } else if (latitude != 0.0 && longitude != 0.0) {
                                 Text(
                                     text = if (address.isNotBlank()) address else "$latitude, $longitude",
                                     fontSize = 12.sp,
-                                    color = Color.Gray
+                                    color = TextSecondary
                                 )
                             } else if (!hasLocationPermission) {
                                 Text(
                                     text = "Location permission required",
                                     fontSize = 12.sp,
-                                    color = Color.Gray
+                                    color = TextSecondary
                                 )
                             }
                         }
@@ -327,7 +356,7 @@ fun CreateEmergencyReportDialog(
                     // Info Card
                     Card(
                         colors = CardDefaults.cardColors(
-                            containerColor = Color(0xFFFFF3E0)
+                            containerColor = Color(0xFF3E2723)
                         )
                     ) {
                         Row(
@@ -337,14 +366,14 @@ fun CreateEmergencyReportDialog(
                             Icon(
                                 Icons.Default.Info,
                                 contentDescription = null,
-                                tint = Color(0xFFF57C00),
+                                tint = Color(0xFFFF9800),
                                 modifier = Modifier.size(20.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 text = "Your friends will be notified immediately about this emergency.",
                                 fontSize = 12.sp,
-                                color = Color(0xFFE65100),
+                                color = Color(0xFFFFB74D),
                                 lineHeight = 16.sp
                             )
                         }
@@ -353,7 +382,7 @@ fun CreateEmergencyReportDialog(
 
                 // Action Buttons
                 Surface(
-                    color = Color(0xFFF5F5F5),
+                    color = DarkCard,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -362,7 +391,10 @@ fun CreateEmergencyReportDialog(
                     ) {
                         OutlinedButton(
                             onClick = onDismiss,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = TextPrimary
+                            )
                         ) {
                             Text("Cancel")
                         }
@@ -383,7 +415,8 @@ fun CreateEmergencyReportDialog(
                             modifier = Modifier.weight(1f),
                             enabled = title.isNotBlank(),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFFD32F2F)
+                                containerColor = Color(0xFFEF5350),
+                                disabledContainerColor = Color(0xFF5C5C5C)
                             )
                         ) {
                             Icon(
@@ -421,14 +454,23 @@ fun EmergencyTypeChip(
         },
         modifier = modifier,
         colors = FilterChipDefaults.filterChipColors(
+            containerColor = DarkCardElevated,
+            labelColor = TextPrimary,
             selectedContainerColor = when (type) {
-                "EMERGENCY" -> Color(0xFFD32F2F)
-                "SUSPICIOUS" -> Color(0xFFF57C00)
-                "HELP_NEEDED" -> Color(0xFF1976D2)
-                else -> MaterialTheme.colorScheme.primary
+                "EMERGENCY" -> Color(0xFFEF5350)
+                "SUSPICIOUS" -> Color(0xFFFF9800)
+                "HELP_NEEDED" -> Color(0xFF42A5F5)
+                else -> Color(0xFF9E9E9E)
             },
             selectedLabelColor = Color.White
-        )
+        ),
+        border = if (!isSelected) FilterChipDefaults.filterChipBorder(
+            enabled = true,
+            selected = isSelected,
+            borderColor = DarkDivider,
+            selectedBorderColor = Color.Transparent,
+            borderWidth = 1.dp
+        ) else null
     )
 }
 
