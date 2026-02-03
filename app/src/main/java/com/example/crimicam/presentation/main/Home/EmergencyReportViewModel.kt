@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 class EmergencyReportViewModel : ViewModel() {
     private val repository = EmergencyReportRepository()
@@ -35,6 +36,11 @@ class EmergencyReportViewModel : ViewModel() {
     // Theme state - defaults to dark theme
     private val _isDarkTheme = MutableStateFlow(true)
     val isDarkTheme: StateFlow<Boolean> = _isDarkTheme.asStateFlow()
+
+    // Track optimistic updates to prevent listener from overwriting
+    private val optimisticUpdates = mutableMapOf<String, String>() // reportId to status
+    private var lastUpdateTimestamp = 0L
+    private val UPDATE_DEBOUNCE_MS = 2000L // 2 second debounce
 
     companion object {
         private const val TAG = "EmergencyReportVM"
@@ -63,7 +69,7 @@ class EmergencyReportViewModel : ViewModel() {
     }
 
     /**
-     * Start real-time listener for friend reports
+     * Start real-time listener for friend reports with SERVER SOURCE
      */
     private fun startRealtimeReportUpdates() {
         val currentUser = auth.currentUser
@@ -79,7 +85,7 @@ class EmergencyReportViewModel : ViewModel() {
             friendReportsListener = firestore.collection("emergency_reports")
                 .whereArrayContains("friendsNotified", currentUser.uid)
                 .limit(50)
-                .addSnapshotListener { snapshot, error ->
+                .addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, error ->
                     if (error != null) {
                         Log.e(TAG, "Error listening to friend reports", error)
                         _reportState.value = _reportState.value.copy(
@@ -92,9 +98,40 @@ class EmergencyReportViewModel : ViewModel() {
 
                     viewModelScope.launch {
                         try {
+                            // Check if data is from cache or server
+                            val fromCache = snapshot.metadata.isFromCache
+                            Log.d(TAG, "📡 Snapshot received - fromCache: $fromCache, pendingWrites: ${snapshot.metadata.hasPendingWrites()}")
+
+                            // Debounce: Skip cache updates if we just made an update
+                            val now = System.currentTimeMillis()
+                            if (fromCache && now - lastUpdateTimestamp < UPDATE_DEBOUNCE_MS) {
+                                Log.d(TAG, "⏭️ Skipping cached snapshot (debounced)")
+                                return@launch
+                            }
+
                             val reports = snapshot.documents.mapNotNull { doc ->
-                                doc.toObject(EmergencyReport::class.java)?.copy(id = doc.id)
-                            }.sortedByDescending { it.timestamp.toDate() } // Sort in memory
+                                try {
+                                    val report = doc.toObject(EmergencyReport::class.java)
+
+                                    // Check if we have an optimistic update for this report
+                                    val optimisticStatus = optimisticUpdates[doc.id]
+                                    if (optimisticStatus != null) {
+                                        // Use optimistic update instead of server data
+                                        Log.d(TAG, "🔄 Using optimistic status for ${doc.id}: $optimisticStatus")
+                                        report?.copy(
+                                            status = optimisticStatus,
+                                            isResolved = optimisticStatus == "RESOLVED"
+                                        )
+                                    } else {
+                                        // Log actual Firestore data
+                                        Log.d(TAG, "📄 Report ${doc.id}: status=${doc.getString("status")}, isResolved=${doc.getBoolean("isResolved")}, fromCache=$fromCache")
+                                        report
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "❌ Error parsing report ${doc.id}", e)
+                                    null
+                                }
+                            }.sortedByDescending { it.timestamp.toDate() }
 
                             val unreadCount = reports.count { !it.isResolved }
 
@@ -105,7 +142,13 @@ class EmergencyReportViewModel : ViewModel() {
                                 error = null
                             )
 
-                            Log.d(TAG, "✅ Loaded ${reports.size} friend reports (${unreadCount} unread)")
+                            Log.d(TAG, "✅ Loaded ${reports.size} friend reports (${unreadCount} unread) - fromCache: $fromCache")
+
+                            // Clear optimistic updates after server confirmation
+                            if (!fromCache) {
+                                optimisticUpdates.clear()
+                                Log.d(TAG, "🧹 Cleared optimistic updates (server data received)")
+                            }
                         } catch (e: Exception) {
                             Log.e(TAG, "Error processing reports", e)
                             _reportState.value = _reportState.value.copy(
@@ -444,48 +487,74 @@ class EmergencyReportViewModel : ViewModel() {
     }
 
     /**
-     * Update report status
+     * Update report status with optimistic updates and server verification
      */
     fun updateReportStatus(reportId: String, status: String) {
         viewModelScope.launch {
             try {
                 Log.d(TAG, "📝 Updating report $reportId status to $status")
 
+                // Mark the time of this update
+                lastUpdateTimestamp = System.currentTimeMillis()
+
+                // Store optimistic update
+                optimisticUpdates[reportId] = status
+                Log.d(TAG, "💾 Stored optimistic update for $reportId: $status")
+
+                // OPTIMISTIC UPDATE - Update local state FIRST
+                val previousReports = _reportState.value.friendReports
+                _reportState.value = _reportState.value.copy(
+                    friendReports = _reportState.value.friendReports.map { report ->
+                        if (report.id == reportId) {
+                            report.copy(
+                                status = status,
+                                isResolved = status == "RESOLVED"
+                            )
+                        } else {
+                            report
+                        }
+                    }
+                )
+
+                // Recalculate unread count
+                val unreadCount = _reportState.value.friendReports.count { !it.isResolved }
+                _reportState.value = _reportState.value.copy(unreadCount = unreadCount)
+
+                Log.d(TAG, "✅ Local state updated optimistically (unread: $unreadCount)")
+
+                // Now update Firestore (this will trigger the listener after server confirms)
                 when (val result = repository.updateReportStatus(reportId, status)) {
                     is Result.Success -> {
-                        Log.d(TAG, "✅ Report status updated successfully")
+                        Log.d(TAG, "✅ Report status updated successfully in Firestore")
 
-                        // Update local state immediately
-                        _reportState.value = _reportState.value.copy(
-                            friendReports = _reportState.value.friendReports.map { report ->
-                                if (report.id == reportId) {
-                                    report.copy(
-                                        status = status,
-                                        isResolved = status == "RESOLVED"
-                                    )
-                                } else {
-                                    report
-                                }
-                            }
-                        )
+                        // Wait a bit to ensure server has propagated the update
+                        delay(1000)
 
-                        // Recalculate unread count
-                        val unreadCount = _reportState.value.friendReports.count { !it.isResolved }
-                        _reportState.value = _reportState.value.copy(unreadCount = unreadCount)
-
-                        // Real-time listener will update automatically, no need to manual refresh
-                        Log.d(TAG, "✅ Local state updated, real-time listener will sync")
+                        // Clear this specific optimistic update
+                        optimisticUpdates.remove(reportId)
+                        Log.d(TAG, "🧹 Cleared optimistic update for $reportId")
                     }
                     is Result.Error -> {
-                        Log.e(TAG, "❌ Error updating report status", result.exception)
+                        Log.e(TAG, "❌ Error updating report status in Firestore", result.exception)
+
+                        // ROLLBACK - Restore previous state on error
+                        optimisticUpdates.remove(reportId)
                         _reportState.value = _reportState.value.copy(
+                            friendReports = previousReports,
                             error = result.exception.message ?: "Failed to update report"
                         )
+
+                        // Recalculate unread count again
+                        val rollbackUnreadCount = previousReports.count { !it.isResolved }
+                        _reportState.value = _reportState.value.copy(unreadCount = rollbackUnreadCount)
+
+                        Log.d(TAG, "⏮️ Rolled back to previous state due to error")
                     }
                     else -> {}
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Exception updating report status", e)
+                optimisticUpdates.remove(reportId)
                 _reportState.value = _reportState.value.copy(
                     error = e.message ?: "Unknown error"
                 )
@@ -556,6 +625,7 @@ class EmergencyReportViewModel : ViewModel() {
         friendReportsListener = null
         notificationsListener?.remove()
         notificationsListener = null
+        optimisticUpdates.clear()
         Log.d(TAG, "⏹️ Stopped all real-time updates")
     }
 

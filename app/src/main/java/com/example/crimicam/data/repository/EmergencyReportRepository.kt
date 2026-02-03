@@ -133,7 +133,17 @@ class EmergencyReportRepository {
                 .await()
 
             val reports = querySnapshot.documents.mapNotNull { doc ->
-                doc.toObject(EmergencyReport::class.java)
+                try {
+                    val report = doc.toObject(EmergencyReport::class.java)
+
+                    // Log the actual Firestore data for debugging
+                    Log.d(TAG, "📄 Report ${doc.id}: status=${doc.getString("status")}, isResolved=${doc.getBoolean("isResolved")}")
+
+                    report
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Error parsing report ${doc.id}", e)
+                    null
+                }
             }
 
             Log.d(TAG, "✅ Loaded ${reports.size} friend reports")
@@ -300,25 +310,78 @@ class EmergencyReportRepository {
     }
 
     /**
-     * Update report status
+     * Update report status - ENHANCED VERSION with verification
      */
     suspend fun updateReportStatus(reportId: String, status: String): Result<Unit> {
         return try {
+            val currentUser = auth.currentUser
+                ?: return Result.Error(Exception("User not authenticated"))
+
+            Log.d(TAG, "📝 Updating report $reportId status to $status")
+            Log.d(TAG, "👤 Current user: ${currentUser.uid}")
+
+            // Prepare updates with all necessary fields
             val updates = hashMapOf<String, Any?>(
                 "status" to status,
-                "isResolved" to (status == "RESOLVED"),
-                "resolvedAt" to if (status == "RESOLVED") FieldValue.serverTimestamp() else null
+                "isResolved" to (status == "RESOLVED")
             )
 
-            firestore.collection(REPORTS_COLLECTION)
-                .document(reportId)
-                .update(updates)
-                .await()
+            // Add resolved timestamp if marking as resolved
+            if (status == "RESOLVED") {
+                updates["resolvedAt"] = FieldValue.serverTimestamp()
+                updates["resolvedBy"] = currentUser.uid
+            } else {
+                updates["resolvedAt"] = null
+                updates["resolvedBy"] = null
+            }
 
-            Log.d(TAG, "✅ Report status updated: $reportId -> $status")
+            Log.d(TAG, "📤 Update data: $updates")
+
+            // Get document reference
+            val docRef = firestore.collection(REPORTS_COLLECTION).document(reportId)
+
+            // Check if document exists first
+            val docSnapshot = docRef.get().await()
+            if (!docSnapshot.exists()) {
+                Log.e(TAG, "❌ Report document does not exist: $reportId")
+                return Result.Error(Exception("Report not found"))
+            }
+
+            Log.d(TAG, "📄 Document exists. Current data:")
+            Log.d(TAG, "   status: ${docSnapshot.getString("status")}")
+            Log.d(TAG, "   isResolved: ${docSnapshot.getBoolean("isResolved")}")
+
+            // Perform the update
+            docRef.update(updates).await()
+
+            Log.d(TAG, "✅ Update command executed successfully")
+
+            // Verify the update by reading back
+            val verifySnapshot = docRef.get().await()
+            val updatedStatus = verifySnapshot.getString("status")
+            val updatedIsResolved = verifySnapshot.getBoolean("isResolved")
+            val updatedResolvedAt = verifySnapshot.getTimestamp("resolvedAt")
+
+            Log.d(TAG, "✅ VERIFICATION - Document after update:")
+            Log.d(TAG, "   status: $updatedStatus")
+            Log.d(TAG, "   isResolved: $updatedIsResolved")
+            Log.d(TAG, "   resolvedAt: $updatedResolvedAt")
+
+            // Double check the values match what we expected
+            if (updatedStatus == status && updatedIsResolved == (status == "RESOLVED")) {
+                Log.d(TAG, "✅ UPDATE VERIFIED SUCCESSFULLY!")
+            } else {
+                Log.e(TAG, "⚠️ UPDATE MISMATCH!")
+                Log.e(TAG, "   Expected: status=$status, isResolved=${status == "RESOLVED"}")
+                Log.e(TAG, "   Got: status=$updatedStatus, isResolved=$updatedIsResolved")
+            }
+
             Result.Success(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error updating report status", e)
+            Log.e(TAG, "   Exception type: ${e.javaClass.simpleName}")
+            Log.e(TAG, "   Exception message: ${e.message}")
+            e.printStackTrace()
             Result.Error(e)
         }
     }

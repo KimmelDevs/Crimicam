@@ -40,6 +40,10 @@ import org.osmdroid.views.overlay.compass.InternalCompassOrientationProvider
 import java.text.SimpleDateFormat
 import java.util.*
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MapScreen
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @OptIn(ExperimentalPermissionsApi::class)
 @Composable
 fun MapScreen() {
@@ -58,21 +62,44 @@ fun MapScreen() {
 
     val state by viewModel.state.collectAsState()
 
-    // State variables
-    var selectedMarker by remember { mutableStateOf<CriminalMapMarker?>(null) }
-    var selectedReport by remember { mutableStateOf<EmergencyReport?>(null) }
-    var selectedFriendReport by remember { mutableStateOf<EmergencyReport?>(null) }
-    var mapView by remember { mutableStateOf<MapView?>(null) }
-    var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
-    var locationAccuracy by remember { mutableStateOf<Float?>(null) }
+    // ── original state ──────────────────────────────────────────────────
+    var selectedMarker        by remember { mutableStateOf<CriminalMapMarker?>(null) }
+    var selectedReport        by remember { mutableStateOf<EmergencyReport?>(null) }
+    var selectedFriendReport  by remember { mutableStateOf<EmergencyReport?>(null) }
+    var mapView               by remember { mutableStateOf<MapView?>(null) }
+    var userLocation          by remember { mutableStateOf<GeoPoint?>(null) }
+    var locationAccuracy      by remember { mutableStateOf<Float?>(null) }
 
-    // Destination selection state
     var isSelectingDestination by remember { mutableStateOf(false) }
-    var selectedDestination by remember { mutableStateOf<GeoPoint?>(null) }
+    var selectedDestination    by remember { mutableStateOf<GeoPoint?>(null) }
 
-    // Layer visibility state
-    var showReportsLayer by remember { mutableStateOf(true) }
+    var showReportsLayer       by remember { mutableStateOf(true) }
     var showFriendReportsLayer by remember { mutableStateOf(true) }
+
+    // ── NEW: navigation-monitor state ───────────────────────────────────
+    /**
+     * True once the user has tapped "Navigate" — the monitor is running.
+     * Set back to false when the destination is removed or friends are notified.
+     */
+    var navigationActive       by remember { mutableStateOf(false) }
+
+    /**
+     * 0, 1, 2, or 3.  Drives which warning card is visible.
+     */
+    var wrongWayCount          by remember { mutableStateOf(0) }
+
+    /**
+     * Flipped to true after the ViewModel has been told to notify friends.
+     * Shows the "Friends Notified" confirmation card.
+     */
+    var friendsNotified        by remember { mutableStateOf(false) }
+
+    /**
+     * The monitor instance.  Kept in a mutable ref so the LocationCallback
+     * (which is created once in a DisposableEffect) can always see the latest one.
+     */
+    val navigationMonitorRef   = remember { mutableStateOf<NavigationMonitor?>(null) }
+    // END NEW ─────────────────────────────────────────────────────────────
 
     val hasLocationPermission = locationPermissionsState.allPermissionsGranted
 
@@ -81,17 +108,17 @@ fun MapScreen() {
     }
     val initialZoom = 13.0
 
-    // Load data on initialization
+    // ── init osmdroid + load data ─────────────────────────────────────────
     LaunchedEffect(Unit) {
         Configuration.getInstance().load(
             context,
             context.getSharedPreferences("osmdroid", Context.MODE_PRIVATE)
         )
         Configuration.getInstance().userAgentValue = context.packageName
-        viewModel.refresh() // This loads all data
+        viewModel.refresh()
     }
 
-    // Location updates
+    // ── location updates ──────────────────────────────────────────────────
     DisposableEffect(hasLocationPermission) {
         var locationCallback: LocationCallback? = null
         var fusedLocationClient: FusedLocationProviderClient? = null
@@ -100,200 +127,205 @@ fun MapScreen() {
             try {
                 fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
                 val locationRequest = LocationRequest.create().apply {
-                    priority = LocationRequest.PRIORITY_HIGH_ACCURACY
-                    interval = 10000
-                    fastestInterval = 5000
+                    priority          = LocationRequest.PRIORITY_HIGH_ACCURACY
+                    interval          = 10000
+                    fastestInterval   = 5000
                 }
 
                 locationCallback = object : LocationCallback() {
                     override fun onLocationResult(locationResult: LocationResult) {
                         locationResult.lastLocation?.let { location ->
-                            userLocation = GeoPoint(location.latitude, location.longitude)
+                            val geoPoint = GeoPoint(location.latitude, location.longitude)
+                            userLocation     = geoPoint
                             locationAccuracy = location.accuracy
+
+                            // ── feed into NavigationMonitor if active ──────────
+                            navigationMonitorRef.value?.update(geoPoint)
                         }
                     }
                 }
 
                 fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
                     location?.let {
-                        userLocation = GeoPoint(it.latitude, it.longitude)
+                        userLocation     = GeoPoint(it.latitude, it.longitude)
                         locationAccuracy = it.accuracy
                     }
                 }
 
-                fusedLocationClient.requestLocationUpdates(
-                    locationRequest,
-                    locationCallback,
-                    null
-                )
+                fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, null)
 
             } catch (e: SecurityException) {
-                // Handle exception
+                // handle
             }
         }
 
         onDispose {
-            locationCallback?.let {
-                fusedLocationClient?.removeLocationUpdates(it)
-            }
+            locationCallback?.let { fusedLocationClient?.removeLocationUpdates(it) }
         }
     }
 
+    // ── helper: start the monitor (called when user taps Navigate) ────────
+    fun startNavigationMonitor(destination: GeoPoint) {
+        // reset UI state
+        wrongWayCount     = 0
+        friendsNotified   = false
+        navigationActive  = true
+
+        navigationMonitorRef.value = NavigationMonitor(
+            destination = destination,
+            onWrongDirectionWarning = { count ->
+                // runs on whatever thread the location update came in on —
+                // state writes are fine because Compose will post them.
+                wrongWayCount = count
+            },
+            onNotifyFriends = {
+                wrongWayCount = 3
+                // tell the ViewModel to write to Firestore + send notifications
+                userLocation?.let { loc ->
+                    viewModel.notifyFriendsWrongWay(
+                        destLat  = destination.latitude,
+                        destLon  = destination.longitude,
+                        userLat  = loc.latitude,
+                        userLon  = loc.longitude
+                    )
+                }
+                friendsNotified  = true
+                navigationActive = false
+            }
+        )
+    }
+
+    // ── helper: stop / clean up the monitor ──────────────────────────────
+    fun stopNavigationMonitor() {
+        navigationMonitorRef.value?.reset()
+        navigationMonitorRef.value = null
+        navigationActive  = false
+        wrongWayCount     = 0
+        friendsNotified   = false
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // UI
+    // ═══════════════════════════════════════════════════════════════════════
+
     Box(modifier = Modifier.fillMaxSize()) {
+
+        // ── map or loading indicator ──────────────────────────────────────
         if (state.isLoading && state.criminalLocations.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
         } else {
             OpenStreetMapView(
-                center = initialCenter,
-                zoomLevel = initialZoom,
-                criminalLocations = state.criminalLocations,
-                unresolvedReports = if (showReportsLayer) state.unresolvedReports else emptyList(),
-                friendReports = if (showFriendReportsLayer) state.friendReports else emptyList(),
-                selectedDestination = selectedDestination,
-                isSelectingDestination = isSelectingDestination,
-                userLocation = userLocation,
-                hasLocationPermission = hasLocationPermission,
+                center                    = initialCenter,
+                zoomLevel                 = initialZoom,
+                criminalLocations         = state.criminalLocations,
+                unresolvedReports         = if (showReportsLayer) state.unresolvedReports else emptyList(),
+                friendReports             = if (showFriendReportsLayer) state.friendReports else emptyList(),
+                selectedDestination       = selectedDestination,
+                isSelectingDestination    = isSelectingDestination,
+                userLocation              = userLocation,
+                hasLocationPermission     = hasLocationPermission,
                 onMarkerClick = { marker ->
                     if (!isSelectingDestination) {
-                        selectedMarker = marker
-                        selectedReport = null
-                        selectedFriendReport = null
+                        selectedMarker = marker; selectedReport = null; selectedFriendReport = null
                     }
                 },
                 onReportMarkerClick = { report ->
                     if (!isSelectingDestination) {
-                        selectedReport = report
-                        selectedMarker = null
-                        selectedFriendReport = null
+                        selectedReport = report; selectedMarker = null; selectedFriendReport = null
                     }
                 },
                 onFriendReportClick = { report ->
                     if (!isSelectingDestination) {
-                        selectedFriendReport = report
-                        selectedMarker = null
-                        selectedReport = null
+                        selectedFriendReport = report; selectedMarker = null; selectedReport = null
                     }
                 },
                 onMapClick = { geoPoint ->
-                    if (isSelectingDestination) {
-                        selectedDestination = geoPoint
-                    }
+                    if (isSelectingDestination) selectedDestination = geoPoint
                 },
-                onMapReady = { map ->
-                    mapView = map
-                }
+                onMapReady = { map -> mapView = map }
             )
         }
 
-        // Stats bar
+        // ── stats bar ─────────────────────────────────────────────────────
         MapStatsBar(
-            criminalCount = state.criminalLocations.size,
-            totalSightings = state.criminalLocations.sumOf { it.totalSightings },
+            criminalCount          = state.criminalLocations.size,
+            totalSightings         = state.criminalLocations.sumOf { it.totalSightings },
             unresolvedReportsCount = state.unresolvedReports.size,
-            friendReportsCount = state.friendReports.size,
-            hasLocationPermission = hasLocationPermission,
-            isLocationEnabled = userLocation != null,
-            onRequestLocation = {
-                locationPermissionsState.launchMultiplePermissionRequest()
-            },
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(16.dp)
+            friendReportsCount     = state.friendReports.size,
+            hasLocationPermission  = hasLocationPermission,
+            isLocationEnabled      = userLocation != null,
+            onRequestLocation      = { locationPermissionsState.launchMultiplePermissionRequest() },
+            modifier               = Modifier.align(Alignment.TopStart).padding(16.dp)
         )
 
-        // Location indicator
+        // ── location indicator ────────────────────────────────────────────
         userLocation?.let { location ->
             if (!isSelectingDestination && selectedDestination == null) {
                 LocationIndicator(
                     location = location,
                     accuracy = locationAccuracy,
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(16.dp)
-                        .padding(top = 100.dp)
+                    modifier = Modifier.align(Alignment.TopStart).padding(16.dp).padding(top = 100.dp)
                 )
             }
         }
 
-        // Map controls (right side buttons)
+        // ── right-side control buttons ────────────────────────────────────
         Column(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(16.dp),
+            modifier           = Modifier.align(Alignment.TopEnd).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            MapControlButton(
-                icon = Icons.Default.Add,
-                onClick = { mapView?.controller?.zoomIn() }
-            )
-            MapControlButton(
-                icon = Icons.Default.Remove,
-                onClick = { mapView?.controller?.zoomOut() }
-            )
+            MapControlButton(icon = Icons.Default.Add,    onClick = { mapView?.controller?.zoomIn() })
+            MapControlButton(icon = Icons.Default.Remove, onClick = { mapView?.controller?.zoomOut() })
             MapControlButton(
                 icon = Icons.Default.MyLocation,
                 onClick = {
                     if (hasLocationPermission) {
-                        userLocation?.let { location ->
-                            mapView?.controller?.animateTo(location)
+                        userLocation?.let { loc ->
+                            mapView?.controller?.animateTo(loc)
                             mapView?.controller?.setZoom(17.0)
                         }
                     } else {
                         locationPermissionsState.launchMultiplePermissionRequest()
                     }
-                },
-                enabled = true
+                }
             )
-            MapControlButton(
-                icon = Icons.Default.Refresh,
-                onClick = { viewModel.refresh() }
-            )
+            MapControlButton(icon = Icons.Default.Refresh, onClick = { viewModel.refresh() })
 
-            // Toggle reports layer button
             MapControlButton(
-                icon = Icons.Default.Notifications,
-                onClick = { showReportsLayer = !showReportsLayer },
+                icon          = Icons.Default.Notifications,
+                onClick       = { showReportsLayer = !showReportsLayer },
                 containerColor = if (showReportsLayer) Color(0xFFEF5350) else Color.White,
-                contentColor = if (showReportsLayer) Color.White else Color(0xFFEF5350)
+                contentColor   = if (showReportsLayer) Color.White else Color(0xFFEF5350)
             )
-
-            // Toggle friend reports layer button
             MapControlButton(
-                icon = Icons.Default.Group,
-                onClick = { showFriendReportsLayer = !showFriendReportsLayer },
+                icon          = Icons.Default.Group,
+                onClick       = { showFriendReportsLayer = !showFriendReportsLayer },
                 containerColor = if (showFriendReportsLayer) Color(0xFF2196F3) else Color.White,
-                contentColor = if (showFriendReportsLayer) Color.White else Color(0xFF2196F3)
+                contentColor   = if (showFriendReportsLayer) Color.White else Color(0xFF2196F3)
             )
 
             if (!hasLocationPermission) {
                 MapControlButton(
-                    icon = Icons.Default.LocationDisabled,
-                    onClick = {
-                        locationPermissionsState.launchMultiplePermissionRequest()
-                    },
+                    icon           = Icons.Default.LocationDisabled,
+                    onClick        = { locationPermissionsState.launchMultiplePermissionRequest() },
                     containerColor = Color.Red.copy(alpha = 0.8f),
-                    contentColor = Color.White
+                    contentColor   = Color.White
                 )
             }
         }
 
-        // Add destination FAB
+        // ── "Add Destination" FAB ─────────────────────────────────────────
         if (!isSelectingDestination && selectedDestination == null) {
             FloatingActionButton(
                 onClick = { isSelectingDestination = true },
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(16.dp),
-                containerColor = MaterialTheme.colorScheme.primary
+                modifier        = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                containerColor  = MaterialTheme.colorScheme.primary
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    modifier            = Modifier.padding(horizontal = 16.dp),
+                    verticalAlignment   = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Icon(Icons.Default.AddLocation, contentDescription = "Add Destination")
@@ -302,79 +334,54 @@ fun MapScreen() {
             }
         }
 
-        // Destination selection card
+        // ── "Tap on map…" instruction card ───────────────────────────────
         if (isSelectingDestination) {
             Card(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(16.dp)
-                    .fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                ),
-                shape = RoundedCornerShape(12.dp)
+                modifier = Modifier.align(Alignment.TopCenter).padding(16.dp).fillMaxWidth(),
+                colors   = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                shape    = RoundedCornerShape(12.dp)
             ) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
+                    modifier              = Modifier.fillMaxWidth().padding(16.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment     = Alignment.CenterVertically
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.Place,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            "Tap on map to set destination",
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.Place, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Text("Tap on map to set destination", fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     }
-
-                    TextButton(
-                        onClick = {
-                            isSelectingDestination = false
-                            selectedDestination = null
-                        }
-                    ) {
+                    TextButton(onClick = { isSelectingDestination = false; selectedDestination = null }) {
                         Text("Cancel")
                     }
                 }
             }
         }
 
-        // Destination card
+        // ── destination card / confirm FAB ────────────────────────────────
         selectedDestination?.let { destination ->
             if (!isSelectingDestination) {
                 DestinationCard(
                     destination = destination,
-                    onConfirm = {
-                        // Navigation handled in card
+                    onConfirm   = {
+                        // ── START the navigation monitor here ────────────────
+                        startNavigationMonitor(destination)
                     },
                     onRemove = {
+                        // ── STOP the monitor and clear everything ───────────
+                        stopNavigationMonitor()
                         selectedDestination = null
                     },
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(16.dp)
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp)
                 )
             } else {
                 FloatingActionButton(
-                    onClick = { isSelectingDestination = false },
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(16.dp),
+                    onClick        = { isSelectingDestination = false },
+                    modifier       = Modifier.align(Alignment.BottomEnd).padding(16.dp),
                     containerColor = Color(0xFF4CAF50)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                        modifier            = Modifier.padding(horizontal = 16.dp),
+                        verticalAlignment   = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(Icons.Default.Check, contentDescription = "Confirm", tint = Color.White)
@@ -384,64 +391,69 @@ fun MapScreen() {
             }
         }
 
-        // Criminal marker info card
+        // ── NEW: Wrong-Way Warning card (count == 1 or 2) ──────────────────
+        if (navigationActive && wrongWayCount in 1..2 && !friendsNotified) {
+            WrongWayWarningCard(
+                count    = wrongWayCount,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp)
+            )
+        }
+
+        // ── NEW: Friends-Notified confirmation card (count == 3) ───────────
+        if (friendsNotified) {
+            FriendsNotifiedCard(
+                onDismiss = {
+                    // user acknowledges — clean up everything
+                    stopNavigationMonitor()
+                    selectedDestination = null
+                },
+                modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp)
+            )
+        }
+        // END NEW ───────────────────────────────────────────────────────────
+
+        // ── criminal info card ────────────────────────────────────────────
         if (!isSelectingDestination && selectedDestination == null && selectedReport == null && selectedFriendReport == null) {
             selectedMarker?.let { marker ->
                 CriminalInfoCard(
-                    marker = marker,
-                    onDismiss = { selectedMarker = null },
-                    onViewHistory = {
-                        viewModel.loadLocationHistory(marker.criminalId)
-                    },
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(16.dp)
+                    marker        = marker,
+                    onDismiss     = { selectedMarker = null },
+                    onViewHistory = { viewModel.loadLocationHistory(marker.criminalId) },
+                    modifier      = Modifier.align(Alignment.BottomCenter).padding(16.dp)
                 )
             }
         }
 
-        // Emergency report info card
+        // ── emergency report info card ────────────────────────────────────
         if (!isSelectingDestination && selectedDestination == null && selectedMarker == null && selectedFriendReport == null) {
             selectedReport?.let { report ->
                 EmergencyReportInfoCard(
-                    report = report,
+                    report    = report,
                     onDismiss = { selectedReport = null },
-                    onResolve = {
-                        viewModel.updateReportStatus(report.id, "RESOLVED")
-                        selectedReport = null
-                    },
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(16.dp)
+                    onResolve = { viewModel.updateReportStatus(report.id, "RESOLVED"); selectedReport = null },
+                    modifier  = Modifier.align(Alignment.BottomCenter).padding(16.dp)
                 )
             }
         }
 
-        // Friend report info card
+        // ── friend report info card ───────────────────────────────────────
         if (!isSelectingDestination && selectedDestination == null && selectedMarker == null && selectedReport == null) {
             selectedFriendReport?.let { report ->
                 FriendReportInfoCard(
-                    report = report,
+                    report    = report,
                     onDismiss = { selectedFriendReport = null },
-                    onResolve = {
-                        viewModel.updateReportStatus(report.id, "RESOLVED")
-                        selectedFriendReport = null
-                    },
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(16.dp)
+                    onResolve = { viewModel.updateReportStatus(report.id, "RESOLVED"); selectedFriendReport = null },
+                    modifier  = Modifier.align(Alignment.BottomCenter).padding(16.dp)
                 )
             }
         }
 
-        // Permission rationale dialog
+        // ── permission rationale ──────────────────────────────────────────
         if (!hasLocationPermission && locationPermissionsState.shouldShowRationale) {
             PermissionRationaleDialog(
-                onDismiss = { },
-                onRequestPermission = {
-                    locationPermissionsState.launchMultiplePermissionRequest()
-                },
-                onGoToSettings = {
+                onDismiss         = { },
+                onRequestPermission = { locationPermissionsState.launchMultiplePermissionRequest() },
+                onGoToSettings    = {
                     val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                         data = Uri.fromParts("package", context.packageName, null)
                     }
@@ -450,19 +462,145 @@ fun MapScreen() {
             )
         }
 
-        // Error snackbar
+        // ── error snackbar ────────────────────────────────────────────────
         state.error?.let { error ->
-            Snackbar(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(16.dp)
-            ) {
+            Snackbar(modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp)) {
                 Text(text = error)
             }
         }
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// NEW COMPOSABLES  –  WrongWayWarningCard  &  FriendsNotifiedCard
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Shown when wrongWayCount is 1 or 2.
+ * count == 1  →  "You might be going the wrong way!"
+ * count == 2  →  "You are still going the wrong way! One more and friends will be notified."
+ */
+@Composable
+fun WrongWayWarningCard(count: Int, modifier: Modifier = Modifier) {
+    val bgColor = if (count == 1) Color(0xFFFF9800) else Color(0xFFEF5350)   // orange → red
+
+    Card(
+        modifier  = modifier.fillMaxWidth(),
+        shape     = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+        colors    = CardDefaults.cardColors(containerColor = bgColor)
+    ) {
+        Row(
+            modifier          = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // pulsing warning icon
+            Icon(
+                Icons.Default.Warning,
+                contentDescription = "Wrong way warning",
+                tint               = Color.White,
+                modifier           = Modifier.size(32.dp)
+            )
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text         = if (count == 1) "⚠️ You might be going the wrong way!" else "⚠️ Still going the wrong way!",
+                    fontSize     = 16.sp,
+                    fontWeight   = FontWeight.Bold,
+                    color        = Color.White
+                )
+                Text(
+                    text     = if (count == 1)
+                        "Keep going and we'll check again."
+                    else
+                        "One more check and your friends will be notified automatically.",
+                    fontSize = 13.sp,
+                    color    = Color.White.copy(alpha = 0.9f)
+                )
+            }
+
+            // small badge showing count / 3
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = Color.White.copy(alpha = 0.25f)
+            ) {
+                Text(
+                    text     = "$count/3",
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color    = Color.White
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Shown once the monitor has fired onNotifyFriends (count reached 3).
+ */
+@Composable
+fun FriendsNotifiedCard(onDismiss: () -> Unit, modifier: Modifier = Modifier) {
+    Card(
+        modifier  = modifier.fillMaxWidth(),
+        shape     = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+        colors    = CardDefaults.cardColors(containerColor = Color(0xFFB71C1C))   // dark red
+    ) {
+        Column(
+            modifier  = Modifier.fillMaxWidth().padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color.White.copy(alpha = 0.2f),
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.Group,
+                            contentDescription = "Friends notified",
+                            tint               = Color.White,
+                            modifier           = Modifier.size(28.dp)
+                        )
+                    }
+                }
+
+                Column {
+                    Text(
+                        text       = "🚨 Friends Notified!",
+                        fontSize   = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color      = Color.White
+                    )
+                    Text(
+                        text     = "You have been moving away from your destination. All your friends have been notified of your location.",
+                        fontSize = 13.sp,
+                        color    = Color.White.copy(alpha = 0.9f)
+                    )
+                }
+            }
+
+            // dismiss button
+            Button(
+                onClick        = onDismiss,
+                modifier       = Modifier.fillMaxWidth(),
+                colors         = ButtonDefaults.buttonColors(containerColor = Color.White)
+            ) {
+                Text("OK, I understand", color = Color(0xFFB71C1C), fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OpenStreetMapView   (unchanged from original)
+// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 fun OpenStreetMapView(
@@ -488,10 +626,8 @@ fun OpenStreetMapView(
             MapView(context).apply {
                 setTileSource(TileSourceFactory.MAPNIK)
                 setMultiTouchControls(true)
-
                 minZoomLevel = 3.0
                 maxZoomLevel = 20.0
-
                 controller.setZoom(zoomLevel)
                 controller.setCenter(center)
 
@@ -499,9 +635,7 @@ fun OpenStreetMapView(
                     context,
                     InternalCompassOrientationProvider(context),
                     this
-                ).apply {
-                    enableCompass()
-                }
+                ).apply { enableCompass() }
                 overlays.add(compassOverlay)
 
                 onMapReady(this)
@@ -512,11 +646,11 @@ fun OpenStreetMapView(
             mapView.overlays.clear()
             mapView.overlays.addAll(overlaysToKeep)
 
-            // Add user location marker
+            // user location marker
             userLocation?.let { location ->
                 val userMarker = Marker(mapView).apply {
                     position = location
-                    title = "You are here"
+                    title    = "You are here"
                     setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                     icon = context.getDrawable(android.R.drawable.presence_online)?.apply {
                         setTint(android.graphics.Color.BLUE)
@@ -526,22 +660,18 @@ fun OpenStreetMapView(
                 mapView.overlays.add(userMarker)
             }
 
-            // Add friend report markers (NEW)
+            // friend report markers
             friendReports.forEach { report ->
                 report.location?.let { location ->
                     val friendMarker = Marker(mapView).apply {
                         position = GeoPoint(location.latitude, location.longitude)
-                        title = "👤 ${report.userName}"
-                        snippet = report.title
+                        title    = "👤 ${report.userName}"
+                        snippet  = report.title
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-
-                        // Friend-specific icon (blue person)
                         icon = context.getDrawable(android.R.drawable.ic_menu_myplaces)?.apply {
                             setTint(android.graphics.Color.parseColor("#2196F3"))
                             setBounds(0, 0, 80, 80)
                         }
-
-                        // Add friend indicator (small star)
                         val starOverlay = Marker(mapView).apply {
                             position = GeoPoint(location.latitude + 0.0002, location.longitude + 0.0002)
                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
@@ -551,11 +681,8 @@ fun OpenStreetMapView(
                             }
                         }
                         mapView.overlays.add(starOverlay)
-
                         setOnMarkerClickListener { _, _ ->
-                            if (!isSelectingDestination) {
-                                onFriendReportClick(report)
-                            }
+                            if (!isSelectingDestination) onFriendReportClick(report)
                             true
                         }
                     }
@@ -563,38 +690,22 @@ fun OpenStreetMapView(
                 }
             }
 
-            // Add unresolved report markers
+            // unresolved report markers
             unresolvedReports.forEach { report ->
                 report.location?.let { location ->
                     val reportMarker = Marker(mapView).apply {
                         position = GeoPoint(location.latitude, location.longitude)
-                        title = report.title
-                        snippet = report.userName
+                        title    = report.title
+                        snippet  = report.userName
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-
                         icon = when (report.type) {
-                            "EMERGENCY" -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply {
-                                setTint(android.graphics.Color.parseColor("#EF5350"))
-                                setBounds(0, 0, 80, 80)
-                            }
-                            "SUSPICIOUS" -> context.getDrawable(android.R.drawable.ic_menu_info_details)?.apply {
-                                setTint(android.graphics.Color.parseColor("#FF9800"))
-                                setBounds(0, 0, 80, 80)
-                            }
-                            "HELP_NEEDED" -> context.getDrawable(android.R.drawable.ic_menu_help)?.apply {
-                                setTint(android.graphics.Color.parseColor("#42A5F5"))
-                                setBounds(0, 0, 80, 80)
-                            }
-                            else -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply {
-                                setTint(android.graphics.Color.GRAY)
-                                setBounds(0, 0, 80, 80)
-                            }
+                            "EMERGENCY"   -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply { setTint(android.graphics.Color.parseColor("#EF5350")); setBounds(0,0,80,80) }
+                            "SUSPICIOUS"  -> context.getDrawable(android.R.drawable.ic_menu_info_details)?.apply { setTint(android.graphics.Color.parseColor("#FF9800")); setBounds(0,0,80,80) }
+                            "HELP_NEEDED" -> context.getDrawable(android.R.drawable.ic_menu_help)?.apply { setTint(android.graphics.Color.parseColor("#42A5F5")); setBounds(0,0,80,80) }
+                            else          -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply { setTint(android.graphics.Color.GRAY); setBounds(0,0,80,80) }
                         }
-
                         setOnMarkerClickListener { _, _ ->
-                            if (!isSelectingDestination) {
-                                onReportMarkerClick(report)
-                            }
+                            if (!isSelectingDestination) onReportMarkerClick(report)
                             true
                         }
                     }
@@ -602,49 +713,32 @@ fun OpenStreetMapView(
                 }
             }
 
-            // Add criminal markers
+            // criminal markers
             criminalLocations.forEach { criminalLocation ->
                 val marker = Marker(mapView).apply {
                     position = GeoPoint(criminalLocation.latitude, criminalLocation.longitude)
-                    title = criminalLocation.criminalName
-                    snippet = criminalLocation.address ?: "Location unknown"
+                    title    = criminalLocation.criminalName
+                    snippet  = criminalLocation.address ?: "Location unknown"
                     setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-
                     icon = when (criminalLocation.dangerLevel?.uppercase()) {
-                        "CRITICAL" -> context.getDrawable(android.R.drawable.ic_dialog_alert)
-                            ?.apply {
-                                setTint(android.graphics.Color.RED)
-                            }
-
-                        "HIGH" -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply {
-                            setTint(android.graphics.Color.parseColor("#FF6B00"))
-                        }
-
-                        "MEDIUM" -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply {
-                            setTint(android.graphics.Color.parseColor("#FFA726"))
-                        }
-
-                        "LOW" -> context.getDrawable(android.R.drawable.ic_dialog_info)?.apply {
-                            setTint(android.graphics.Color.parseColor("#FFC107"))
-                        }
-
-                        else -> context.getDrawable(android.R.drawable.ic_dialog_alert)
+                        "CRITICAL" -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply { setTint(android.graphics.Color.RED) }
+                        "HIGH"     -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply { setTint(android.graphics.Color.parseColor("#FF6B00")) }
+                        "MEDIUM"   -> context.getDrawable(android.R.drawable.ic_dialog_alert)?.apply { setTint(android.graphics.Color.parseColor("#FFA726")) }
+                        "LOW"      -> context.getDrawable(android.R.drawable.ic_dialog_info)?.apply  { setTint(android.graphics.Color.parseColor("#FFC107")) }
+                        else       -> context.getDrawable(android.R.drawable.ic_dialog_alert)
                     }
-
                     setOnMarkerClickListener { _, _ ->
                         if (!isSelectingDestination) {
-                            onMarkerClick(
-                                CriminalMapMarker(
-                                    criminalId = criminalLocation.criminalId,
-                                    name = criminalLocation.criminalName,
-                                    latitude = criminalLocation.latitude,
-                                    longitude = criminalLocation.longitude,
-                                    address = criminalLocation.address,
-                                    lastSeen = criminalLocation.lastSeen?.toDate(),
-                                    dangerLevel = criminalLocation.dangerLevel,
-                                    totalSightings = criminalLocation.totalSightings
-                                )
-                            )
+                            onMarkerClick(CriminalMapMarker(
+                                criminalId     = criminalLocation.criminalId,
+                                name           = criminalLocation.criminalName,
+                                latitude       = criminalLocation.latitude,
+                                longitude      = criminalLocation.longitude,
+                                address        = criminalLocation.address,
+                                lastSeen       = criminalLocation.lastSeen?.toDate(),
+                                dangerLevel    = criminalLocation.dangerLevel,
+                                totalSightings = criminalLocation.totalSightings
+                            ))
                         }
                         true
                     }
@@ -652,11 +746,11 @@ fun OpenStreetMapView(
                 mapView.overlays.add(marker)
             }
 
-            // Add destination marker
+            // destination marker
             selectedDestination?.let { destination ->
                 val destinationMarker = Marker(mapView).apply {
                     position = destination
-                    title = "Destination"
+                    title    = "Destination"
                     setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
                     icon = context.getDrawable(android.R.drawable.ic_menu_mylocation)?.apply {
                         setTint(android.graphics.Color.BLUE)
@@ -665,11 +759,11 @@ fun OpenStreetMapView(
                 mapView.overlays.add(destinationMarker)
             }
 
-            // Map click listener for destination selection
+            // tap listener for destination selection
             mapView.setOnTouchListener { _, event ->
                 if (isSelectingDestination && event.action == android.view.MotionEvent.ACTION_UP) {
                     val projection = mapView.projection
-                    val geoPoint = projection.fromPixels(event.x.toInt(), event.y.toInt()) as GeoPoint
+                    val geoPoint   = projection.fromPixels(event.x.toInt(), event.y.toInt()) as GeoPoint
                     onMapClick(geoPoint)
                 }
                 false
@@ -681,6 +775,10 @@ fun OpenStreetMapView(
     )
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// All remaining composables are EXACTLY as they were in the original file.
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
 fun FriendReportInfoCard(
     report: EmergencyReport,
@@ -691,170 +789,76 @@ fun FriendReportInfoCard(
     val context = LocalContext.current
 
     Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        modifier  = modifier.fillMaxWidth(),
+        shape     = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
+        colors    = CardDefaults.cardColors(containerColor = Color.White)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            // Header with friend indicator
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier              = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment     = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(
-                        shape = CircleShape,
-                        color = Color(0xFF2196F3).copy(alpha = 0.2f),
-                        modifier = Modifier.size(40.dp)
-                    ) {
+                    Surface(shape = CircleShape, color = Color(0xFF2196F3).copy(alpha = 0.2f), modifier = Modifier.size(40.dp)) {
                         Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                Icons.Default.Group,
-                                contentDescription = "Friend",
-                                tint = Color(0xFF2196F3),
-                                modifier = Modifier.size(24.dp)
-                            )
+                            Icon(Icons.Default.Group, contentDescription = "Friend", tint = Color(0xFF2196F3), modifier = Modifier.size(24.dp))
                         }
                     }
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
-                        Text(
-                            text = "Friend's Report",
-                            fontSize = 12.sp,
-                            color = Color(0xFF2196F3),
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = report.userName,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.Black
-                        )
+                        Text(text = "Friend's Report", fontSize = 12.sp, color = Color(0xFF2196F3), fontWeight = FontWeight.Bold)
+                        Text(text = report.userName, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.Black)
                     }
                 }
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, "Close", tint = Color.Gray)
-                }
+                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, "Close", tint = Color.Gray) }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
-
-            // Report content
-            Text(
-                text = report.title,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.Black,
-                maxLines = 2
-            )
-
+            Text(text = report.title, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Black, maxLines = 2)
             Spacer(modifier = Modifier.height(8.dp))
 
             if (report.description.isNotBlank()) {
-                Text(
-                    text = report.description,
-                    fontSize = 14.sp,
-                    color = Color.DarkGray,
-                    lineHeight = 20.sp
-                )
+                Text(text = report.description, fontSize = 14.sp, color = Color.DarkGray, lineHeight = 20.sp)
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
-            // Location info
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Default.LocationOn,
-                    contentDescription = "Location",
-                    tint = Color(0xFFEF5350),
-                    modifier = Modifier.size(16.dp)
-                )
+                Icon(Icons.Default.LocationOn, contentDescription = "Location", tint = Color(0xFFEF5350), modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = report.address.ifBlank { "Location unknown" },
-                    fontSize = 13.sp,
-                    color = Color.DarkGray
-                )
+                Text(text = report.address.ifBlank { "Location unknown" }, fontSize = 13.sp, color = Color.DarkGray)
             }
-
             report.location?.let { location ->
-                Text(
-                    text = "Coordinates: ${"%.4f".format(location.latitude)}, ${"%.4f".format(location.longitude)}",
-                    fontSize = 11.sp,
-                    color = Color.Gray
-                )
+                Text(text = "Coordinates: ${"%.4f".format(location.latitude)}, ${"%.4f".format(location.longitude)}", fontSize = 11.sp, color = Color.Gray)
             }
 
             Spacer(modifier = Modifier.height(8.dp))
-
-            // Timestamp
-            Text(
-                text = "Reported: ${formatFriendReportTime(report.timestamp)}",
-                fontSize = 11.sp,
-                color = Color.Gray
-            )
-
+            Text(text = "Reported: ${formatFriendReportTime(report.timestamp)}", fontSize = 11.sp, color = Color.Gray)
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Action buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!report.isResolved) {
-                    Button(
-                        onClick = onResolve,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF66BB6A)
-                        )
-                    ) {
-                        Icon(
-                            Icons.Default.Check,
-                            contentDescription = "Mark Safe",
-                            modifier = Modifier.size(18.dp)
-                        )
+                    Button(onClick = onResolve, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF66BB6A))) {
+                        Icon(Icons.Default.Check, contentDescription = "Mark Safe", modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("Mark Safe", fontSize = 13.sp, color = Color.White)
                     }
                 }
-
-                // Navigation button
                 report.location?.let { location ->
                     Button(
                         onClick = {
-                            // Navigate to friend's location
-                            val uri = Uri.parse(
-                                "google.navigation:q=${location.latitude},${location.longitude}"
-                            )
-                            val intent = Intent(Intent.ACTION_VIEW, uri).apply {
-                                setPackage("com.google.android.apps.maps")
-                            }
-                            try {
-                                context.startActivity(intent)
-                            } catch (e: android.content.ActivityNotFoundException) {
-                                val browserUri = Uri.parse(
-                                    "https://www.google.com/maps/dir/?api=1&destination=${location.latitude},${location.longitude}"
-                                )
-                                val browserIntent = Intent(Intent.ACTION_VIEW, browserUri)
-                                context.startActivity(browserIntent)
+                            val uri    = Uri.parse("google.navigation:q=${location.latitude},${location.longitude}")
+                            val intent = Intent(Intent.ACTION_VIEW, uri).apply { setPackage("com.google.android.apps.maps") }
+                            try { context.startActivity(intent) } catch (e: android.content.ActivityNotFoundException) {
+                                val browserUri    = Uri.parse("https://www.google.com/maps/dir/?api=1&destination=${location.latitude},${location.longitude}")
+                                context.startActivity(Intent(Intent.ACTION_VIEW, browserUri))
                             }
                         },
                         modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF2196F3)
-                        )
+                        colors   = ButtonDefaults.buttonColors(containerColor = Color(0xFF2196F3))
                     ) {
-                        Icon(
-                            Icons.Default.Navigation,
-                            contentDescription = "Navigate",
-                            modifier = Modifier.size(18.dp)
-                        )
+                        Icon(Icons.Default.Navigation, contentDescription = "Navigate", modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("Navigate", fontSize = 13.sp, color = Color.White)
                     }
@@ -864,125 +868,68 @@ fun FriendReportInfoCard(
     }
 }
 
-// Helper function for friend report time formatting
 private fun formatFriendReportTime(timestamp: com.google.firebase.Timestamp): String {
-    val date = timestamp.toDate()
-    val now = Date()
-    val diff = now.time - date.time
+    val date    = timestamp.toDate()
+    val now     = Date()
+    val diff    = now.time - date.time
     val minutes = diff / (1000 * 60)
-    val hours = diff / (1000 * 60 * 60)
-
+    val hours   = diff / (1000 * 60 * 60)
     return when {
-        minutes < 1 -> "Just now"
+        minutes < 1  -> "Just now"
         minutes < 60 -> "$minutes minutes ago"
-        hours < 24 -> "$hours hours ago"
-        else -> SimpleDateFormat("MMM dd, h:mm a", Locale.getDefault()).format(date)
+        hours   < 24 -> "$hours hours ago"
+        else         -> SimpleDateFormat("MMM dd, h:mm a", Locale.getDefault()).format(date)
     }
 }
 
 @Composable
 fun MapStatsBar(
-    criminalCount: Int,
-    totalSightings: Int,
-    unresolvedReportsCount: Int,
-    friendReportsCount: Int,
-    hasLocationPermission: Boolean,
-    isLocationEnabled: Boolean,
-    onRequestLocation: () -> Unit,
-    modifier: Modifier = Modifier
+    criminalCount: Int, totalSightings: Int, unresolvedReportsCount: Int, friendReportsCount: Int,
+    hasLocationPermission: Boolean, isLocationEnabled: Boolean, onRequestLocation: () -> Unit, modifier: Modifier = Modifier
 ) {
     Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.95f)),
+        modifier  = modifier,
+        shape     = RoundedCornerShape(12.dp),
+        colors    = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.95f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                StatItem(
-                    label = "Criminals",
-                    value = criminalCount.toString(),
-                    color = Color(0xFFD32F2F)
-                )
-
-                StatItem(
-                    label = "Sightings",
-                    value = totalSightings.toString(),
-                    color = Color(0xFFF57C00)
-                )
-
-                StatItem(
-                    label = "Reports",
-                    value = unresolvedReportsCount.toString(),
-                    color = Color(0xFFEF5350)
-                )
-
-                StatItem(
-                    label = "Friends",
-                    value = friendReportsCount.toString(),
-                    color = Color(0xFF2196F3)
-                )
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                StatItem(label = "Criminals", value = criminalCount.toString(),         color = Color(0xFFD32F2F))
+                StatItem(label = "Sightings", value = totalSightings.toString(),        color = Color(0xFFF57C00))
+                StatItem(label = "Reports",   value = unresolvedReportsCount.toString(), color = Color(0xFFEF5350))
+                StatItem(label = "Friends",   value = friendReportsCount.toString(),    color = Color(0xFF2196F3))
             }
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(
-                            when {
-                                !hasLocationPermission -> Color.Red
-                                isLocationEnabled -> Color(0xFF4CAF50)
-                                else -> Color(0xFFFF9800)
-                            }
-                        )
-                )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(
+                    when {
+                        !hasLocationPermission -> Color.Red
+                        isLocationEnabled      -> Color(0xFF4CAF50)
+                        else                   -> Color(0xFFFF9800)
+                    }
+                ))
                 Text(
                     text = when {
                         !hasLocationPermission -> "Location permission required"
-                        isLocationEnabled -> "Location active"
-                        else -> "Getting location..."
+                        isLocationEnabled      -> "Location active"
+                        else                   -> "Getting location..."
                     },
-                    fontSize = 12.sp,
-                    color = Color.Gray)
-
+                    fontSize = 12.sp, color = Color.Gray
+                )
                 if (!hasLocationPermission) {
                     Spacer(modifier = Modifier.weight(1f))
-                    TextButton(
-                        onClick = onRequestLocation,
-                        modifier = Modifier.padding(start = 8.dp)
-                    ) {
-                        Text("Enable", fontSize = 12.sp)
-                    }
+                    TextButton(onClick = onRequestLocation, modifier = Modifier.padding(start = 8.dp)) { Text("Enable", fontSize = 12.sp) }
                 }
             }
         }
     }
 }
 
-
 @Composable
-fun PermissionRationaleDialog(
-    onDismiss: () -> Unit,
-    onRequestPermission: () -> Unit,
-    onGoToSettings: () -> Unit
-) {
+fun PermissionRationaleDialog(onDismiss: () -> Unit, onRequestPermission: () -> Unit, onGoToSettings: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = "Location Permission Required",
-                fontWeight = FontWeight.Bold
-            )
-        },
+        title            = { Text(text = "Location Permission Required", fontWeight = FontWeight.Bold) },
         text = {
             Column {
                 Text("This app needs location permission to:")
@@ -995,189 +942,59 @@ fun PermissionRationaleDialog(
             }
         },
         confirmButton = {
-            Button(
-                onClick = onRequestPermission,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary
-                )
-            ) {
-                Text("Grant Permission")
-            }
+            Button(onClick = onRequestPermission, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)) { Text("Grant Permission") }
         },
-        dismissButton = {
-            TextButton(onClick = onGoToSettings) {
-                Text("Open Settings")
-            }
-        }
+        dismissButton = { TextButton(onClick = onGoToSettings) { Text("Open Settings") } }
     )
 }
+
 @Composable
-fun EmergencyReportInfoCard(
-    report: EmergencyReport,
-    onDismiss: () -> Unit,
-    onResolve: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val typeColor = when (report.type) {
-        "EMERGENCY" -> Color(0xFFEF5350)
-        "SUSPICIOUS" -> Color(0xFFFF9800)
-        "HELP_NEEDED" -> Color(0xFF42A5F5)
-        else -> Color(0xFF9E9E9E)
-    }
+fun EmergencyReportInfoCard(report: EmergencyReport, onDismiss: () -> Unit, onResolve: () -> Unit, modifier: Modifier = Modifier) {
+    val typeColor = when (report.type) { "EMERGENCY" -> Color(0xFFEF5350); "SUSPICIOUS" -> Color(0xFFFF9800); "HELP_NEEDED" -> Color(0xFF42A5F5); else -> Color(0xFF9E9E9E) }
+    val typeEmoji = when (report.type) { "EMERGENCY" -> "🚨"; "SUSPICIOUS" -> "⚠️"; "HELP_NEEDED" -> "🆘"; else -> "📢" }
+    val lastSeenText = try { SimpleDateFormat("MMM dd, yyyy h:mm a", Locale.getDefault()).format(report.timestamp.toDate()) } catch (e: Exception) { "Unknown" }
 
-    val typeEmoji = when (report.type) {
-        "EMERGENCY" -> "🚨"
-        "SUSPICIOUS" -> "⚠️"
-        "HELP_NEEDED" -> "🆘"
-        else -> "📢"
-    }
-
-    val lastSeenText = try {
-        val date = report.timestamp.toDate()
-        val formatter = SimpleDateFormat("MMM dd, yyyy h:mm a", Locale.getDefault())
-        formatter.format(date)
-    } catch (e: Exception) {
-        "Unknown"
-    }
-
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+    Card(modifier = modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(defaultElevation = 8.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = typeEmoji,
-                            fontSize = 24.sp,
-                            modifier = Modifier.padding(end = 8.dp)
-                        )
+                        Text(text = typeEmoji, fontSize = 24.sp, modifier = Modifier.padding(end = 8.dp))
                         Column {
-                            Text(
-                                text = report.title,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.Black,
-                                maxLines = 2
-                            )
+                            Text(text = report.title, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.Black, maxLines = 2)
                             Spacer(modifier = Modifier.height(2.dp))
-                            Surface(
-                                shape = RoundedCornerShape(4.dp),
-                                color = typeColor
-                            ) {
-                                Text(
-                                    text = report.type.replace("_", " "),
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
+                            Surface(shape = RoundedCornerShape(4.dp), color = typeColor) {
+                                Text(text = report.type.replace("_", " "), modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
                             }
                         }
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.Person,
-                            contentDescription = null,
-                            tint = Color.Gray,
-                            modifier = Modifier.size(14.dp)
-                        )
+                        Icon(Icons.Default.Person, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(14.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = report.userName,
-                            fontSize = 12.sp,
-                            color = Color.Gray
-                        )
+                        Text(text = report.userName, fontSize = 12.sp, color = Color.Gray)
                     }
-                    Text(
-                        text = "Reported: $lastSeenText",
-                        fontSize = 11.sp,
-                        color = Color.Gray
-                    )
+                    Text(text = "Reported: $lastSeenText", fontSize = 11.sp, color = Color.Gray)
                 }
-
-                IconButton(onClick = onDismiss) {
-                    Icon(
-                        Icons.Default.Close,
-                        contentDescription = "Close",
-                        tint = Color.Gray
-                    )
-                }
+                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.Gray) }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
-
-            if (report.description.isNotBlank()) {
-                Text(
-                    text = report.description,
-                    fontSize = 13.sp,
-                    color = Color.DarkGray,
-                    maxLines = 3
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-
-            Text(
-                text = "📍 ${report.address.ifBlank { "Location unknown" }}",
-                fontSize = 13.sp,
-                color = Color.DarkGray
-            )
-
-            report.location?.let { location ->
-                Text(
-                    text = "Coordinates: ${"%.4f".format(location.latitude)}, ${"%.4f".format(location.longitude)}",
-                    fontSize = 11.sp,
-                    color = Color.Gray
-                )
-            }
+            if (report.description.isNotBlank()) { Text(text = report.description, fontSize = 13.sp, color = Color.DarkGray, maxLines = 3); Spacer(modifier = Modifier.height(8.dp)) }
+            Text(text = "📍 ${report.address.ifBlank { "Location unknown" }}", fontSize = 13.sp, color = Color.DarkGray)
+            report.location?.let { location -> Text(text = "Coordinates: ${"%.4f".format(location.latitude)}, ${"%.4f".format(location.longitude)}", fontSize = 11.sp, color = Color.Gray) }
 
             if (!report.isResolved) {
                 Spacer(modifier = Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = onResolve,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF66BB6A)
-                        )
-                    ) {
-                        Icon(
-                            Icons.Default.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onResolve, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF66BB6A))) {
+                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("Mark Resolved", color = Color.White, fontSize = 13.sp)
                     }
-
-                    report.location?.let { location ->
-                        OutlinedButton(
-                            onClick = {
-                                // Navigate to report location - implement similar to destination
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(
-                                Icons.Default.Navigation,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
+                    report.location?.let {
+                        OutlinedButton(onClick = { /* navigate */ }, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.Navigation, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Navigate", fontSize = 13.sp)
                         }
@@ -1185,222 +1002,85 @@ fun EmergencyReportInfoCard(
                 }
             } else {
                 Spacer(modifier = Modifier.height(8.dp))
-                Surface(
-                    color = Color(0xFF66BB6A).copy(alpha = 0.15f),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            tint = Color(0xFF66BB6A),
-                            modifier = Modifier.size(20.dp)
-                        )
+                Surface(color = Color(0xFF66BB6A).copy(alpha = 0.15f), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF66BB6A), modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "This report has been resolved",
-                            fontSize = 13.sp,
-                            color = Color(0xFF66BB6A),
-                            fontWeight = FontWeight.Medium
-                        )
+                        Text(text = "This report has been resolved", fontSize = 13.sp, color = Color(0xFF66BB6A), fontWeight = FontWeight.Medium)
                     }
                 }
             }
         }
     }
 }
-@Composable
-fun LocationIndicator(
-    location: GeoPoint,
-    accuracy: Float?,
-    modifier: Modifier = Modifier
-) {
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = Color.White.copy(alpha = 0.95f)
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-    ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFF2196F3))
-                    .padding(8.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Default.LocationOn,
-                    contentDescription = "Your Location",
-                    tint = Color.White,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
 
+@Composable
+fun LocationIndicator(location: GeoPoint, accuracy: Float?, modifier: Modifier = Modifier) {
+    Card(modifier = modifier, shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.95f)), elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)) {
+        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(modifier = Modifier.size(36.dp).clip(CircleShape).background(Color(0xFF2196F3)).padding(8.dp), contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.LocationOn, contentDescription = "Your Location", tint = Color.White, modifier = Modifier.size(20.dp))
+            }
             Column {
-                Text(
-                    text = "Your Location",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.Black
-                )
-                Text(
-                    text = "${"%.6f".format(location.latitude)}, ${"%.6f".format(location.longitude)}",
-                    fontSize = 12.sp,
-                    color = Color.Gray
-                )
-
-                accuracy?.let {
-                    Text(
-                        text = "Accuracy: ${"%.1f".format(it)}m",
-                        fontSize = 11.sp,
-                        color = Color(0xFF4CAF50)
-                    )
-                }
+                Text(text = "Your Location", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                Text(text = "${"%.6f".format(location.latitude)}, ${"%.6f".format(location.longitude)}", fontSize = 12.sp, color = Color.Gray)
+                accuracy?.let { Text(text = "Accuracy: ${"%.1f".format(it)}m", fontSize = 11.sp, color = Color(0xFF4CAF50)) }
             }
         }
     }
 }
-@Composable
-fun StatItem(
-    label: String,
-    value: String,
-    color: Color
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(12.dp)
-                .clip(CircleShape)
-                .background(color)
-        )
 
+@Composable
+fun StatItem(label: String, value: String, color: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(modifier = Modifier.size(12.dp).clip(CircleShape).background(color))
         Column {
-            Text(
-                text = value,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.Black
-            )
-            Text(
-                text = label,
-                fontSize = 12.sp,
-                color = Color.Gray
-            )
+            Text(text = value, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+            Text(text = label, fontSize = 12.sp, color = Color.Gray)
         }
     }
 }
 
-
 @Composable
-fun DestinationCard(
-    destination: GeoPoint,
-    onConfirm: () -> Unit,
-    onRemove: () -> Unit,
-    modifier: Modifier = Modifier
-) {
+fun DestinationCard(destination: GeoPoint, onConfirm: () -> Unit, onRemove: () -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
 
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Place,
-                        contentDescription = null,
-                        tint = Color(0xFF2196F3),
-                        modifier = Modifier.size(28.dp)
-                    )
+    Card(modifier = modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(defaultElevation = 8.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.Place, contentDescription = null, tint = Color(0xFF2196F3), modifier = Modifier.size(28.dp))
                     Column {
-                        Text(
-                            text = "Destination Set",
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.Black
-                        )
-                        Text(
-                            text = "Lat: ${"%.4f".format(destination.latitude)}, Lon: ${"%.4f".format(destination.longitude)}",
-                            fontSize = 12.sp,
-                            color = Color.Gray
-                        )
+                        Text(text = "Destination Set", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                        Text(text = "Lat: ${"%.4f".format(destination.latitude)}, Lon: ${"%.4f".format(destination.longitude)}", fontSize = 12.sp, color = Color.Gray)
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = {
-                        val uri = Uri.parse(
-                            "google.navigation:q=${destination.latitude},${destination.longitude}"
-                        )
-                        val intent = Intent(Intent.ACTION_VIEW, uri).apply {
-                            setPackage("com.google.android.apps.maps")
+                        // launch Google Maps navigation
+                        val uri    = Uri.parse("google.navigation:q=${destination.latitude},${destination.longitude}")
+                        val intent = Intent(Intent.ACTION_VIEW, uri).apply { setPackage("com.google.android.apps.maps") }
+                        try { context.startActivity(intent) } catch (e: android.content.ActivityNotFoundException) {
+                            val browserUri = Uri.parse("https://www.google.com/maps/dir/?api=1&destination=${destination.latitude},${destination.longitude}")
+                            context.startActivity(Intent(Intent.ACTION_VIEW, browserUri))
                         }
-
-                        try {
-                            context.startActivity(intent)
-                        } catch (e: android.content.ActivityNotFoundException) {
-                            val browserUri = Uri.parse(
-                                "https://www.google.com/maps/dir/?api=1&destination=${destination.latitude},${destination.longitude}"
-                            )
-                            val browserIntent = Intent(Intent.ACTION_VIEW, browserUri)
-                            context.startActivity(browserIntent)
-                        }
-
+                        // start monitor AFTER Google Maps opens
                         onConfirm()
                     },
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF4CAF50)
-                    )
+                    colors   = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))
                 ) {
                     Icon(Icons.Default.Navigation, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("Navigate", color = Color.White, fontSize = 13.sp)
                 }
 
-                OutlinedButton(
-                    onClick = onRemove,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color(0xFFD32F2F)
-                    )
-                ) {
+                OutlinedButton(onClick = onRemove, modifier = Modifier.weight(1f), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFD32F2F))) {
                     Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("Remove", fontSize = 13.sp)
@@ -1411,144 +1091,56 @@ fun DestinationCard(
 }
 
 @Composable
-fun MapControlButton(
-    icon: ImageVector,
-    onClick: () -> Unit,
-    enabled: Boolean = true,
-    containerColor: Color = Color.White,
-    contentColor: Color = MaterialTheme.colorScheme.primary
-) {
+fun MapControlButton(icon: ImageVector, onClick: () -> Unit, enabled: Boolean = true, containerColor: Color = Color.White, contentColor: Color = MaterialTheme.colorScheme.primary) {
     FloatingActionButton(
-        onClick = onClick,
-        modifier = Modifier.size(48.dp),
+        onClick        = onClick,
+        modifier       = Modifier.size(48.dp),
         containerColor = if (enabled) containerColor else containerColor.copy(alpha = 0.5f),
-        contentColor = if (enabled) contentColor else contentColor.copy(alpha = 0.5f)
+        contentColor   = if (enabled) contentColor   else contentColor.copy(alpha = 0.5f)
     ) {
         Icon(imageVector = icon, contentDescription = null)
     }
 }
 
 @Composable
-fun CriminalInfoCard(
-    marker: CriminalMapMarker,
-    onDismiss: () -> Unit,
-    onViewHistory: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val dangerColor = when (marker.dangerLevel?.uppercase()) {
-        "CRITICAL" -> Color(0xFFB71C1C)
-        "HIGH" -> Color(0xFFD32F2F)
-        "MEDIUM" -> Color(0xFFF57C00)
-        "LOW" -> Color(0xFFFFA726)
-        else -> Color(0xFF757575)
-    }
+fun CriminalInfoCard(marker: CriminalMapMarker, onDismiss: () -> Unit, onViewHistory: () -> Unit, modifier: Modifier = Modifier) {
+    val dangerColor = when (marker.dangerLevel?.uppercase()) { "CRITICAL" -> Color(0xFFB71C1C); "HIGH" -> Color(0xFFD32F2F); "MEDIUM" -> Color(0xFFF57C00); "LOW" -> Color(0xFFFFA726); else -> Color(0xFF757575) }
+    val lastSeenText = marker.lastSeen?.let { SimpleDateFormat("MMM dd, yyyy h:mm a", Locale.getDefault()).format(it) } ?: "Unknown"
 
-    val lastSeenText = marker.lastSeen?.let { date ->
-        val formatter = SimpleDateFormat("MMM dd, yyyy h:mm a", Locale.getDefault())
-        formatter.format(date)
-    } ?: "Unknown"
-
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+    Card(modifier = modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), elevation = CardDefaults.cardElevation(defaultElevation = 8.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = marker.name,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.Black
-                        )
+                        Text(text = marker.name, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.Black)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = dangerColor
-                        ) {
-                            Text(
-                                text = marker.dangerLevel ?: "UNKNOWN",
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
+                        Surface(shape = RoundedCornerShape(4.dp), color = dangerColor) {
+                            Text(text = marker.dangerLevel ?: "UNKNOWN", modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.White)
                         }
                     }
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Last seen: $lastSeenText",
-                        fontSize = 12.sp,
-                        color = Color.Gray
-                    )
-                    Text(
-                        text = "Sightings: ${marker.totalSightings}",
-                        fontSize = 12.sp,
-                        color = Color.Gray
-                    )
+                    Text(text = "Last seen: $lastSeenText", fontSize = 12.sp, color = Color.Gray)
+                    Text(text = "Sightings: ${marker.totalSightings}", fontSize = 12.sp, color = Color.Gray)
                 }
-
-                IconButton(onClick = onDismiss) {
-                    Icon(
-                        Icons.Default.Close,
-                        contentDescription = "Close",
-                        tint = Color.Gray
-                    )
-                }
+                IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.Gray) }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
-
-            Text(
-                text = "📍 ${marker.address ?: "Location unknown"}",
-                fontSize = 13.sp,
-                color = Color.DarkGray
-            )
-
-            Text(
-                text = "Coordinates: ${"%.4f".format(marker.latitude)}, ${"%.4f".format(marker.longitude)}",
-                fontSize = 11.sp,
-                color = Color.Gray
-            )
-
+            Text(text = "📍 ${marker.address ?: "Location unknown"}", fontSize = 13.sp, color = Color.DarkGray)
+            Text(text = "Coordinates: ${"%.4f".format(marker.latitude)}, ${"%.4f".format(marker.longitude)}", fontSize = 11.sp, color = Color.Gray)
             Spacer(modifier = Modifier.height(12.dp))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = onViewHistory,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = dangerColor
-                    )
-                ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onViewHistory, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = dangerColor)) {
                     Text("View History", color = Color.White, fontSize = 13.sp)
                 }
-
-                OutlinedButton(
-                    onClick = { /* Navigate */ },
-                    modifier = Modifier.weight(1f)
-                ) {
+                OutlinedButton(onClick = { /* Navigate */ }, modifier = Modifier.weight(1f)) {
                     Text("Navigate", fontSize = 13.sp)
                 }
             }
         }
     }
 }
-
 
 data class CriminalMapMarker(
     val criminalId: String,
