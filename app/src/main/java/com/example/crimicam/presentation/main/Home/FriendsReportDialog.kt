@@ -12,6 +12,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -25,6 +26,7 @@ import androidx.compose.ui.window.Dialog
 import com.example.crimicam.data.model.EmergencyReport
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlinx.coroutines.delay
 
 // Dark theme colors
 private val DarkBackground = Color(0xFF121212)
@@ -45,17 +47,44 @@ fun FriendReportsDialog(
     onUpdateStatus: (String, String) -> Unit
 ) {
     var selectedReport by remember { mutableStateOf<EmergencyReport?>(null) }
-    var showResolved by remember { mutableStateOf(false) }
+    var selectedTabIndex by remember { mutableStateOf(0) } // 0 = Active, 1 = Resolved
 
-    // Filter reports based on resolved status - SIMPLE: just use what Firestore says
-    val displayReports = if (showResolved) {
-        friendReports
-    } else {
-        friendReports.filter { !it.isResolved }
+    // Track reports being resolved to provide optimistic UI
+    var resolvingReportIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+
+    // Refresh data when dialog opens to ensure we have latest status
+    LaunchedEffect(Unit) {
+        println("🔄 FriendReportsDialog opened - refreshing data")
+        onRefresh()
     }
 
-    val unresolvedCount = friendReports.count { !it.isResolved }
-    val resolvedCount = friendReports.count { it.isResolved }
+    // Log the current state of reports
+    LaunchedEffect(friendReports) {
+        println("📊 FriendReportsDialog - Total reports: ${friendReports.size}")
+        friendReports.forEach { report ->
+            println("   ${report.id}: isResolved=${report.isResolved}, status=${report.status}")
+        }
+
+        // Clear resolving IDs for reports that are now actually resolved in Firestore
+        resolvingReportIds = resolvingReportIds.filterNot { id ->
+            friendReports.any { it.id == id && it.isResolved }
+        }.toSet()
+    }
+
+    // Split reports into active and resolved, considering both Firestore state and optimistic updates
+    val activeReports = friendReports.filter { report ->
+        !report.isResolved && report.id !in resolvingReportIds
+    }
+    val resolvedReports = friendReports.filter { report ->
+        report.isResolved || report.id in resolvingReportIds
+    }
+
+    // Display based on selected tab
+    val displayReports = if (selectedTabIndex == 0) activeReports else resolvedReports
+
+    println("📋 Tab: ${if (selectedTabIndex == 0) "Active" else "Resolved"}")
+    println("📋 Showing ${displayReports.size} reports (${activeReports.size} active, ${resolvedReports.size} resolved)")
+    println("📋 Resolving IDs: $resolvingReportIds")
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -93,11 +122,7 @@ fun FriendReportsDialog(
                                 color = TextPrimary
                             )
                             Text(
-                                text = if (showResolved) {
-                                    "$unresolvedCount active • $resolvedCount resolved"
-                                } else {
-                                    "$unresolvedCount active reports"
-                                },
+                                text = "${activeReports.size} active • ${resolvedReports.size} resolved",
                                 fontSize = 12.sp,
                                 color = TextSecondary
                             )
@@ -108,16 +133,6 @@ fun FriendReportsDialog(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Toggle resolved button
-                        IconButton(
-                            onClick = { showResolved = !showResolved }
-                        ) {
-                            Icon(
-                                if (showResolved) Icons.Default.CheckCircle else Icons.Default.CheckCircleOutline,
-                                contentDescription = "Toggle Resolved",
-                                tint = if (showResolved) Color(0xFF66BB6A) else TextPrimary
-                            )
-                        }
                         IconButton(onClick = onRefresh) {
                             Icon(Icons.Default.Refresh, "Refresh", tint = TextPrimary)
                         }
@@ -125,6 +140,76 @@ fun FriendReportsDialog(
                             Icon(Icons.Default.Close, "Close", tint = TextPrimary)
                         }
                     }
+                }
+
+                // Tabs
+                TabRow(
+                    selectedTabIndex = selectedTabIndex,
+                    containerColor = DarkCard,
+                    contentColor = Color(0xFFEF5350),
+                    indicator = { tabPositions ->
+                        TabRowDefaults.SecondaryIndicator(
+                            Modifier.tabIndicatorOffset(tabPositions[selectedTabIndex]),
+                            color = Color(0xFFEF5350)
+                        )
+                    }
+                ) {
+                    Tab(
+                        selected = selectedTabIndex == 0,
+                        onClick = { selectedTabIndex = 0 },
+                        text = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = "Active",
+                                    color = if (selectedTabIndex == 0) Color(0xFFEF5350) else TextSecondary
+                                )
+                                if (activeReports.isNotEmpty()) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color(0xFFEF5350)
+                                    ) {
+                                        Text(
+                                            text = "${activeReports.size}",
+                                            fontSize = 11.sp,
+                                            color = Color.White,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    )
+                    Tab(
+                        selected = selectedTabIndex == 1,
+                        onClick = { selectedTabIndex = 1 },
+                        text = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = "Resolved",
+                                    color = if (selectedTabIndex == 1) Color(0xFFEF5350) else TextSecondary
+                                )
+                                if (resolvedReports.isNotEmpty()) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color(0xFF66BB6A)
+                                    ) {
+                                        Text(
+                                            text = "${resolvedReports.size}",
+                                            fontSize = 11.sp,
+                                            color = Color.White,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    )
                 }
 
                 HorizontalDivider(color = DarkDivider)
@@ -180,15 +265,15 @@ fun FriendReportsDialog(
                             verticalArrangement = Arrangement.Center
                         ) {
                             Text(
-                                text = if (showResolved) "📭" else "✅",
+                                text = if (selectedTabIndex == 0) "✅" else "📭",
                                 fontSize = 64.sp
                             )
                             Spacer(modifier = Modifier.height(16.dp))
                             Text(
-                                text = if (showResolved) {
-                                    "No Emergency Reports"
+                                text = if (selectedTabIndex == 0) {
+                                    "No Active Reports"
                                 } else {
-                                    "All Reports Resolved!"
+                                    "No Resolved Reports"
                                 },
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.Medium,
@@ -196,10 +281,10 @@ fun FriendReportsDialog(
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = if (showResolved) {
-                                    "Reports from your friends will appear here"
+                                text = if (selectedTabIndex == 0) {
+                                    "All emergencies have been addressed!"
                                 } else {
-                                    "Great job! All emergencies have been addressed"
+                                    "No reports have been resolved yet"
                                 },
                                 fontSize = 14.sp,
                                 color = TextSecondary
@@ -217,11 +302,22 @@ fun FriendReportsDialog(
                                 items = displayReports,
                                 key = { it.id }
                             ) { report ->
+                                val isResolving = report.id in resolvingReportIds
                                 EmergencyReportCard(
                                     report = report,
+                                    isOptimisticallyResolved = isResolving,
+                                    showResolveButton = selectedTabIndex == 0,
                                     onClick = { selectedReport = report },
                                     onResolve = {
+                                        // Add to resolving set for optimistic UI
+                                        resolvingReportIds = resolvingReportIds + report.id
+                                        println("🔄 Marking ${report.id} as resolving")
+
+                                        // Call the actual update
                                         onUpdateStatus(report.id, "RESOLVED")
+
+                                        // Refresh to get latest data from Firestore
+                                        onRefresh()
                                     }
                                 )
                             }
@@ -234,11 +330,23 @@ fun FriendReportsDialog(
 
     // Report Detail Dialog
     selectedReport?.let { report ->
+        val isResolving = report.id in resolvingReportIds
         ReportDetailDialog(
             report = report,
+            isOptimisticallyResolved = isResolving,
             onDismiss = { selectedReport = null },
             onResolve = {
+                // Add to resolving set for optimistic UI
+                resolvingReportIds = resolvingReportIds + report.id
+                println("🔄 Marking ${report.id} as resolving")
+
+                // Call the actual update
                 onUpdateStatus(report.id, "RESOLVED")
+
+                // Refresh to get latest data from Firestore
+                onRefresh()
+
+                // Close detail dialog
                 selectedReport = null
             }
         )
@@ -248,11 +356,24 @@ fun FriendReportsDialog(
 @Composable
 fun EmergencyReportCard(
     report: EmergencyReport,
+    isOptimisticallyResolved: Boolean,
+    showResolveButton: Boolean,
     onClick: () -> Unit,
     onResolve: () -> Unit
 ) {
-    // SIMPLE: Just use what's in the report object from Firestore
-    val isResolved = report.isResolved
+    // Check resolved status: either from Firestore OR optimistic update
+    val isResolved = report.isResolved || isOptimisticallyResolved
+
+    // Log to prove we're using the correct value
+    LaunchedEffect(report.id, report.isResolved, isOptimisticallyResolved, showResolveButton) {
+        println("🔍 EmergencyReportCard [${report.id}]:")
+        println("   report.isResolved = ${report.isResolved}")
+        println("   isOptimisticallyResolved = $isOptimisticallyResolved")
+        println("   final isResolved = $isResolved")
+        println("   report.status = ${report.status}")
+        println("   showResolveButton = $showResolveButton")
+        println("   Will show button? ${showResolveButton && !isResolved}")
+    }
 
     val typeColor = when (report.type) {
         "EMERGENCY" -> Color(0xFFEF5350)
@@ -366,20 +487,32 @@ fun EmergencyReportCard(
                             color = Color(0xFF66BB6A).copy(alpha = 0.25f),
                             shape = RoundedCornerShape(4.dp)
                         ) {
-                            Text(
-                                text = "✓ Resolved",
-                                fontSize = 11.sp,
-                                color = Color(0xFF66BB6A),
-                                fontWeight = FontWeight.Medium,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "✓ Resolved",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF66BB6A),
+                                    fontWeight = FontWeight.Medium
+                                )
+                                if (isOptimisticallyResolved && !report.isResolved) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(12.dp),
+                                        strokeWidth = 2.dp,
+                                        color = Color(0xFF66BB6A)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            // Action Buttons - ONLY show if NOT resolved (based on Firestore data)
-            if (!isResolved) {
+            // Action Buttons - ONLY show in Active tab and when not resolved
+            if (showResolveButton && !isResolved) {
                 Spacer(modifier = Modifier.height(12.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -408,11 +541,22 @@ fun EmergencyReportCard(
 @Composable
 fun ReportDetailDialog(
     report: EmergencyReport,
+    isOptimisticallyResolved: Boolean,
     onDismiss: () -> Unit,
     onResolve: () -> Unit
 ) {
-    // SIMPLE: Just use what's in the report object from Firestore
-    val isResolved = report.isResolved
+    // Check resolved status: either from Firestore OR optimistic update
+    val isResolved = report.isResolved || isOptimisticallyResolved
+
+    // Log to prove we're using the correct value
+    LaunchedEffect(report.id, report.isResolved, isOptimisticallyResolved) {
+        println("🔍 ReportDetailDialog [${report.id}]:")
+        println("   report.isResolved = ${report.isResolved}")
+        println("   isOptimisticallyResolved = $isOptimisticallyResolved")
+        println("   final isResolved = $isResolved")
+        println("   report.status = ${report.status}")
+        println("   Showing resolve button? ${!isResolved}")
+    }
 
     val headerColor = when (report.type) {
         "EMERGENCY" -> Color(0xFFEF5350)
@@ -443,16 +587,28 @@ fun ReportDetailDialog(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = if (isResolved) {
-                                "✓ RESOLVED"
-                            } else {
-                                report.type.replace("_", " ")
-                            },
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = if (isResolved) {
+                                    "✓ RESOLVED"
+                                } else {
+                                    report.type.replace("_", " ")
+                                },
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            if (isOptimisticallyResolved && !report.isResolved) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Color.White
+                                )
+                            }
+                        }
                         IconButton(onClick = onDismiss) {
                             Icon(Icons.Default.Close, "Close", tint = Color.White)
                         }
@@ -570,7 +726,7 @@ fun ReportDetailDialog(
                     }
                 }
 
-                // Action Buttons - ONLY show if NOT resolved (based on Firestore data)
+                // Action Buttons - ONLY show if NOT resolved
                 if (!isResolved) {
                     Surface(
                         color = DarkCard,

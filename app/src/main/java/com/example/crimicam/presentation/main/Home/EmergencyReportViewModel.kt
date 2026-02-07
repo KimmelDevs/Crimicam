@@ -77,21 +77,8 @@ class EmergencyReportViewModel : ViewModel() {
         // Stop existing listener
         friendReportsListener?.remove()
 
-        // Force initial server fetch on startup
-        viewModelScope.launch {
-            try {
-                Log.d(TAG, "🔄 Forcing initial server fetch on startup...")
-                firestore.collection("emergency_reports")
-                    .whereArrayContains("friendsNotified", currentUser.uid)
-                    .orderBy("timestamp", Query.Direction.DESCENDING)
-                    .limit(50)
-                    .get(Source.SERVER)
-                    .await()
-                Log.d(TAG, "✅ Initial server fetch completed")
-            } catch (e: Exception) {
-                Log.w(TAG, "⚠️ Initial server fetch failed (will retry with listener): ${e.message}")
-            }
-        }
+        // Track if this is the first snapshot - skip cache on first load
+        var isFirstSnapshot = true
 
         try {
             friendReportsListener = firestore.collection("emergency_reports")
@@ -124,12 +111,24 @@ class EmergencyReportViewModel : ViewModel() {
                             Log.d(TAG, "   fromCache: $fromCache")
                             Log.d(TAG, "   hasPendingWrites: $hasPendingWrites")
                             Log.d(TAG, "   documentCount: ${snapshot.documents.size}")
+                            Log.d(TAG, "   isFirstSnapshot: $isFirstSnapshot")
 
-                            // IMPROVED: Only skip if from cache AND has pending writes
-                            // This ensures we process clean cache on restart
+                            // CRITICAL: Skip ALL cache snapshots on first load to ensure fresh data
+                            if (isFirstSnapshot && fromCache) {
+                                Log.d(TAG, "⏭️ Skipping FIRST snapshot from cache - waiting for server data")
+                                return@launch
+                            }
+
+                            // Skip if from cache AND has pending writes
                             if (fromCache && hasPendingWrites) {
                                 Log.d(TAG, "⏭️ Skipping cached snapshot with pending writes")
                                 return@launch
+                            }
+
+                            // Mark that we've processed the first snapshot
+                            if (isFirstSnapshot) {
+                                isFirstSnapshot = false
+                                Log.d(TAG, "✅ First snapshot processed - future cache snapshots will be accepted")
                             }
 
                             val reports = snapshot.documents.mapNotNull { doc ->
