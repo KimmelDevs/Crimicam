@@ -83,7 +83,7 @@ class EmergencyReportViewModel : ViewModel() {
         try {
             friendReportsListener = firestore.collection("emergency_reports")
                 .whereArrayContains("friendsNotified", currentUser.uid)
-                .orderBy("timestamp", Query.Direction.DESCENDING) // FIXED: Added orderBy
+                .orderBy("timestamp", Query.Direction.DESCENDING)
                 .limit(50)
                 .addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, error ->
                     if (error != null) {
@@ -148,7 +148,6 @@ class EmergencyReportViewModel : ViewModel() {
                                     }
 
                                     // SIMPLE: Just use what Firestore says
-                                    // If isResolved = true in Firestore, it's resolved. Done.
                                     report.copy(
                                         status = firestoreStatus,
                                         isResolved = firestoreIsResolved
@@ -514,28 +513,52 @@ class EmergencyReportViewModel : ViewModel() {
     }
 
     /**
-     * Update report status - SIMPLE VERSION
+     * Update report status - DELETES report when marked as resolved
      */
     fun updateReportStatus(reportId: String, status: String) {
         viewModelScope.launch {
             try {
-                Log.d(TAG, "📝 Updating report $reportId status to $status")
+                if (status == "RESOLVED" || status == "DELETE") {
+                    Log.d(TAG, "🗑️ Deleting report $reportId (marked as resolved)")
 
-                // Just update Firestore - the listener will update the UI
-                when (val result = repository.updateReportStatus(reportId, status)) {
-                    is Result.Success -> {
-                        Log.d(TAG, "✅ Report status updated successfully in Firestore")
+                    // Delete the report from Firestore
+                    when (val result = repository.deleteReport(reportId)) {
+                        is Result.Success -> {
+                            Log.d(TAG, "✅ Report deleted successfully from Firestore")
+
+                            // Remove from local state immediately
+                            _reportState.value = _reportState.value.copy(
+                                friendReports = _reportState.value.friendReports.filter { it.id != reportId },
+                                reports = _reportState.value.reports.filter { it.id != reportId }
+                            )
+                        }
+                        is Result.Error -> {
+                            Log.e(TAG, "❌ Error deleting report from Firestore", result.exception)
+                            _reportState.value = _reportState.value.copy(
+                                error = result.exception.message ?: "Failed to delete report"
+                            )
+                        }
+                        else -> {}
                     }
-                    is Result.Error -> {
-                        Log.e(TAG, "❌ Error updating report status in Firestore", result.exception)
-                        _reportState.value = _reportState.value.copy(
-                            error = result.exception.message ?: "Failed to update report"
-                        )
+                } else {
+                    // Legacy: update status (for other status types)
+                    Log.d(TAG, "📝 Updating report $reportId status to $status")
+
+                    when (val result = repository.updateReportStatus(reportId, status)) {
+                        is Result.Success -> {
+                            Log.d(TAG, "✅ Report status updated successfully in Firestore")
+                        }
+                        is Result.Error -> {
+                            Log.e(TAG, "❌ Error updating report status in Firestore", result.exception)
+                            _reportState.value = _reportState.value.copy(
+                                error = result.exception.message ?: "Failed to update report"
+                            )
+                        }
+                        else -> {}
                     }
-                    else -> {}
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "❌ Exception updating report status", e)
+                Log.e(TAG, "❌ Exception updating/deleting report status", e)
                 _reportState.value = _reportState.value.copy(
                     error = e.message ?: "Unknown error"
                 )
