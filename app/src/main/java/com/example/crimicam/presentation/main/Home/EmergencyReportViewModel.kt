@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.tasks.await
 
 class EmergencyReportViewModel : ViewModel() {
     private val repository = EmergencyReportRepository()
@@ -36,11 +37,6 @@ class EmergencyReportViewModel : ViewModel() {
     // Theme state - defaults to dark theme
     private val _isDarkTheme = MutableStateFlow(true)
     val isDarkTheme: StateFlow<Boolean> = _isDarkTheme.asStateFlow()
-
-    // Track optimistic updates to prevent listener from overwriting
-    private val optimisticUpdates = mutableMapOf<String, String>() // reportId to status
-    private var lastUpdateTimestamp = 0L
-    private val UPDATE_DEBOUNCE_MS = 2000L // 2 second debounce
 
     companion object {
         private const val TAG = "EmergencyReportVM"
@@ -69,7 +65,7 @@ class EmergencyReportViewModel : ViewModel() {
     }
 
     /**
-     * Start real-time listener for friend reports with SERVER SOURCE
+     * Start real-time listener for friend reports with improved handling
      */
     private fun startRealtimeReportUpdates() {
         val currentUser = auth.currentUser
@@ -81,52 +77,83 @@ class EmergencyReportViewModel : ViewModel() {
         // Stop existing listener
         friendReportsListener?.remove()
 
+        // Force initial server fetch on startup
+        viewModelScope.launch {
+            try {
+                Log.d(TAG, "🔄 Forcing initial server fetch on startup...")
+                firestore.collection("emergency_reports")
+                    .whereArrayContains("friendsNotified", currentUser.uid)
+                    .orderBy("timestamp", Query.Direction.DESCENDING)
+                    .limit(50)
+                    .get(Source.SERVER)
+                    .await()
+                Log.d(TAG, "✅ Initial server fetch completed")
+            } catch (e: Exception) {
+                Log.w(TAG, "⚠️ Initial server fetch failed (will retry with listener): ${e.message}")
+            }
+        }
+
         try {
             friendReportsListener = firestore.collection("emergency_reports")
                 .whereArrayContains("friendsNotified", currentUser.uid)
+                .orderBy("timestamp", Query.Direction.DESCENDING) // FIXED: Added orderBy
                 .limit(50)
                 .addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, error ->
                     if (error != null) {
-                        Log.e(TAG, "Error listening to friend reports", error)
+                        Log.e(TAG, "❌ Error listening to friend reports", error)
+                        Log.e(TAG, "   Error code: ${error.code}")
+                        Log.e(TAG, "   Error message: ${error.message}")
                         _reportState.value = _reportState.value.copy(
-                            error = error.message ?: "Failed to load reports"
+                            error = error.message ?: "Failed to load reports",
+                            isLoading = false
                         )
                         return@addSnapshotListener
                     }
 
-                    if (snapshot == null) return@addSnapshotListener
+                    if (snapshot == null) {
+                        Log.w(TAG, "⚠️ Received null snapshot")
+                        return@addSnapshotListener
+                    }
 
                     viewModelScope.launch {
                         try {
-                            // Check if data is from cache or server
                             val fromCache = snapshot.metadata.isFromCache
-                            Log.d(TAG, "📡 Snapshot received - fromCache: $fromCache, pendingWrites: ${snapshot.metadata.hasPendingWrites()}")
+                            val hasPendingWrites = snapshot.metadata.hasPendingWrites()
 
-                            // Debounce: Skip cache updates if we just made an update
-                            val now = System.currentTimeMillis()
-                            if (fromCache && now - lastUpdateTimestamp < UPDATE_DEBOUNCE_MS) {
-                                Log.d(TAG, "⏭️ Skipping cached snapshot (debounced)")
+                            Log.d(TAG, "📡 Snapshot received:")
+                            Log.d(TAG, "   fromCache: $fromCache")
+                            Log.d(TAG, "   hasPendingWrites: $hasPendingWrites")
+                            Log.d(TAG, "   documentCount: ${snapshot.documents.size}")
+
+                            // IMPROVED: Only skip if from cache AND has pending writes
+                            // This ensures we process clean cache on restart
+                            if (fromCache && hasPendingWrites) {
+                                Log.d(TAG, "⏭️ Skipping cached snapshot with pending writes")
                                 return@launch
                             }
 
                             val reports = snapshot.documents.mapNotNull { doc ->
                                 try {
+                                    // Get raw Firestore data first
+                                    val firestoreStatus = doc.getString("status") ?: "ACTIVE"
+                                    val firestoreIsResolved = doc.getBoolean("isResolved") ?: false
+
+                                    Log.d(TAG, "📄 Report ${doc.id}: status=$firestoreStatus, isResolved=$firestoreIsResolved, fromCache=$fromCache")
+
+                                    // Parse to object
                                     val report = doc.toObject(EmergencyReport::class.java)
 
-                                    // Check if we have an optimistic update for this report
-                                    val optimisticStatus = optimisticUpdates[doc.id]
-                                    if (optimisticStatus != null) {
-                                        // Use optimistic update instead of server data
-                                        Log.d(TAG, "🔄 Using optimistic status for ${doc.id}: $optimisticStatus")
-                                        report?.copy(
-                                            status = optimisticStatus,
-                                            isResolved = optimisticStatus == "RESOLVED"
-                                        )
-                                    } else {
-                                        // Log actual Firestore data
-                                        Log.d(TAG, "📄 Report ${doc.id}: status=${doc.getString("status")}, isResolved=${doc.getBoolean("isResolved")}, fromCache=$fromCache")
-                                        report
+                                    if (report == null) {
+                                        Log.w(TAG, "⚠️ Failed to parse report ${doc.id}")
+                                        return@mapNotNull null
                                     }
+
+                                    // SIMPLE: Just use what Firestore says
+                                    // If isResolved = true in Firestore, it's resolved. Done.
+                                    report.copy(
+                                        status = firestoreStatus,
+                                        isResolved = firestoreIsResolved
+                                    )
                                 } catch (e: Exception) {
                                     Log.e(TAG, "❌ Error parsing report ${doc.id}", e)
                                     null
@@ -144,15 +171,15 @@ class EmergencyReportViewModel : ViewModel() {
 
                             Log.d(TAG, "✅ Loaded ${reports.size} friend reports (${unreadCount} unread) - fromCache: $fromCache")
 
-                            // Clear optimistic updates after server confirmation
-                            if (!fromCache) {
-                                optimisticUpdates.clear()
-                                Log.d(TAG, "🧹 Cleared optimistic updates (server data received)")
+                            // Log each report's status for debugging
+                            reports.forEach { report ->
+                                Log.d(TAG, "   ${report.id}: ${report.status} (resolved: ${report.isResolved})")
                             }
                         } catch (e: Exception) {
-                            Log.e(TAG, "Error processing reports", e)
+                            Log.e(TAG, "❌ Error processing reports", e)
                             _reportState.value = _reportState.value.copy(
-                                error = e.message ?: "Failed to process reports"
+                                error = e.message ?: "Failed to process reports",
+                                isLoading = false
                             )
                         }
                     }
@@ -162,7 +189,8 @@ class EmergencyReportViewModel : ViewModel() {
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error setting up real-time listener", e)
             _reportState.value = _reportState.value.copy(
-                error = e.message ?: "Failed to setup updates"
+                error = e.message ?: "Failed to setup updates",
+                isLoading = false
             )
         }
     }
@@ -487,74 +515,28 @@ class EmergencyReportViewModel : ViewModel() {
     }
 
     /**
-     * Update report status with optimistic updates and server verification
+     * Update report status - SIMPLE VERSION
      */
     fun updateReportStatus(reportId: String, status: String) {
         viewModelScope.launch {
             try {
                 Log.d(TAG, "📝 Updating report $reportId status to $status")
 
-                // Mark the time of this update
-                lastUpdateTimestamp = System.currentTimeMillis()
-
-                // Store optimistic update
-                optimisticUpdates[reportId] = status
-                Log.d(TAG, "💾 Stored optimistic update for $reportId: $status")
-
-                // OPTIMISTIC UPDATE - Update local state FIRST
-                val previousReports = _reportState.value.friendReports
-                _reportState.value = _reportState.value.copy(
-                    friendReports = _reportState.value.friendReports.map { report ->
-                        if (report.id == reportId) {
-                            report.copy(
-                                status = status,
-                                isResolved = status == "RESOLVED"
-                            )
-                        } else {
-                            report
-                        }
-                    }
-                )
-
-                // Recalculate unread count
-                val unreadCount = _reportState.value.friendReports.count { !it.isResolved }
-                _reportState.value = _reportState.value.copy(unreadCount = unreadCount)
-
-                Log.d(TAG, "✅ Local state updated optimistically (unread: $unreadCount)")
-
-                // Now update Firestore (this will trigger the listener after server confirms)
+                // Just update Firestore - the listener will update the UI
                 when (val result = repository.updateReportStatus(reportId, status)) {
                     is Result.Success -> {
                         Log.d(TAG, "✅ Report status updated successfully in Firestore")
-
-                        // Wait a bit to ensure server has propagated the update
-                        delay(1000)
-
-                        // Clear this specific optimistic update
-                        optimisticUpdates.remove(reportId)
-                        Log.d(TAG, "🧹 Cleared optimistic update for $reportId")
                     }
                     is Result.Error -> {
                         Log.e(TAG, "❌ Error updating report status in Firestore", result.exception)
-
-                        // ROLLBACK - Restore previous state on error
-                        optimisticUpdates.remove(reportId)
                         _reportState.value = _reportState.value.copy(
-                            friendReports = previousReports,
                             error = result.exception.message ?: "Failed to update report"
                         )
-
-                        // Recalculate unread count again
-                        val rollbackUnreadCount = previousReports.count { !it.isResolved }
-                        _reportState.value = _reportState.value.copy(unreadCount = rollbackUnreadCount)
-
-                        Log.d(TAG, "⏮️ Rolled back to previous state due to error")
                     }
                     else -> {}
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Exception updating report status", e)
-                optimisticUpdates.remove(reportId)
                 _reportState.value = _reportState.value.copy(
                     error = e.message ?: "Unknown error"
                 )
@@ -600,6 +582,29 @@ class EmergencyReportViewModel : ViewModel() {
     }
 
     /**
+     * Debug function to check report status in Firestore
+     */
+    fun debugCheckReportStatus(reportId: String) {
+        viewModelScope.launch {
+            try {
+                val doc = firestore.collection("emergency_reports")
+                    .document(reportId)
+                    .get()
+                    .await()
+
+                Log.d(TAG, "🔍 DEBUG CHECK for $reportId:")
+                Log.d(TAG, "   Exists: ${doc.exists()}")
+                Log.d(TAG, "   status: ${doc.getString("status")}")
+                Log.d(TAG, "   isResolved: ${doc.getBoolean("isResolved")}")
+                Log.d(TAG, "   resolvedAt: ${doc.getTimestamp("resolvedAt")}")
+                Log.d(TAG, "   resolvedBy: ${doc.getString("resolvedBy")}")
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Debug check failed", e)
+            }
+        }
+    }
+
+    /**
      * Reset create report state
      */
     fun resetCreateReportState() {
@@ -625,7 +630,6 @@ class EmergencyReportViewModel : ViewModel() {
         friendReportsListener = null
         notificationsListener?.remove()
         notificationsListener = null
-        optimisticUpdates.clear()
         Log.d(TAG, "⏹️ Stopped all real-time updates")
     }
 

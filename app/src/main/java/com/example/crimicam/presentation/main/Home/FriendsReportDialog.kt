@@ -47,14 +47,11 @@ fun FriendReportsDialog(
     var selectedReport by remember { mutableStateOf<EmergencyReport?>(null) }
     var showResolved by remember { mutableStateOf(false) }
 
-    // Track locally resolved reports to prevent button from reappearing
-    val locallyResolvedReports = remember { mutableStateSetOf<String>() }
-
-    // Filter reports based on resolved status
+    // Filter reports based on resolved status - SIMPLE: just use what Firestore says
     val displayReports = if (showResolved) {
         friendReports
     } else {
-        friendReports.filter { !it.isResolved && !locallyResolvedReports.contains(it.id) }
+        friendReports.filter { !it.isResolved }
     }
 
     val unresolvedCount = friendReports.count { !it.isResolved }
@@ -222,10 +219,8 @@ fun FriendReportsDialog(
                             ) { report ->
                                 EmergencyReportCard(
                                     report = report,
-                                    isLocallyResolved = locallyResolvedReports.contains(report.id),
                                     onClick = { selectedReport = report },
                                     onResolve = {
-                                        locallyResolvedReports.add(report.id)
                                         onUpdateStatus(report.id, "RESOLVED")
                                     }
                                 )
@@ -241,10 +236,8 @@ fun FriendReportsDialog(
     selectedReport?.let { report ->
         ReportDetailDialog(
             report = report,
-            isLocallyResolved = locallyResolvedReports.contains(report.id),
             onDismiss = { selectedReport = null },
             onResolve = {
-                locallyResolvedReports.add(report.id)
                 onUpdateStatus(report.id, "RESOLVED")
                 selectedReport = null
             }
@@ -255,12 +248,11 @@ fun FriendReportsDialog(
 @Composable
 fun EmergencyReportCard(
     report: EmergencyReport,
-    isLocallyResolved: Boolean,
     onClick: () -> Unit,
     onResolve: () -> Unit
 ) {
-    // Check if resolved either from server or locally
-    val isResolved = report.isResolved || isLocallyResolved
+    // SIMPLE: Just use what's in the report object from Firestore
+    val isResolved = report.isResolved
 
     val typeColor = when (report.type) {
         "EMERGENCY" -> Color(0xFFEF5350)
@@ -277,9 +269,7 @@ fun EmergencyReportCard(
     }
 
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
+        modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = if (isResolved) DarkCard else DarkCardElevated
         ),
@@ -290,7 +280,9 @@ fun EmergencyReportCard(
             modifier = Modifier.padding(16.dp)
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onClick),
                 verticalAlignment = Alignment.Top
             ) {
                 // Type Icon
@@ -386,7 +378,7 @@ fun EmergencyReportCard(
                 }
             }
 
-            // Action Buttons - ONLY show if NOT resolved
+            // Action Buttons - ONLY show if NOT resolved (based on Firestore data)
             if (!isResolved) {
                 Spacer(modifier = Modifier.height(12.dp))
                 Row(
@@ -416,12 +408,11 @@ fun EmergencyReportCard(
 @Composable
 fun ReportDetailDialog(
     report: EmergencyReport,
-    isLocallyResolved: Boolean,
     onDismiss: () -> Unit,
     onResolve: () -> Unit
 ) {
-    // Check if resolved either from server or locally
-    val isResolved = report.isResolved || isLocallyResolved
+    // SIMPLE: Just use what's in the report object from Firestore
+    val isResolved = report.isResolved
 
     val headerColor = when (report.type) {
         "EMERGENCY" -> Color(0xFFEF5350)
@@ -579,7 +570,7 @@ fun ReportDetailDialog(
                     }
                 }
 
-                // Action Buttons - ONLY show if NOT resolved
+                // Action Buttons - ONLY show if NOT resolved (based on Firestore data)
                 if (!isResolved) {
                     Surface(
                         color = DarkCard,

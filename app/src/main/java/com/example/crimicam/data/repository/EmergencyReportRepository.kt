@@ -118,7 +118,7 @@ class EmergencyReportRepository {
     }
 
     /**
-     * Get reports from friends
+     * Get reports from friends - FIXED with orderBy
      */
     suspend fun getFriendReports(): Result<List<EmergencyReport>> {
         return try {
@@ -127,7 +127,7 @@ class EmergencyReportRepository {
 
             val querySnapshot = firestore.collection(REPORTS_COLLECTION)
                 .whereArrayContains("friendsNotified", currentUser.uid)
-                .orderBy("timestamp", Query.Direction.DESCENDING)
+                .orderBy("timestamp", Query.Direction.DESCENDING) // FIXED: Added orderBy
                 .limit(50)
                 .get()
                 .await()
@@ -137,7 +137,10 @@ class EmergencyReportRepository {
                     val report = doc.toObject(EmergencyReport::class.java)
 
                     // Log the actual Firestore data for debugging
-                    Log.d(TAG, "📄 Report ${doc.id}: status=${doc.getString("status")}, isResolved=${doc.getBoolean("isResolved")}")
+                    Log.d(TAG, "📄 Report ${doc.id}:")
+                    Log.d(TAG, "   status = ${doc.getString("status")}")
+                    Log.d(TAG, "   isResolved = ${doc.getBoolean("isResolved")}")
+                    Log.d(TAG, "   resolvedAt = ${doc.getTimestamp("resolvedAt")}")
 
                     report
                 } catch (e: Exception) {
