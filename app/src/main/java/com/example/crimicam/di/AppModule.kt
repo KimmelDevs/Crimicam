@@ -107,7 +107,9 @@ val appModule = module {
             mediapipeFaceDetector = get(),
             criminalImagesVectorDB = get(),
             faceNet = get(),
-            faceSpoofDetector = get()
+            faceSpoofDetector = get(),
+
+            criminalDB = get() // ✅ Added CriminalDB injection for crimes access
         )
     }
 

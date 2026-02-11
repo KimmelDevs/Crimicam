@@ -3,6 +3,7 @@ package com.example.crimicam.facerecognitionnetface.models.domain
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.net.Uri
+import com.example.crimicam.facerecognitionnetface.models.data.CriminalDB
 import com.example.crimicam.facerecognitionnetface.models.data.CriminalImageRecord
 import com.example.crimicam.facerecognitionnetface.models.data.CriminalImagesVectorDB
 import com.example.crimicam.facerecognitionnetface.models.data.RecognitionMetrics
@@ -18,7 +19,8 @@ class CriminalImageVectorUseCase(
     private val mediapipeFaceDetector: MediapipeFaceDetector,
     private val criminalImagesVectorDB: CriminalImagesVectorDB,
     private val faceNet: FaceNet,
-    private val faceSpoofDetector: FaceSpoofDetector
+    private val faceSpoofDetector: FaceSpoofDetector,
+    private val criminalDB: CriminalDB // ✅ Added CriminalDB
 ) {
 
     data class CriminalRecognitionResult(
@@ -27,7 +29,8 @@ class CriminalImageVectorUseCase(
         val dangerLevel: String,
         val boundingBox: Rect,
         val spoofResult: FaceSpoofDetector.FaceSpoofResult? = null,
-        val confidence: Float = 0f
+        val confidence: Float = 0f,
+        val crimes: List<String> = emptyList() // ✅ Added crimes
     )
 
     /**
@@ -92,7 +95,7 @@ class CriminalImageVectorUseCase(
 
     /**
      * Find nearest criminal match from frame with spoof detection
-     * Returns metrics and list of detected criminals
+     * Returns metrics and list of detected criminals WITH CRIMES
      */
     suspend fun getNearestCriminalName(
         frameBitmap: Bitmap,
@@ -135,7 +138,8 @@ class CriminalImageVectorUseCase(
                         dangerLevel = "UNKNOWN",
                         boundingBox = boundingBox,
                         spoofResult = spoofResult,
-                        confidence = 0f
+                        confidence = 0f,
+                        crimes = emptyList()
                     )
                 )
                 continue
@@ -145,20 +149,24 @@ class CriminalImageVectorUseCase(
             val storedEmbeddingArray = recognitionResult.faceEmbedding.toFloatArray()
             val confidence = cosineSimilarity(embedding, storedEmbeddingArray)
 
-            val criminalName = if (confidence > confidenceThreshold) {
-                recognitionResult.criminalName
+            val isCriminal = confidence > confidenceThreshold
+
+            // ✅ Fetch crimes from CriminalDB if criminal is detected
+            val crimes = if (isCriminal) {
+                getCriminalCrimes(recognitionResult.criminalID)
             } else {
-                "Unknown"
+                emptyList()
             }
 
             criminalRecognitionResults.add(
                 CriminalRecognitionResult(
-                    criminalName = criminalName,
-                    criminalID = if (confidence > confidenceThreshold) recognitionResult.criminalID else "",
-                    dangerLevel = if (confidence > confidenceThreshold) recognitionResult.dangerLevel else "UNKNOWN",
+                    criminalName = if (isCriminal) recognitionResult.criminalName else "Unknown",
+                    criminalID = if (isCriminal) recognitionResult.criminalID else "",
+                    dangerLevel = if (isCriminal) recognitionResult.dangerLevel else "UNKNOWN",
                     boundingBox = boundingBox,
                     spoofResult = spoofResult,
-                    confidence = confidence
+                    confidence = confidence,
+                    crimes = crimes // ✅ Include crimes in result
                 )
             )
         }
@@ -177,6 +185,19 @@ class CriminalImageVectorUseCase(
             }
 
         return Pair(metrics, criminalRecognitionResults)
+    }
+
+    /**
+     * ✅ Helper function to fetch crimes from CriminalDB
+     */
+    private suspend fun getCriminalCrimes(criminalID: String): List<String> {
+        return try {
+            val criminalRecord = criminalDB.getCriminalRecord(criminalID)
+            criminalRecord?.crimes ?: emptyList()
+        } catch (e: Exception) {
+            android.util.Log.e("CriminalImageVectorUseCase", "Error fetching crimes for $criminalID", e)
+            emptyList()
+        }
     }
 
     /**

@@ -230,11 +230,18 @@ class FaceDetectionOverlay(
                 // Get a COPY for transformation (for display)
                 val displayBox = RectF(originalBox)
 
+                // Build display label with crimes
                 val displayLabel = if (isCriminal) {
                     val spoofInfo = if (criminalResult.spoofResult?.isSpoof == true) {
                         " (SPOOF)"
                     } else ""
-                    "${criminalResult.dangerLevel}$spoofInfo\n${criminalResult.criminalName}"
+
+                    // Add crimes to label (show first 2 crimes)
+                    val crimesInfo = if (criminalResult.crimes.isNotEmpty()) {
+                        "\n${criminalResult.crimes.take(2).joinToString(", ")}"
+                    } else ""
+
+                    "${criminalResult.dangerLevel}$spoofInfo\n${criminalResult.criminalName}$crimesInfo"
                 } else {
                     ""
                 }
@@ -249,7 +256,8 @@ class FaceDetectionOverlay(
                         isCriminal = isCriminal,
                         dangerLevel = if (isCriminal) criminalResult.dangerLevel else null,
                         confidence = criminalResult.confidence,
-                        isSpoof = criminalResult.spoofResult?.isSpoof ?: false
+                        isSpoof = criminalResult.spoofResult?.isSpoof ?: false,
+                        crimes = criminalResult.crimes // Add crimes
                     )
                 )
 
@@ -323,7 +331,8 @@ class FaceDetectionOverlay(
                             isCriminal = false,
                             dangerLevel = null,
                             confidence = personResult.confidence,
-                            isSpoof = personResult.spoofResult?.isSpoof ?: false
+                            isSpoof = personResult.spoofResult?.isSpoof ?: false,
+                            crimes = emptyList() // No crimes for regular people
                         )
                     )
 
@@ -392,7 +401,8 @@ class FaceDetectionOverlay(
         var isCriminal: Boolean = false,
         var dangerLevel: String? = null,
         var confidence: Float = 0f,
-        var isSpoof: Boolean = false
+        var isSpoof: Boolean = false,
+        var crimes: List<String> = emptyList() // ✅ Added crimes field
     )
 
     inner class BoundingBoxOverlay(context: Context) :
@@ -474,6 +484,13 @@ class FaceDetectionOverlay(
             typeface = android.graphics.Typeface.DEFAULT_BOLD
         }
 
+        private val crimesTextPaint = Paint().apply {
+            strokeWidth = 1.5f
+            textSize = 24f
+            color = Color.WHITE
+            typeface = android.graphics.Typeface.MONOSPACE
+        }
+
         private val textBackgroundPaint = Paint().apply {
             color = Color.parseColor("#DD000000")
             style = Paint.Style.FILL
@@ -522,10 +539,10 @@ class FaceDetectionOverlay(
 
                     lines.reversed().forEachIndexed { reverseIndex, line ->
                         val index = lines.size - 1 - reverseIndex
-                        val paint = if (prediction.isCriminal && index == 0) {
-                            dangerTextPaint
-                        } else {
-                            textPaint
+                        val paint = when {
+                            prediction.isCriminal && index == 0 -> dangerTextPaint
+                            prediction.isCriminal && index >= 2 -> crimesTextPaint // Crimes text
+                            else -> textPaint
                         }
 
                         val textBounds = android.graphics.Rect()
@@ -566,6 +583,8 @@ class FaceDetectionOverlay(
                             }
                         } else if (isUnknown) {
                             paint.color = Color.parseColor("#FFFF00")  // ✅ Yellow for unknown
+                        } else if (prediction.isCriminal && index >= 2) {
+                            paint.color = Color.parseColor("#FFD700")  // Gold color for crimes
                         } else {
                             paint.color = Color.WHITE
                         }
