@@ -27,6 +27,7 @@ class FirestoreCaptureService(private val context: Context) {
         // Main collections
         private const val USERS_COLLECTION = "users"
         private const val CRIMINALS_COLLECTION = "criminals"
+        private const val GLOBAL_CAPTURES_COLLECTION = "captured_faces" // ✅ Global collection
 
         // Subcollections
         private const val CAPTURES_SUBCOLLECTION = "captured_faces"
@@ -37,7 +38,7 @@ class FirestoreCaptureService(private val context: Context) {
     }
 
     /**
-     * Save captured face to Firestore under user's subcollection
+     * Save captured face to BOTH user's subcollection AND global collection
      */
     suspend fun saveCapturedFace(
         croppedFace: Bitmap,
@@ -101,16 +102,27 @@ class FirestoreCaptureService(private val context: Context) {
                 "user_id" to currentUser.uid
             )
 
-            // Save to user's captured_faces subcollection
-            val captureRef = db.collection(USERS_COLLECTION)
-                .document(currentUser.uid)
-                .collection(CAPTURES_SUBCOLLECTION)
+            // ✅ 1. Save to GLOBAL captured_faces collection
+            val globalCaptureRef = db.collection(GLOBAL_CAPTURES_COLLECTION)
                 .add(captureData)
                 .await()
 
-            Log.d(TAG, "Capture saved with ID: ${captureRef.id}")
+            Log.d(TAG, "✅ Global capture saved with ID: ${globalCaptureRef.id}")
 
-            // If it's a criminal, update their location tracking
+            // ✅ 2. Save to user's personal captured_faces subcollection
+            val userCaptureData = captureData.toMutableMap().apply {
+                put("global_capture_id", globalCaptureRef.id) // Reference to global document
+            }
+
+            val userCaptureRef = db.collection(USERS_COLLECTION)
+                .document(currentUser.uid)
+                .collection(CAPTURES_SUBCOLLECTION)
+                .add(userCaptureData)
+                .await()
+
+            Log.d(TAG, "✅ User capture saved with ID: ${userCaptureRef.id}")
+
+            // ✅ 3. If it's a criminal, update their location tracking
             if (isCriminal && matchedPersonId != null && geoPoint != null) {
                 updateCriminalLocation(
                     criminalId = matchedPersonId,
@@ -118,11 +130,13 @@ class FirestoreCaptureService(private val context: Context) {
                     location = geoPoint,
                     address = address,
                     dangerLevel = dangerLevel,
-                    captureId = captureRef.id
+                    captureId = globalCaptureRef.id, // Use global ID
+                    userCaptureId = userCaptureRef.id
                 )
             }
 
-            Result.success(captureRef.id)
+            // Return the global capture ID as primary reference
+            Result.success(globalCaptureRef.id)
 
         } catch (e: Exception) {
             Log.e(TAG, "Error saving captured face", e)
@@ -139,7 +153,8 @@ class FirestoreCaptureService(private val context: Context) {
         location: GeoPoint,
         address: String?,
         dangerLevel: String?,
-        captureId: String
+        captureId: String,
+        userCaptureId: String
     ) {
         try {
             val criminalRef = db.collection(CRIMINALS_COLLECTION).document(criminalId)
@@ -154,7 +169,8 @@ class FirestoreCaptureService(private val context: Context) {
                 "last_address" to address,
                 "last_seen" to Timestamp.now(),
                 "danger_level" to dangerLevel,
-                "last_capture_id" to captureId,
+                "last_capture_id" to captureId, // Global capture ID
+                "last_user_capture_id" to userCaptureId, // User's personal capture ID
                 "total_sightings" to FieldValue.increment(1)
             )
 
@@ -168,7 +184,8 @@ class FirestoreCaptureService(private val context: Context) {
                 "longitude" to location.longitude,
                 "address" to address,
                 "timestamp" to Timestamp.now(),
-                "capture_id" to captureId
+                "capture_id" to captureId, // Global capture ID
+                "user_capture_id" to userCaptureId // User's personal capture ID
             )
 
             criminalRef.collection(LOCATIONS_SUBCOLLECTION)
@@ -264,7 +281,7 @@ class FirestoreCaptureService(private val context: Context) {
     }
 
     /**
-     * Get user's captured faces
+     * Get user's captured faces from their personal collection
      */
     suspend fun getUserCaptures(limit: Int = 50): Result<List<Map<String, Any?>>> {
         return try {
@@ -288,6 +305,61 @@ class FirestoreCaptureService(private val context: Context) {
             Result.success(captures)
         } catch (e: Exception) {
             Log.e(TAG, "Error getting user captures", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * ✅ NEW: Get all captures from global collection (admin view)
+     */
+    suspend fun getAllGlobalCaptures(limit: Int = 100): Result<List<Map<String, Any?>>> {
+        return try {
+            val snapshot = db.collection(GLOBAL_CAPTURES_COLLECTION)
+                .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
+                .limit(limit.toLong())
+                .get()
+                .await()
+
+            val captures = snapshot.documents.map { doc ->
+                doc.data?.plus("id" to doc.id) ?: emptyMap()
+            }
+
+            Result.success(captures)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting global captures", e)
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * ✅ NEW: Get global captures filtered by type
+     */
+    suspend fun getGlobalCapturesByType(
+        isCriminal: Boolean? = null,
+        isRecognized: Boolean? = null,
+        limit: Int = 100
+    ): Result<List<Map<String, Any?>>> {
+        return try {
+            var query = db.collection(GLOBAL_CAPTURES_COLLECTION)
+                .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
+
+            isCriminal?.let {
+                query = query.whereEqualTo("is_criminal", it)
+            }
+
+            isRecognized?.let {
+                query = query.whereEqualTo("is_recognized", it)
+            }
+
+            val snapshot = query.limit(limit.toLong()).get().await()
+
+            val captures = snapshot.documents.map { doc ->
+                doc.data?.plus("id" to doc.id) ?: emptyMap()
+            }
+
+            Result.success(captures)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting filtered global captures", e)
             Result.failure(e)
         }
     }
