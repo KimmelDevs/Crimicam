@@ -26,8 +26,8 @@ data class RecentActivity(
     val isCriminal: Boolean = false,
     val dangerLevel: String? = null,
     val firestoreTimestamp: Timestamp? = null,
-    val userId: String = "", // Add user ID to identify who created the activity
-    val userName: String? = null // Optional: store user name for display
+    val userId: String = "",
+    val userName: String? = null
 )
 
 data class HomeState(
@@ -54,7 +54,7 @@ class HomeViewModel : ViewModel() {
 
     private val db = FirebaseFirestore.getInstance()
     private val auth = FirebaseAuth.getInstance()
-    private var snapshotListener: ListenerRegistration? = null
+    private var globalSnapshotListener: ListenerRegistration? = null
     private var lastKnownActivityIds = mutableSetOf<String>()
     private var ringtonePlayer: RingtonePlayer? = null
     private var isFirstLoad = true
@@ -65,7 +65,7 @@ class HomeViewModel : ViewModel() {
     companion object {
         private const val TAG = "HomeViewModel"
         private const val RINGTONE_DURATION_MS = 10000L
-        private const val GLOBAL_ACTIVITIES_COLLECTION = "global_activities"
+        private const val GLOBAL_CAPTURES_COLLECTION = "captured_faces" // ✅ Global collection
     }
 
     init {
@@ -96,7 +96,6 @@ class HomeViewModel : ViewModel() {
                     return@launch
                 }
 
-                // Extract data
                 val title = data["title"] ?: "New Activity"
                 val body = data["body"] ?: "Activity detected"
                 val isCriminal = data["isCriminal"]?.toBoolean() ?: false
@@ -108,18 +107,8 @@ class HomeViewModel : ViewModel() {
                 val personName = data["personName"] ?: "Unknown Person"
                 val isRecognized = data["isRecognized"]?.toBoolean() ?: false
 
-                Log.d(TAG, "📢 Broadcast notification received:")
-                Log.d(TAG, "   Title: $title")
-                Log.d(TAG, "   Body: $body")
-                Log.d(TAG, "   From user: $userName ($userId)")
-                Log.d(TAG, "   Face ID: $faceId")
-                Log.d(TAG, "   Criminal: $isCriminal")
-                Log.d(TAG, "   Danger: $dangerLevel")
-                Log.d(TAG, "   Address: $address")
-                Log.d(TAG, "   Person: $personName")
-                Log.d(TAG, "   Recognized: $isRecognized")
+                Log.d(TAG, "📢 Broadcast notification received from $userName")
 
-                // Update state with notification data
                 _homeState.value = _homeState.value.copy(
                     lastNotificationData = data,
                     showNotificationAlert = true,
@@ -127,16 +116,13 @@ class HomeViewModel : ViewModel() {
                     notificationBody = body
                 )
 
-                // Play appropriate ringtone
                 playRingtoneForNotification(isCriminal, dangerLevel)
 
-                // Increment new activity count
                 val currentCount = _homeState.value.newActivityCount
                 _homeState.value = _homeState.value.copy(
                     newActivityCount = currentCount + 1
                 )
 
-                // Create activity for UI
                 val timeString = "Just now"
                 val subtitle = "From $userName • $timeString"
 
@@ -151,11 +137,9 @@ class HomeViewModel : ViewModel() {
                     userName = userName
                 )
 
-                // Add to recent activities
                 val currentActivities = _homeState.value.recentActivities.toMutableList()
                 currentActivities.add(0, activity)
 
-                // Keep only last 20 activities
                 val limitedActivities = if (currentActivities.size > 20) {
                     currentActivities.take(20)
                 } else {
@@ -167,9 +151,7 @@ class HomeViewModel : ViewModel() {
                 )
 
                 Log.d(TAG, "✅ Broadcast notification processed successfully")
-                Log.d(TAG, "📊 New activity count: ${_homeState.value.newActivityCount}")
 
-                // Auto-hide notification alert after 5 seconds
                 viewModelScope.launch {
                     kotlinx.coroutines.delay(5000)
                     _homeState.value = _homeState.value.copy(
@@ -214,7 +196,7 @@ class HomeViewModel : ViewModel() {
     }
 
     /**
-     * Start listening for user's own activities AND global activities
+     * ✅ UPDATED: Listen to GLOBAL captured_faces collection ONLY
      */
     fun startRealtimeUpdates() {
         stopRealtimeUpdates()
@@ -236,17 +218,16 @@ class HomeViewModel : ViewModel() {
         )
 
         try {
-            // Query from user's own collection (this is what was working before)
-            val userQuery = db.collection("users")
-                .document(currentUser.uid)
-                .collection("captured_faces")
+            // ✅ Listen to GLOBAL captured_faces collection ONLY
+            Log.d(TAG, "🌍 Starting realtime listener on GLOBAL captured_faces collection...")
+            val globalQuery = db.collection(GLOBAL_CAPTURES_COLLECTION)
                 .orderBy("timestamp", Query.Direction.DESCENDING)
-                .limit(10)
+                .limit(50)
 
-            snapshotListener = userQuery.addSnapshotListener { snapshot, error ->
+            globalSnapshotListener = globalQuery.addSnapshotListener { snapshot, error ->
                 viewModelScope.launch {
                     if (error != null) {
-                        Log.e(TAG, "❌ Realtime listener error", error)
+                        Log.e(TAG, "❌ Global listener error", error)
                         _homeState.value = _homeState.value.copy(
                             isLoadingActivities = false,
                             isRealtimeActive = false,
@@ -257,112 +238,16 @@ class HomeViewModel : ViewModel() {
 
                     if (snapshot == null) return@launch
 
-                    // Track first load
-                    if (isFirstLoad) {
-                        snapshot.documents.forEach { doc ->
-                            lastKnownActivityIds.add(doc.id)
-                        }
-                        isFirstLoad = false
-                    }
-
-                    val newActivities = mutableListOf<RecentActivity>()
-                    val allActivities = mutableListOf<RecentActivity>()
-
-                    snapshot.documents.forEach { doc ->
-                        try {
-                            val data = doc.data ?: return@forEach
-
-                            val isCriminal = data["is_criminal"] as? Boolean ?: false
-                            val isRecognized = data["is_recognized"] as? Boolean ?: false
-                            val personName = data["matched_person_name"] as? String
-                            val dangerLevel = data["danger_level"] as? String
-                            val address = data["address"] as? String
-                            val timestamp = data["timestamp"] as? Timestamp
-                            val userId = currentUser.uid
-                            val userName = currentUser.displayName ?: currentUser.email ?: "You"
-
-                            // Format time
-                            val timeString = timestamp?.toDate()?.let { date ->
-                                val now = Date()
-                                val diff = now.time - date.time
-                                val minutes = diff / (1000 * 60)
-                                val hours = diff / (1000 * 60 * 60)
-                                val days = diff / (1000 * 60 * 60 * 24)
-
-                                when {
-                                    minutes < 1 -> "Just now"
-                                    minutes < 60 -> "$minutes min ago"
-                                    hours < 24 -> "$hours hr ago"
-                                    days < 7 -> "$days days ago"
-                                    else -> SimpleDateFormat("MMM dd", Locale.getDefault()).format(date)
-                                }
-                            } ?: "Unknown time"
-
-                            // Create title
-                            val title = when {
-                                isCriminal && dangerLevel != null -> {
-                                    when (dangerLevel.uppercase()) {
-                                        "CRITICAL" -> "🚨 CRITICAL THREAT: ${personName ?: "Unknown"}"
-                                        "HIGH" -> "⚠️ HIGH DANGER: ${personName ?: "Unknown"}"
-                                        "MEDIUM" -> "⚠️ MEDIUM RISK: ${personName ?: "Unknown"}"
-                                        "LOW" -> "⚠️ LOW RISK: ${personName ?: "Unknown"}"
-                                        else -> "🚨 Criminal: ${personName ?: "Unknown"}"
-                                    }
-                                }
-                                isRecognized && personName != null -> "✅ Identified: $personName"
-                                else -> "❓ Unknown Person Detected"
-                            }
-
-                            // Create subtitle
-                            val subtitle = buildString {
-                                // Show user name
-                                append("👤 $userName")
-                                append(" • ")
-                                append(timeString)
-                                if (address != null) {
-                                    append(" • ")
-                                    val shortAddress = if (address.length > 40) {
-                                        address.take(37) + "..."
-                                    } else {
-                                        address
-                                    }
-                                    append(shortAddress)
-                                }
-                            }
-
-                            val activity = RecentActivity(
-                                id = doc.id,
-                                title = title,
-                                subtitle = subtitle,
-                                timestamp = timeString,
-                                isCriminal = isCriminal,
-                                dangerLevel = dangerLevel,
-                                firestoreTimestamp = timestamp,
-                                userId = userId,
-                                userName = userName
-                            )
-
-                            allActivities.add(activity)
-
-                            // Check if new activity
-                            if (!lastKnownActivityIds.contains(doc.id)) {
-                                newActivities.add(activity)
-                                lastKnownActivityIds.add(doc.id)
-                                Log.d(TAG, "📝 New local activity: ${activity.title}")
-                            }
-
-                        } catch (e: Exception) {
-                            Log.e(TAG, "❌ Error parsing activity", e)
-                        }
-                    }
-
-                    // Now ALSO listen to global activities
-                    listenToGlobalActivities(currentUser, allActivities, newActivities)
-
+                    processGlobalActivities(snapshot, currentUser)
                 }
             }
 
-            Log.d(TAG, "✅ Started realtime updates for user ${currentUser.uid}")
+            _homeState.value = _homeState.value.copy(
+                isRealtimeActive = true,
+                isLoadingActivities = false
+            )
+
+            Log.d(TAG, "✅ Started realtime updates for global captured_faces")
 
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error setting up realtime listener", e)
@@ -375,160 +260,155 @@ class HomeViewModel : ViewModel() {
     }
 
     /**
-     * Listen to global activities collection
+     * ✅ Process global captured_faces activities
      */
-    private fun listenToGlobalActivities(
-        currentUser: com.google.firebase.auth.FirebaseUser,
-        existingActivities: MutableList<RecentActivity>,
-        newActivities: MutableList<RecentActivity>
+    private fun processGlobalActivities(
+        snapshot: QuerySnapshot,
+        currentUser: com.google.firebase.auth.FirebaseUser
     ) {
-        val globalQuery = db.collection(GLOBAL_ACTIVITIES_COLLECTION)
-            .orderBy("timestamp", Query.Direction.DESCENDING)
-            .limit(20)
-
-        val globalListener = globalQuery.addSnapshotListener { snapshot, error ->
-            viewModelScope.launch {
-                if (error != null) {
-                    Log.e(TAG, "❌ Global activities listener error", error)
-                    return@launch
-                }
-
-                if (snapshot == null) return@launch
-
-                Log.d(TAG, "🌍 Global activities snapshot: ${snapshot.documents.size} documents")
-
-                val allActivities = existingActivities.toMutableList()
-                val globalNewActivities = mutableListOf<RecentActivity>()
-
-                snapshot.documents.forEach { doc ->
-                    try {
-                        val data = doc.data ?: return@forEach
-
-                        val isCriminal = data["is_criminal"] as? Boolean ?: false
-                        val isRecognized = data["is_recognized"] as? Boolean ?: false
-                        val personName = data["matched_person_name"] as? String
-                        val dangerLevel = data["danger_level"] as? String
-                        val address = data["address"] as? String
-                        val timestamp = data["timestamp"] as? Timestamp
-                        val userId = data["user_id"] as? String ?: "unknown"
-                        val userName = data["user_name"] as? String ?: "Unknown User"
-
-                        // Skip if this is the current user's activity (already in personal list)
-                        if (userId == currentUser.uid) {
-                            return@forEach
-                        }
-
-                        // Format time
-                        val timeString = timestamp?.toDate()?.let { date ->
-                            val now = Date()
-                            val diff = now.time - date.time
-                            val minutes = diff / (1000 * 60)
-                            val hours = diff / (1000 * 60 * 60)
-                            val days = diff / (1000 * 60 * 60 * 24)
-
-                            when {
-                                minutes < 1 -> "Just now"
-                                minutes < 60 -> "$minutes min ago"
-                                hours < 24 -> "$hours hr ago"
-                                days < 7 -> "$days days ago"
-                                else -> SimpleDateFormat("MMM dd", Locale.getDefault()).format(date)
-                            }
-                        } ?: "Unknown time"
-
-                        // Create title
-                        val title = when {
-                            isCriminal && dangerLevel != null -> {
-                                when (dangerLevel.uppercase()) {
-                                    "CRITICAL" -> "🚨 CRITICAL THREAT: ${personName ?: "Unknown"}"
-                                    "HIGH" -> "⚠️ HIGH DANGER: ${personName ?: "Unknown"}"
-                                    "MEDIUM" -> "⚠️ MEDIUM RISK: ${personName ?: "Unknown"}"
-                                    "LOW" -> "⚠️ LOW RISK: ${personName ?: "Unknown"}"
-                                    else -> "🚨 Criminal: ${personName ?: "Unknown"}"
-                                }
-                            }
-                            isRecognized && personName != null -> "✅ Identified: $personName"
-                            else -> "❓ Unknown Person Detected"
-                        }
-
-                        // Create subtitle with user info
-                        val subtitle = buildString {
-                            // Show user name if available
-                            append("👤 $userName")
-                            append(" • ")
-                            append(timeString)
-                            if (address != null && address.isNotBlank() && address != "Unknown location") {
-                                append(" • ")
-                                val shortAddress = if (address.length > 30) {
-                                    address.take(27) + "..."
-                                } else {
-                                    address
-                                }
-                                append(shortAddress)
-                            }
-                        }
-
-                        val activity = RecentActivity(
-                            id = doc.id,
-                            title = title,
-                            subtitle = subtitle,
-                            timestamp = timeString,
-                            isCriminal = isCriminal,
-                            dangerLevel = dangerLevel,
-                            firestoreTimestamp = timestamp,
-                            userId = userId,
-                            userName = userName
-                        )
-
-                        // Check if this activity already exists in our list
-                        val existingActivity = allActivities.find { it.id == doc.id }
-                        if (existingActivity == null) {
-                            allActivities.add(activity)
-                            if (!lastKnownActivityIds.contains(doc.id)) {
-                                globalNewActivities.add(activity)
-                                lastKnownActivityIds.add(doc.id)
-                                Log.d(TAG, "🌍 New global activity from $userName: ${activity.title}")
-                            }
-                        }
-
-                    } catch (e: Exception) {
-                        Log.e(TAG, "❌ Error parsing global activity", e)
-                    }
-                }
-
-                // Sort all activities by timestamp (newest first)
-                val sortedActivities = allActivities.sortedByDescending {
-                    it.firestoreTimestamp?.seconds ?: 0L
-                }.take(20) // Limit to 20 most recent
-
-                // Update state
-                _homeState.value = _homeState.value.copy(
-                    recentActivities = sortedActivities,
-                    isLoadingActivities = false,
-                    isRealtimeActive = true,
-                    activitiesError = null
-                )
-
-                Log.d(TAG, "✅ State updated with ${sortedActivities.size} total activities")
-
-                // Play ringtone for new activities (excluding current user's own)
-                val allNewActivities = newActivities + globalNewActivities
-                if (allNewActivities.isNotEmpty() && !isFirstLoad) {
-                    val externalNewActivities = allNewActivities.filter { it.userId != currentUser.uid }
-
-                    if (externalNewActivities.isNotEmpty()) {
-                        Log.d(TAG, "🎯 ${externalNewActivities.size} NEW external activities found")
-                        externalNewActivities.forEach { activity ->
-                            playRingtoneForActivity(activity)
-                        }
-                        _homeState.value = _homeState.value.copy(
-                            newActivityCount = _homeState.value.newActivityCount + externalNewActivities.size
-                        )
-                        Log.d(TAG, "📈 New activity count: ${_homeState.value.newActivityCount}")
-                    }
-                }
-
-                Log.d(TAG, "📊 Activities updated: ${sortedActivities.size} total")
+        // Track first load
+        if (isFirstLoad) {
+            snapshot.documents.forEach { doc ->
+                lastKnownActivityIds.add(doc.id)
             }
+            isFirstLoad = false
+            Log.d(TAG, "🔄 First load: tracked ${lastKnownActivityIds.size} activities")
+        }
+
+        val newActivityList = mutableListOf<RecentActivity>()
+        val allActivities = mutableListOf<RecentActivity>()
+
+        snapshot.documents.forEach { doc ->
+            try {
+                val userId = doc.getString("user_id") ?: "unknown"
+                val userName = doc.getString("user_name") ?: "Unknown User"
+
+                val activity = parseActivityFromDocument(doc as QueryDocumentSnapshot, userId, userName)
+
+                if (activity != null) {
+                    allActivities.add(activity)
+
+                    // Check if new activity
+                    if (!lastKnownActivityIds.contains(doc.id)) {
+                        newActivityList.add(activity)
+                        lastKnownActivityIds.add(doc.id)
+                        Log.d(TAG, "📝 New global activity: ${activity.title}")
+                    }
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error parsing global activity ${doc.id}", e)
+            }
+        }
+
+        // Sort by timestamp (newest first) and limit
+        val sortedActivities = allActivities
+            .sortedByDescending { it.firestoreTimestamp?.seconds ?: 0L }
+            .take(20)
+
+        _homeState.value = _homeState.value.copy(
+            recentActivities = sortedActivities,
+            isLoadingActivities = false,
+            isRealtimeActive = true,
+            activitiesError = null
+        )
+
+        Log.d(TAG, "📊 Activities updated: ${sortedActivities.size} total")
+
+        // Play ringtone for NEW activities from OTHER users
+        if (newActivityList.isNotEmpty() && !isFirstLoad) {
+            val externalNew = newActivityList.filter { it.userId != currentUser.uid }
+
+            if (externalNew.isNotEmpty()) {
+                Log.d(TAG, "🎯 ${externalNew.size} NEW external activities")
+                externalNew.forEach { activity ->
+                    playRingtoneForActivity(activity)
+                }
+                _homeState.value = _homeState.value.copy(
+                    newActivityCount = _homeState.value.newActivityCount + externalNew.size
+                )
+                Log.d(TAG, "📈 New activity count: ${_homeState.value.newActivityCount}")
+            }
+        }
+    }
+
+    /**
+     * ✅ Parse activity from Firestore document
+     */
+    private fun parseActivityFromDocument(
+        doc: QueryDocumentSnapshot,
+        userId: String,
+        userName: String
+    ): RecentActivity? {
+        return try {
+            val data = doc.data
+
+            val isCriminal = data["is_criminal"] as? Boolean ?: false
+            val isRecognized = data["is_recognized"] as? Boolean ?: false
+            val personName = data["matched_person_name"] as? String
+            val dangerLevel = data["danger_level"] as? String
+            val address = data["address"] as? String
+            val timestamp = data["timestamp"] as? Timestamp
+
+            val timeString = timestamp?.toDate()?.let { date ->
+                val now = Date()
+                val diff = now.time - date.time
+                val minutes = diff / (1000 * 60)
+                val hours = diff / (1000 * 60 * 60)
+                val days = diff / (1000 * 60 * 60 * 24)
+
+                when {
+                    minutes < 1 -> "Just now"
+                    minutes < 60 -> "$minutes min ago"
+                    hours < 24 -> "$hours hr ago"
+                    days < 7 -> "$days days ago"
+                    else -> SimpleDateFormat("MMM dd", Locale.getDefault()).format(date)
+                }
+            } ?: "Unknown time"
+
+            val title = when {
+                isCriminal && dangerLevel != null -> {
+                    when (dangerLevel.uppercase()) {
+                        "CRITICAL" -> "🚨 CRITICAL THREAT: ${personName ?: "Unknown"}"
+                        "HIGH" -> "⚠️ HIGH DANGER: ${personName ?: "Unknown"}"
+                        "MEDIUM" -> "⚠️ MEDIUM RISK: ${personName ?: "Unknown"}"
+                        "LOW" -> "⚠️ LOW RISK: ${personName ?: "Unknown"}"
+                        else -> "🚨 Criminal: ${personName ?: "Unknown"}"
+                    }
+                }
+                isRecognized && personName != null -> "✅ Identified: $personName"
+                else -> "❓ Unknown Person Detected"
+            }
+
+            val subtitle = buildString {
+                append("👤 $userName")
+                append(" • ")
+                append(timeString)
+                if (address != null && address.isNotBlank()) {
+                    append(" • ")
+                    val shortAddress = if (address.length > 30) {
+                        address.take(27) + "..."
+                    } else {
+                        address
+                    }
+                    append(shortAddress)
+                }
+            }
+
+            RecentActivity(
+                id = doc.id,
+                title = title,
+                subtitle = subtitle,
+                timestamp = timeString,
+                isCriminal = isCriminal,
+                dangerLevel = dangerLevel,
+                firestoreTimestamp = timestamp,
+                userId = userId,
+                userName = userName
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error parsing activity ${doc.id}", e)
+            null
         }
     }
 
@@ -560,46 +440,6 @@ class HomeViewModel : ViewModel() {
                 } catch (e: Exception) {
                     Log.e(TAG, "❌ Error playing ringtone", e)
                 }
-            }
-        }
-    }
-
-    /**
-     * Add a new activity to the global feed
-     */
-    fun addActivityToGlobalFeed(activityData: Map<String, Any>) {
-        viewModelScope.launch {
-            try {
-                val currentUser = auth.currentUser
-                if (currentUser == null) {
-                    Log.w(TAG, "⚠️ Cannot add to global feed: No authenticated user")
-                    return@launch
-                }
-
-                // Get user display name
-                val userName = currentUser.displayName ?: currentUser.email ?: "Anonymous User"
-
-                Log.d(TAG, "➕ Adding activity to global feed for user: $userName")
-
-                // Add user info to activity data
-                val globalActivityData = activityData.toMutableMap().apply {
-                    put("user_id", currentUser.uid)
-                    put("user_name", userName)
-                    put("timestamp", FieldValue.serverTimestamp())
-                }
-
-                // Add to global activities collection
-                db.collection(GLOBAL_ACTIVITIES_COLLECTION)
-                    .add(globalActivityData)
-                    .addOnSuccessListener { documentReference ->
-                        Log.d(TAG, "✅ Activity added to global feed with ID: ${documentReference.id}")
-                    }
-                    .addOnFailureListener { e ->
-                        Log.e(TAG, "❌ Error adding activity to global feed", e)
-                    }
-
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Error adding to global feed", e)
             }
         }
     }
@@ -638,8 +478,8 @@ class HomeViewModel : ViewModel() {
      * Stop updates
      */
     fun stopRealtimeUpdates() {
-        snapshotListener?.remove()
-        snapshotListener = null
+        globalSnapshotListener?.remove()
+        globalSnapshotListener = null
         _homeState.value = _homeState.value.copy(isRealtimeActive = false)
         Log.d(TAG, "⏹️ Stopped realtime updates")
     }

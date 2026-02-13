@@ -35,8 +35,7 @@ class ActivityDetailViewModel : ViewModel() {
     }
 
     /**
-     * Load details for a specific capture
-     * ✅ First checks user's collection, then falls back to global collection
+     * ✅ UPDATED: Load details for a specific capture from GLOBAL collection first
      */
     fun loadCaptureDetails(captureId: String) {
         viewModelScope.launch {
@@ -52,7 +51,27 @@ class ActivityDetailViewModel : ViewModel() {
             _state.value = _state.value.copy(isLoading = true, error = null)
 
             try {
-                // ✅ Step 1: Try user's personal collection first
+                // ✅ Step 1: Try GLOBAL collection first
+                Log.d(TAG, "🌍 Checking global collection for capture: $captureId")
+                val globalDoc = db.collection(GLOBAL_CAPTURES_COLLECTION)
+                    .document(captureId)
+                    .get()
+                    .await()
+
+                if (globalDoc.exists()) {
+                    val capture = parseCapturedFace(globalDoc.id, globalDoc.data ?: emptyMap())
+                    _state.value = _state.value.copy(
+                        isLoading = false,
+                        captures = listOf(capture),
+                        selectedCapture = capture,
+                        error = null
+                    )
+                    Log.d(TAG, "✅ Capture found in global collection")
+                    return@launch
+                }
+
+                // ✅ Step 2: Fallback to user's personal collection
+                Log.d(TAG, "👤 Capture not in global, checking user's collection...")
                 val userDoc = db.collection("users")
                     .document(currentUser.uid)
                     .collection("captured_faces")
@@ -69,25 +88,6 @@ class ActivityDetailViewModel : ViewModel() {
                         error = null
                     )
                     Log.d(TAG, "✅ Capture found in user's collection")
-                    return@launch
-                }
-
-                // ✅ Step 2: Fallback to global collection
-                Log.d(TAG, "🌍 Capture not in user collection, checking global...")
-                val globalDoc = db.collection(GLOBAL_CAPTURES_COLLECTION)
-                    .document(captureId)
-                    .get()
-                    .await()
-
-                if (globalDoc.exists()) {
-                    val capture = parseCapturedFace(globalDoc.id, globalDoc.data ?: emptyMap())
-                    _state.value = _state.value.copy(
-                        isLoading = false,
-                        captures = listOf(capture),
-                        selectedCapture = capture,
-                        error = null
-                    )
-                    Log.d(TAG, "✅ Capture found in global collection")
                 } else {
                     _state.value = _state.value.copy(
                         isLoading = false,
@@ -107,8 +107,7 @@ class ActivityDetailViewModel : ViewModel() {
     }
 
     /**
-     * Load all captured faces
-     * ✅ Combines user's personal captures + global captures
+     * ✅ UPDATED: Load all captured faces from GLOBAL collection primarily
      */
     fun loadAllCaptures(limit: Int = 50) {
         viewModelScope.launch {
@@ -124,39 +123,16 @@ class ActivityDetailViewModel : ViewModel() {
             _state.value = _state.value.copy(isLoading = true, error = null)
 
             try {
-                // ✅ Step 1: Load user's personal captures
-                val userQuerySnapshot = db.collection("users")
-                    .document(currentUser.uid)
-                    .collection("captured_faces")
-                    .orderBy("timestamp", Query.Direction.DESCENDING)
-                    .limit(limit.toLong())
-                    .get()
-                    .await()
-
-                val userCaptures = userQuerySnapshot.documents.mapNotNull { doc ->
-                    try {
-                        parseCapturedFace(doc.id, doc.data ?: emptyMap())
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error parsing user document ${doc.id}: ${e.message}")
-                        null
-                    }
-                }
-
-                Log.d(TAG, "✅ Loaded ${userCaptures.size} from user's collection")
-
-                // ✅ Step 2: Load global captures
+                // ✅ PRIMARY: Load from GLOBAL collection
+                Log.d(TAG, "🌍 Loading captures from global collection...")
                 val globalQuerySnapshot = db.collection(GLOBAL_CAPTURES_COLLECTION)
                     .orderBy("timestamp", Query.Direction.DESCENDING)
                     .limit(limit.toLong())
                     .get()
                     .await()
 
-                val globalCaptures = globalQuerySnapshot.documents.mapNotNull { doc ->
+                val allCaptures = globalQuerySnapshot.documents.mapNotNull { doc ->
                     try {
-                        // Skip if already in user's captures
-                        if (userCaptures.any { it.id == doc.id }) {
-                            return@mapNotNull null
-                        }
                         parseCapturedFace(doc.id, doc.data ?: emptyMap())
                     } catch (e: Exception) {
                         Log.e(TAG, "Error parsing global document ${doc.id}: ${e.message}")
@@ -164,20 +140,13 @@ class ActivityDetailViewModel : ViewModel() {
                     }
                 }
 
-                Log.d(TAG, "✅ Loaded ${globalCaptures.size} from global collection")
-
-                // ✅ Step 3: Combine and sort by timestamp
-                val allCaptures = (userCaptures + globalCaptures)
-                    .sortedByDescending { it.timestamp }
-                    .take(limit)
-
                 _state.value = _state.value.copy(
                     isLoading = false,
                     captures = allCaptures,
                     error = null
                 )
 
-                Log.d(TAG, "✅ Total captures loaded: ${allCaptures.size}")
+                Log.d(TAG, "✅ Loaded ${allCaptures.size} captures from global collection")
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error loading captures: ${e.message}", e)
@@ -244,8 +213,7 @@ class ActivityDetailViewModel : ViewModel() {
     }
 
     /**
-     * Load captures by recognition status
-     * ✅ Checks both user and global collections
+     * ✅ UPDATED: Load captures by recognition status from GLOBAL collection
      */
     fun loadCapturesByStatus(isRecognized: Boolean, limit: Int = 50) {
         viewModelScope.launch {
@@ -261,26 +229,8 @@ class ActivityDetailViewModel : ViewModel() {
             _state.value = _state.value.copy(isLoading = true, error = null)
 
             try {
-                // ✅ User's captures
-                val userQuerySnapshot = db.collection("users")
-                    .document(currentUser.uid)
-                    .collection("captured_faces")
-                    .whereEqualTo("is_recognized", isRecognized)
-                    .orderBy("timestamp", Query.Direction.DESCENDING)
-                    .limit(limit.toLong())
-                    .get()
-                    .await()
-
-                val userCaptures = userQuerySnapshot.documents.mapNotNull { doc ->
-                    try {
-                        parseCapturedFace(doc.id, doc.data ?: emptyMap())
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error parsing document: ${e.message}")
-                        null
-                    }
-                }
-
-                // ✅ Global captures
+                // ✅ Query GLOBAL collection
+                Log.d(TAG, "🌍 Loading ${if (isRecognized) "recognized" else "unknown"} captures from global...")
                 val globalQuerySnapshot = db.collection(GLOBAL_CAPTURES_COLLECTION)
                     .whereEqualTo("is_recognized", isRecognized)
                     .orderBy("timestamp", Query.Direction.DESCENDING)
@@ -288,9 +238,8 @@ class ActivityDetailViewModel : ViewModel() {
                     .get()
                     .await()
 
-                val globalCaptures = globalQuerySnapshot.documents.mapNotNull { doc ->
+                val allCaptures = globalQuerySnapshot.documents.mapNotNull { doc ->
                     try {
-                        if (userCaptures.any { it.id == doc.id }) return@mapNotNull null
                         parseCapturedFace(doc.id, doc.data ?: emptyMap())
                     } catch (e: Exception) {
                         Log.e(TAG, "Error parsing document: ${e.message}")
@@ -298,17 +247,13 @@ class ActivityDetailViewModel : ViewModel() {
                     }
                 }
 
-                val allCaptures = (userCaptures + globalCaptures)
-                    .sortedByDescending { it.timestamp }
-                    .take(limit)
-
                 _state.value = _state.value.copy(
                     isLoading = false,
                     captures = allCaptures,
                     error = null
                 )
 
-                Log.d(TAG, "Loaded ${allCaptures.size} ${if (isRecognized) "recognized" else "unknown"} captures")
+                Log.d(TAG, "✅ Loaded ${allCaptures.size} ${if (isRecognized) "recognized" else "unknown"} captures")
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error loading captures: ${e.message}", e)
@@ -321,8 +266,7 @@ class ActivityDetailViewModel : ViewModel() {
     }
 
     /**
-     * Load criminal captures only
-     * ✅ Checks both user and global collections
+     * ✅ UPDATED: Load criminal captures from GLOBAL collection
      */
     fun loadCriminalCaptures(limit: Int = 50) {
         viewModelScope.launch {
@@ -338,26 +282,8 @@ class ActivityDetailViewModel : ViewModel() {
             _state.value = _state.value.copy(isLoading = true, error = null)
 
             try {
-                // ✅ User's criminal captures
-                val userQuerySnapshot = db.collection("users")
-                    .document(currentUser.uid)
-                    .collection("captured_faces")
-                    .whereEqualTo("is_criminal", true)
-                    .orderBy("timestamp", Query.Direction.DESCENDING)
-                    .limit(limit.toLong())
-                    .get()
-                    .await()
-
-                val userCaptures = userQuerySnapshot.documents.mapNotNull { doc ->
-                    try {
-                        parseCapturedFace(doc.id, doc.data ?: emptyMap())
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error parsing document: ${e.message}")
-                        null
-                    }
-                }
-
-                // ✅ Global criminal captures
+                // ✅ Query GLOBAL collection for criminals
+                Log.d(TAG, "🌍 Loading criminal captures from global...")
                 val globalQuerySnapshot = db.collection(GLOBAL_CAPTURES_COLLECTION)
                     .whereEqualTo("is_criminal", true)
                     .orderBy("timestamp", Query.Direction.DESCENDING)
@@ -365,9 +291,8 @@ class ActivityDetailViewModel : ViewModel() {
                     .get()
                     .await()
 
-                val globalCaptures = globalQuerySnapshot.documents.mapNotNull { doc ->
+                val allCaptures = globalQuerySnapshot.documents.mapNotNull { doc ->
                     try {
-                        if (userCaptures.any { it.id == doc.id }) return@mapNotNull null
                         parseCapturedFace(doc.id, doc.data ?: emptyMap())
                     } catch (e: Exception) {
                         Log.e(TAG, "Error parsing document: ${e.message}")
@@ -375,17 +300,13 @@ class ActivityDetailViewModel : ViewModel() {
                     }
                 }
 
-                val allCaptures = (userCaptures + globalCaptures)
-                    .sortedByDescending { it.timestamp }
-                    .take(limit)
-
                 _state.value = _state.value.copy(
                     isLoading = false,
                     captures = allCaptures,
                     error = null
                 )
 
-                Log.d(TAG, "Loaded ${allCaptures.size} criminal captures")
+                Log.d(TAG, "✅ Loaded ${allCaptures.size} criminal captures")
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error loading captures: ${e.message}", e)
